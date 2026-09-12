@@ -239,6 +239,19 @@ fn is_absence(err: &zbus::fdo::Error) -> bool {
             | zbus::fdo::Error::UnknownMethod(_)
             | zbus::fdo::Error::UnknownProperty(_)
             | zbus::fdo::Error::InvalidArgs(_)
+            // When no portal frontend is running, D-Bus may try to auto-activate
+            // the service. If activation fails (e.g. the .service file is missing
+            // or the binary crashes), we get Spawn.* errors. Treat these the same
+            // as "that capability is not there" because from the launcher's
+            // perspective there is no usable portal frontend.
+            | zbus::fdo::Error::SpawnExecFailed(_)
+            | zbus::fdo::Error::SpawnForkFailed(_)
+            | zbus::fdo::Error::SpawnChildExited(_)
+            | zbus::fdo::Error::SpawnChildSignaled(_)
+            | zbus::fdo::Error::SpawnFailed(_)
+            | zbus::fdo::Error::SpawnFailedToSetup(_)
+            | zbus::fdo::Error::SpawnConfigInvalid(_)
+            | zbus::fdo::Error::SpawnServiceNotValid(_)
     )
 }
 
