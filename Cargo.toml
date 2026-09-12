@@ -5,7 +5,12 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94"
+# The minimum we support, not the version we develop on -- rust-toolchain.toml pins
+# that, and the two are deliberately different. This one is set by what the Flatpak
+# ships inside: org.freedesktop.Sdk.Extension.rust-stable//24.08 carries rustc 1.89,
+# so anything higher here makes the Flatpak unbuildable. CI's `msrv` job builds the
+# shipped binary on exactly this version, because an unenforced MSRV is a guess.
+rust-version = "1.89"
 license = "GPL-3.0-only"
 repository = "https://github.com/tuna-os/compass"
 

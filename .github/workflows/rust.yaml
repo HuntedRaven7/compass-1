@@ -57,3 +57,51 @@ jobs:
       # --all-targets skips doctests, so run them separately.
       - name: Doctests
         run: cargo test --workspace --doc
+
+  # `rust-version` in Cargo.toml is a promise, and an unenforced promise rots.
+  #
+  # It is also not ours to choose freely: the Flatpak we ship builds inside
+  # org.freedesktop.Sdk.Extension.rust-stable, whose compiler is whatever that
+  # runtime ships. The first Flatpak build failed exactly here --
+  # "rustc 1.89.0 is not supported ... requires rustc 1.94" -- after a full crate
+  # vendor, because the declared MSRV had been set to the toolchain we happened to
+  # develop on rather than to a version we had tested.
+  #
+  # This job is the fast version of that discovery: two minutes here instead of
+  # forty in the Flatpak job. Scope is deliberately `-p vicinae` rather than the
+  # whole workspace, because it is the *shipped* code that has to build on the
+  # SDK's compiler -- tests may use newer features freely.
+  msrv:
+    name: Builds on the minimum supported Rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the MSRV out of Cargo.toml
+        id: msrv
+        run: |
+          version="$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          test -n "$version" || { echo "::error::no rust-version in Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "declared MSRV: $version"
+
+      # rust-toolchain.toml would otherwise override the toolchain we ask for.
+      - name: Install the MSRV toolchain
+        run: |
+          rustup toolchain install "${{ steps.msrv.outputs.version }}" --profile minimal --no-self-update
+          rustup run "${{ steps.msrv.outputs.version }}" rustc --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: msrv-${{ runner.os }}-${{ steps.msrv.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: msrv-${{ runner.os }}-${{ steps.msrv.outputs.version }}-
+
+      - name: Build the shipped binary on the MSRV
+        run: |
+          rustup run "${{ steps.msrv.outputs.version }}" \
+            cargo build --release --locked -p vicinae

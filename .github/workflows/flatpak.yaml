@@ -1,0 +1,131 @@
+# Builds the Flatpak.
+#
+# Until this existed, packaging/flatpak/ had been syntax-validated and never built,
+# which is a claim about YAML rather than about software. Bluefin is Flatpak-only,
+# so this is the format the Rust engine actually ships in and the first tier that
+# exercises the real runtime.
+name: Flatpak
+
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - packaging/flatpak/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - scripts/flatpak/**
+      - .github/workflows/flatpak.yaml
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Cheap and fails fast. The crate list is derived entirely from Cargo.lock, so a
+  # dependency change without a regeneration makes the build below fail with a
+  # missing-crate error that reads like a registry outage rather than "you forgot
+  # to run the script". Catch it here, where the message says what to do.
+  sources-are-current:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate and compare
+        run: |
+          python3 -m pip install --quiet aiohttp tomlkit PyYAML
+          ./scripts/flatpak/gen-cargo-sources.sh /tmp/fresh.json
+          if ! diff -u packaging/flatpak/cargo-sources.json /tmp/fresh.json; then
+            echo "::error::packaging/flatpak/cargo-sources.json is stale. Run scripts/flatpak/gen-cargo-sources.sh and commit the result."
+            exit 1
+          fi
+          echo "cargo-sources.json matches Cargo.lock"
+
+  build:
+    runs-on: ubuntu-24.04
+    # The freedesktop SDK plus the Rust extension is a large download and the build
+    # is a full release compile of the workspace. Generous, but bounded.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak and flatpak-builder
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder
+          flatpak --version
+          flatpak-builder --version
+
+      - name: Add flathub
+        run: flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      # Keyed on the manifest, since that is what names the runtime versions.
+      - name: Cache the runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-runtime-${{ runner.os }}-${{ hashFiles('packaging/flatpak/com.vicinae.Vicinae.yaml') }}
+          restore-keys: flatpak-runtime-${{ runner.os }}-
+
+      - name: Install the runtime and SDK
+        run: |
+          flatpak install --user --noninteractive --or-update flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//24.08
+
+      # This step earned its keep on the very first run: the build failed with
+      # "rustc 1.89.0 is not supported ... requires rustc 1.94" after vendoring all
+      # 161 crates, and this line is what made that a one-minute diagnosis.
+      #
+      # The three versions are deliberately different things. `rust-toolchain.toml`
+      # is what we develop on. `rust-version` in Cargo.toml is the minimum we
+      # promise, and it is set by the SDK because the SDK is the binding constraint.
+      # If the SDK's rustc ever drops below our declared MSRV, this is the line that
+      # says so.
+      - name: What Rust does the SDK actually ship?
+        run: |
+          echo "dev pin (rust-toolchain.toml): $(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml || echo 'none')"
+          echo "declared MSRV (Cargo.toml):    $(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          echo -n "SDK ships:                     "
+          flatpak run --user --command=sh --devel org.freedesktop.Sdk//24.08 \
+            -c 'PATH=/usr/lib/sdk/rust-stable/bin:$PATH rustc --version' || echo "could not query"
+
+      - name: Build
+        run: |
+          flatpak-builder --user --disable-rofiles-fuse --force-clean \
+            --repo=/tmp/repo --state-dir=/tmp/fb-state \
+            /tmp/build packaging/flatpak/com.vicinae.Vicinae.yaml
+
+      - name: Install it and run the binary
+        # Building proves it compiles and installs. Running `doctor` proves the
+        # result actually starts inside the sandbox, which is a different claim and
+        # the one that matters. --check-only is deliberately NOT used: a CI container
+        # has no desktop, so checks will legitimately fail; the assertion is that the
+        # binary runs and produces a report, not that the report is clean.
+        run: |
+          flatpak install --user --noninteractive /tmp/repo com.vicinae.Vicinae
+          flatpak run --user com.vicinae.Vicinae --socket /tmp/ci.sock doctor --json | tee /tmp/doctor.json
+          python3 -c "
+          import json, sys
+          report = json.load(open('/tmp/doctor.json'))
+          checks = report['checks']
+          assert checks, 'doctor produced no checks'
+          print(f'{len(checks)} checks ran inside the sandbox')
+          for c in checks:
+              print(f\"  {c['status']:5} {c['name']}\")
+          "
+
+      - name: Upload the bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-repo
+          path: /tmp/repo
+          retention-days: 7
+          if-no-files-found: warn
