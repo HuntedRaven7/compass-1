@@ -1,0 +1,31 @@
+# A Bluefin image that `podman create` will accept.
+#
+# WHY THIS EXISTS — delete it once corral is fixed.
+#
+# corral probes a bootc image's filesystem before building a disk from it:
+# `pkg/bootc.DetectBackend` looks for bootupctl vs systemd-boot to pick the
+# backend, and `pkg/vmtest.DetectPackageManager` looks for dnf/apt/etc. Both do
+# it by `podman create`-ing a container and `podman cp`-ing paths out of it,
+# deliberately never executing anything — their comments explain that Universal
+# Blue images ship Rust uutils, where running a binary through
+# `podman --entrypoint` misdetects exactly the images this matters most for.
+#
+# But `podman create` still refuses an image with no CMD and no ENTRYPOINT, and
+# ghcr.io/ublue-os/bluefin has neither, because a bootc OS image is not meant to
+# be run as an app container. So corral fails on the exact image family the probe
+# was written for:
+#
+#   podman create ghcr.io/ublue-os/bluefin:stable: Error: no command or
+#   entrypoint provided, and no CMD or ENTRYPOINT from image
+#
+# `DetectBackend`'s failure is fatal (corral exit 4, "the disk build failed").
+# `DetectPackageManager`'s is tolerated unless packages were requested.
+#
+# The upstream fix is one word — `podman create --entrypoint=""`, or passing a
+# dummy command — since neither probe ever starts the container. Until that
+# lands, adding a CMD here makes the image createable. It changes no OS content:
+# CMD is metadata that a bootc install ignores entirely.
+FROM ghcr.io/ublue-os/bluefin:stable
+
+# Never executed. Present only so `podman create` has something to record.
+CMD ["/bin/bash"]
