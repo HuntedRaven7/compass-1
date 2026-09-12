@@ -16,8 +16,11 @@ concurrency:
 
 jobs:
   build-binary:
-    runs-on: depot-ubuntu-24.04-16
-    container: registry.depot.dev/dwd5s9sq7d:arch-latest
+    runs-on: ubuntu-24.04
+    # Plain upstream Arch: the build deps are one pacman invocation, so a
+    # prebuilt image is not worth a registry dependency. Installed below
+    # from the same script the image Dockerfile uses.
+    container: archlinux:latest
     permissions:
       contents: read
     outputs:
@@ -29,6 +32,12 @@ jobs:
       INSTALL_DIR: ${{ github.workspace }}/install
 
     steps:
+      # actions/checkout silently falls back to a REST tarball with no .git when
+      # git is missing, which breaks every later git step. The Depot image had
+      # git baked in; plain archlinux:latest does not.
+      - name: Bootstrap git
+        run: pacman -Sy --needed --noconfirm git
+
       - name: Resolve tag
         id: meta
         shell: bash
@@ -58,6 +67,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Install build dependencies
+        run: ./scripts/runners/arch/install-deps.sh
 
       - name: Resolve commit
         id: commit
@@ -109,9 +121,31 @@ jobs:
 
 
   build-appimage:
+    # Disabled 2026-09-12 alongside build-appimage.yaml: AppImage is not a channel
+    # we distribute through, and the ghcr build-env image this pulls is not
+    # published, so the job could only fail at `docker pull ... manifest unknown`.
+    #
+    # It was blocking more than itself. `publish-npm` and `publish-release` both
+    # listed it in `needs:`, so a failure here skipped them -- releases were
+    # already impossible, not merely missing an AppImage. Gating the job and
+    # dropping it from those two `needs:` lists restores releases; it does mean a
+    # release no longer ships a .AppImage, which is the point rather than a
+    # side effect.
+    #
+    # To restore: set `if: true` here, publish the build-env image by dispatching
+    # build-appimage-image.yaml once, and put `build-appimage` back into the
+    # `needs:` of publish-npm and publish-release below.
+    if: false
     needs: build-binary
     runs-on: ${{ matrix.target.runner }}
-    container: registry.depot.dev/dwd5s9sq7d:${{ matrix.target.tag }}
+    container:
+      image: ghcr.io/${{ github.repository }}/build-env:${{ matrix.target.tag }}
+      # ghcr packages are private until published publicly; GITHUB_TOKEN
+      # can pull the ones this repository owns. Once the package is made
+      # public these credentials and the packages:read scope can go.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: read
     strategy:
@@ -119,10 +153,10 @@ jobs:
       matrix:
         target:
           - arch: amd64
-            runner: depot-ubuntu-24.04-16
+            runner: ubuntu-24.04
             tag: appimage-amd64-latest
           - arch: arm64
-            runner: depot-ubuntu-24.04-arm-16
+            runner: ubuntu-24.04-arm
             tag: appimage-arm64-latest
     name: build-appimage (${{ matrix.target.arch }})
     env:
@@ -184,7 +218,8 @@ jobs:
       commit: ${{ needs.build-binary.outputs.commit }}
 
   publish-npm:
-    needs: [build-binary, build-appimage, build-macos-dmg]
+    # build-appimage removed from needs while it is gated off; see the note there.
+    needs: [build-binary, build-macos-dmg]
     permissions:
       id-token: write
       contents: read
@@ -193,7 +228,8 @@ jobs:
       tag: ${{ needs.build-binary.outputs.tag }}
 
   publish-release:
-    needs: [build-binary, build-appimage, build-macos-dmg, publish-npm]
+    # build-appimage removed from needs while it is gated off; see the note there.
+    needs: [build-binary, build-macos-dmg, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

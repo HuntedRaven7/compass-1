@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+Name[de]=Texteditor
+Name[de_DE]=Texteditor (Deutschland)
+Name[de_DE@euro]=Texteditor (Euro)
+Name[fr]=Éditeur de texte
+Name[sr@latin]=Uređivač teksta
+GenericName=Editor
+GenericName[de]=Editor
+Comment=Edit text files
+Comment[fr]=Modifier des fichiers texte
+Exec=editor %F
+Icon=text-editor

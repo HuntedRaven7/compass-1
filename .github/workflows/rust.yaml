@@ -1,0 +1,59 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deliberately no job-level `RUSTFLAGS: -D warnings`: RUSTFLAGS applies to
+  # dependencies too, so a new warning in any upstream crate would fail our
+  # build for something we cannot fix. The clippy step below carries
+  # `-D warnings`, which is scoped to our own code.
+
+jobs:
+  check:
+    name: Build, lint and test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel and components.
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      # --all-targets skips doctests, so run them separately.
+      - name: Doctests
+        run: cargo test --workspace --doc

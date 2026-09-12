@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Junk Lines
+this line has no equals sign
+=value with empty key
+   Exec   =   spaced-out
+# a comment
+; not a comment in this format
+
+[Unknown Group]
+Key=Value

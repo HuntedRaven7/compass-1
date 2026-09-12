@@ -7,3 +7,7 @@ vendor/** linguist-vendored
 
 # this will probably be moved out of the repo eventually
 extra/extension-boilerplate/** linguist-vendored
+
+# Test corpora are byte-exact fixtures: CRLF and non-UTF-8 encodings are the
+# thing under test, so git must not normalise them.
+crates/compass-testkit/corpus/** -text

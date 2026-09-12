@@ -1,10 +1,17 @@
 name: Build AppImage
 
+# Disabled 2026-09-12: AppImage is not a channel we distribute through, so the
+# ghcr build-env image these jobs pull is deliberately not published and every
+# run failed at `docker pull ... manifest unknown`. Permanently red checks are
+# how a team learns to ignore CI, so the automatic triggers are removed rather
+# than the failures tolerated.
+#
+# Disabled, not deleted: the workflow and scripts/runners/appimage/ still work.
+# To bring it back, restore the `push`/`pull_request` triggers below AND publish
+# the build-env image by dispatching build-appimage-image.yaml once (it compiles
+# GCC 15.2 and Qt 6.10 from source, so expect hours). Re-enabling the triggers
+# alone just restores the red.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +21,17 @@ concurrency:
 jobs:
   build:
     runs-on: ${{ matrix.target.runner }}
-    container: registry.depot.dev/dwd5s9sq7d:${{ matrix.target.tag }}
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/${{ github.repository }}/build-env:${{ matrix.target.tag }}
+      # ghcr packages are private until published publicly; GITHUB_TOKEN
+      # can pull the ones this repository owns. Once the package is made
+      # public these credentials and the packages:read scope can go.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     strategy:
       fail-fast: false
@@ -22,11 +39,11 @@ jobs:
         target:
           - arch: amd64
             deploy_arch: x86_64
-            runner: depot-ubuntu-24.04-16
+            runner: ubuntu-24.04
             tag: appimage-amd64-latest
           - arch: arm64
             deploy_arch: aarch64
-            runner: depot-ubuntu-24.04-arm-16
+            runner: ubuntu-24.04-arm
             tag: appimage-arm64-latest
 
     name: Build AppImage (${{ matrix.target.arch }})

@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Hidden From Menus
+Exec=nodisplay
+NoDisplay=true

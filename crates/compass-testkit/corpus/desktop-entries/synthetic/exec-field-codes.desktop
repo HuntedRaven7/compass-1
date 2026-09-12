@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Field Codes
+Exec=app --single %f --multi %F --url %u --urls %U --icon %i --caption %c --key %k --literal %% --deprecated %d %D %n %N %v %m
+Icon=field-codes

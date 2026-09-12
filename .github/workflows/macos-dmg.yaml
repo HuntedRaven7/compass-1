@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build-macos-dmg:
-    runs-on: depot-macos-26
+    runs-on: macos-26
     name: build-macos-dmg (arm64)
     permissions:
       contents: read

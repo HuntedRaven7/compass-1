@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: depot-windows-2022-16
+    runs-on: windows-2022
     name: Build (Windows / MSVC x64)
 
     steps:

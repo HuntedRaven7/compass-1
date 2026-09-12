@@ -1,0 +1,67 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  Compass <-> GNOME Shell helper extension contract: windows.
+
+  Well-known name : org.gnome.Shell
+  Object path     : /org/gnome/Shell/Extensions/Vicinae/Windows
+
+  This is a VERSIONED contract (PLAN.md 3.5.2-3). The whole point of it is to be
+  small enough that a GNOME release breaks a ~200-line extension rather than the
+  launcher. Do not grow it without bumping `Version` and updating
+  `compass-shell`'s CONTRACT_VERSION in lockstep.
+
+  Version history:
+    1 - initial minimal contract. Replaces the unversioned
+        org.gnome.Shell.Extensions.Windows surface, which additionally had
+        Details(u), GetFocusedWindowSync(), ListWorkspaces(),
+        GetActiveWorkspace() and the openwindow/closewindow/focuswindow/
+        movewindow/statewindow/workspacechanged/monitorlayoutchanged signals,
+        and which returned windows as a JSON string rather than typed D-Bus.
+-->
+<node>
+  <interface name="org.gnome.Shell.Extensions.Vicinae.Windows">
+
+    <!-- Contract version implemented by the extension. Compass refuses to use
+         an interface whose Version it does not speak, and degrades instead. -->
+    <property name="Version" type="u" access="read"/>
+
+    <!--
+      All windows the extension is willing to expose, most-recently-used first.
+
+      Each dictionary carries:
+        id                 u  required  stable-for-the-window-lifetime handle
+        title              s  required  may be empty
+        wm_class           s  required  may be empty
+        wm_class_instance  s  optional  defaults to ""
+        pid                u  optional  absent when unknown
+        focused            b  optional  defaults to false
+        workspace          i  optional  absent, or < 0, means "unknown"
+        can_close          b  optional  defaults to true
+
+      Unknown keys MUST be ignored by the client, so the extension may add
+      fields within a contract version. Removing or retyping a key above is a
+      breaking change and requires a Version bump.
+    -->
+    <method name="ListWindows">
+      <arg type="aa{sv}" name="windows" direction="out"/>
+    </method>
+
+    <!-- Focus and raise the window, moving to its workspace if required. -->
+    <method name="ActivateWindow">
+      <arg type="u" name="id" direction="in"/>
+    </method>
+
+    <!-- Request that the window close. Best effort; the app may refuse. -->
+    <method name="CloseWindow">
+      <arg type="u" name="id" direction="in"/>
+    </method>
+
+    <!-- Something in the window set changed (opened, closed, retitled,
+         refocused, moved workspace). Deliberately coarse: the client re-reads
+         ListWindows rather than tracking deltas, so the extension needs no
+         per-event bookkeeping. Extensions SHOULD coalesce bursts. -->
+    <signal name="WindowsChanged"/>
+
+  </interface>
+</node>

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Vicinae
+GenericName=Application Launcher
+Comment=A focused launcher for your desktop
+Exec=vicinae
+Icon=com.vicinae.Vicinae
+Terminal=false
+Categories=Utility;
+Keywords=launcher;search;command;palette;
+StartupWMClass=com.vicinae.Vicinae
+# The launcher is driven by a global hotkey, not by being clicked in an app grid. Showing it there
+# is noise, and clicking it would start a second instance the user did not want.
+NoDisplay=true

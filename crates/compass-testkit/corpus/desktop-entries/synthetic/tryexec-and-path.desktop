@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=With TryExec
+TryExec=/nonexistent/binary
+Exec=fallback-command
+Path=/tmp
+Terminal=true
+StartupWMClass=WithTryExec

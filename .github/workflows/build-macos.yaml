@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     # Tahoe ships AppleClang 17
-    runs-on: depot-macos-26
+    runs-on: macos-26
 
     name: Build (macOS)
 

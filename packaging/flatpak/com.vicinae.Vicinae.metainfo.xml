@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.vicinae.Vicinae</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Vicinae</name>
+  <summary>A focused launcher for your desktop</summary>
+
+  <description>
+    <p>
+      Vicinae is a native command palette: application search, clipboard history, snippets,
+      file search, a calculator, an emoji picker and a window switcher, extensible with
+      Raycast-compatible extensions and script commands.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.vicinae.Vicinae.desktop</launchable>
+  <url type="homepage">https://vicinae.com</url>
+  <url type="bugtracker">https://github.com/tuna-os/compass/issues</url>
+
+  <provides>
+    <binary>vicinae</binary>
+  </provides>
+
+  <content_rating type="oars-1.1"/>
+</component>

@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "GPL-3.0-only"
+repository = "https://github.com/tuna-os/compass"
+
+[workspace.dependencies]
+compass-xdg = { path = "crates/compass-xdg" }
+compass-search = { path = "crates/compass-search" }
+compass-testkit = { path = "crates/compass-testkit" }
+compass-core = { path = "crates/compass-core" }
+compass-ipc = { path = "crates/compass-ipc" }
+compass-shell = { path = "crates/compass-shell" }
+compass-extension-api = { path = "crates/compass-extension-api" }
+compass-portals = { path = "crates/compass-portals" }
+
+anyhow = "1"
+nucleo-matcher = "0.3.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "process"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = "0.3"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+postcard = { version = "1", features = ["use-std"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
+toml = "0.9"
+
+# dev
+insta = "1"
+proptest = "1"
+walkdir = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

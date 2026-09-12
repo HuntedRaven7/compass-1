@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=browser %U
+Actions=NewWindow;Private;
+
+[Desktop Action NewWindow]
+Name=New Window
+Name[de]=Neues Fenster
+Exec=browser --new-window
+
+[Desktop Action Private]
+Name=Private Window
+Exec=browser --private
+Icon=private-mode

@@ -1,13 +1,14 @@
 name: Build AppImage build-env image
 
+# Disabled 2026-09-12: this publishes the build-env image that build-appimage.yaml
+# consumes, and AppImage is not a channel we distribute through. The weekly
+# schedule in particular would burn hours of runner time rebuilding GCC 15.2 and
+# Qt 6.10 from source for an artefact nobody consumes.
+#
+# Disabled, not deleted. `workflow_dispatch` is kept precisely so that re-enabling
+# AppImage is one manual run followed by restoring the triggers in
+# build-appimage.yaml.
 on:
-  schedule:
-    - cron: "0 5 * * 1"
-  push:
-    branches: [main]
-    paths:
-      - scripts/runners/appimage/AppImageBuilder.Dockerfile
-      - .github/workflows/build-appimage-image.yaml
   workflow_dispatch:
 
 concurrency:
@@ -16,17 +17,31 @@ concurrency:
 
 jobs:
   build:
-    runs-on: depot-ubuntu-24.04
+    runs-on: ${{ matrix.target.runner }}
     permissions:
-      id-token: write
       contents: read
+      # Required to push to GitHub Container Registry.
+      packages: write
+
+    # This image builds GCC 15.2 and Qt 6.10 from source. On Depot's 16-vCPU
+    # machines that was slow; on a 4-vCPU GitHub-hosted runner it is slower
+    # still, and 360 minutes is the ceiling GitHub allows. If it starts timing
+    # out, the options are a larger runner (org-level setting), splitting the
+    # Dockerfile stages across jobs, or prebuilt GCC/Qt from an upstream image.
+    timeout-minutes: 360
+
     strategy:
       fail-fast: false
       matrix:
         target:
+          # Each architecture builds natively. Do NOT collapse this into one
+          # job with QEMU: emulating a from-source GCC and Qt build is orders
+          # of magnitude slower and will not finish inside any job limit.
           - platform: linux/amd64
+            runner: ubuntu-24.04
             tag: appimage-amd64-latest
           - platform: linux/arm64
+            runner: ubuntu-24.04-arm
             tag: appimage-arm64-latest
 
     name: Build AppImage image (${{ matrix.target.platform }})
@@ -35,15 +50,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Depot
-        uses: depot/setup-action@v1
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build and push to Depot Registry
-        uses: depot/build-push-action@v1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          project: dwd5s9sq7d
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
           platforms: ${{ matrix.target.platform }}
           context: scripts/runners/appimage
           file: scripts/runners/appimage/AppImageBuilder.Dockerfile
-          save: true
-          save-tags: ${{ matrix.target.tag }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}/build-env:${{ matrix.target.tag }}
+          cache-from: type=gha,scope=${{ matrix.target.tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target.tag }}

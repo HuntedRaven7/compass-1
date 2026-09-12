@@ -155,17 +155,25 @@ appimage-build-env-push:
 	docker push $(APPIMAGE_BUILD_ENV_IMAGE_TAG)
 .PHONY: appimage-build-env-push
 
-depot-push-arch:
-	depot build --save --save-tag arch-latest --platform linux/amd64 -f scripts/runners/arch/base.Dockerfile scripts/runners/arch
-.PHONY: depot-push-arch
+# The AppImage build-environment image. CI builds and pushes it itself
+# (.github/workflows/build-appimage-image.yaml); these targets are for doing
+# it by hand. Requires `docker login ghcr.io` with a token carrying
+# write:packages.
+#
+# There is no equivalent for Arch: those jobs run on plain archlinux:latest
+# and install dependencies from scripts/runners/arch/install-deps.sh, so no
+# image needs building or publishing.
+BUILD_ENV_IMAGE := ghcr.io/tuna-os/compass/build-env
 
-depot-push-appimage-amd64:
-	depot build --save --save-tag appimage-amd64-latest --platform linux/amd64 -f scripts/runners/appimage/AppImageBuilder.Dockerfile scripts/runners/appimage
-.PHONY: depot-push-appimage-amd64
+# Builds GCC and Qt from source: expect hours, and build each architecture on
+# a machine of that architecture rather than under QEMU.
+push-appimage-image-amd64:
+	docker buildx build --push --tag $(BUILD_ENV_IMAGE):appimage-amd64-latest --platform linux/amd64 -f scripts/runners/appimage/AppImageBuilder.Dockerfile scripts/runners/appimage
+.PHONY: push-appimage-image-amd64
 
-depot-push-appimage-arm64:
-	depot build --save --save-tag appimage-arm64-latest --platform linux/arm64 -f scripts/runners/appimage/AppImageBuilder.Dockerfile scripts/runners/appimage
-.PHONY: depot-push-appimage-arm64
+push-appimage-image-arm64:
+	docker buildx build --push --tag $(BUILD_ENV_IMAGE):appimage-arm64-latest --platform linux/arm64 -f scripts/runners/appimage/AppImageBuilder.Dockerfile scripts/runners/appimage
+.PHONY: push-appimage-image-arm64
 
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 CLANG_FORMAT := $(shell command -v clang-format 2>/dev/null || echo /opt/homebrew/opt/llvm/bin/clang-format)
@@ -250,3 +258,50 @@ re: clean release
 
 redev: clean dev
 .PHONY: redev
+
+# ---------------------------------------------------------------------------
+# Rust engine (crates/). See docs/rust-engine/PLAN.md.
+# These are deliberately separate from the C++ targets: building the C++ tree
+# must not require a Rust toolchain until the cutover in Phase 7.
+# ---------------------------------------------------------------------------
+
+build-rust:
+	cargo build --workspace
+.PHONY: build-rust
+
+test-rust:
+	cargo test --workspace --all-targets
+	cargo test --workspace --doc
+.PHONY: test-rust
+
+lint-rust:
+	cargo clippy --workspace --all-targets -- -D warnings
+.PHONY: lint-rust
+
+fmt-rust:
+	cargo fmt --all
+.PHONY: fmt-rust
+
+check-format-rust:
+	cargo fmt --all -- --check
+.PHONY: check-format-rust
+
+# Everything CI runs for the Rust workspace, in the same order.
+check-rust: check-format-rust lint-rust test-rust
+.PHONY: check-rust
+
+FLATPAK_MANIFEST := packaging/flatpak/com.vicinae.Vicinae.yaml
+
+# Regenerate the offline dependency manifest Flathub builds require. Needs
+# flatpak-cargo-generator.py from flatpak/flatpak-builder-tools on PATH.
+flatpak-sources:
+	flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+.PHONY: flatpak-sources
+
+flatpak-rust:
+	flatpak-builder --user --install --force-clean build-flatpak $(FLATPAK_MANIFEST)
+.PHONY: flatpak-rust
+
+flatpak-run: flatpak-rust
+	flatpak run com.vicinae.Vicinae -- doctor --check-only
+.PHONY: flatpak-run

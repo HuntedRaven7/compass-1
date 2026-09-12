@@ -1,0 +1,51 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  Compass <-> GNOME Shell helper extension contract: clipboard.
+
+  Well-known name : org.gnome.Shell
+  Object path     : /org/gnome/Shell/Extensions/Vicinae/Clipboard
+
+  Mutter implements neither wlr-data-control nor ext-data-control (PLAN.md 3.1),
+  so this is the only clipboard-monitoring mechanism on GNOME 50/51.
+
+  Version history:
+    1 - initial minimal contract. Replaces the unversioned
+        org.gnome.Shell.Extensions.Clipboard surface, which additionally had
+        ListenToClipboardChanges(), StopListening(), GetClipboardMimeTypes()
+        and a separate text-only SetContent(s) alongside
+        SetContentBinary(ay, s).
+-->
+<node>
+  <interface name="org.gnome.Shell.Extensions.Vicinae.Clipboard">
+
+    <!-- Contract version implemented by the extension. -->
+    <property name="Version" type="u" access="read"/>
+
+    <!-- Current selection. An empty mime_type means "nothing we can offer";
+         content is then empty too. -->
+    <method name="GetClipboard">
+      <arg type="ay" name="content" direction="out"/>
+      <arg type="s" name="mime_type" direction="out"/>
+    </method>
+
+    <!-- Replace the selection. Text is passed as UTF-8 bytes with an explicit
+         mime type; there is no separate text entry point. -->
+    <method name="SetClipboard">
+      <arg type="ay" name="content" direction="in"/>
+      <arg type="s" name="mime_type" direction="in"/>
+    </method>
+
+    <!-- Emitted on every selection change the extension observes. There is no
+         subscribe/unsubscribe pair: the extension monitors while, and only
+         while, this signal has at least one D-Bus match rule against it.
+         source_app is the best-effort application id of the copier, "" when
+         unknown. Content marked concealed by the source is NOT emitted. -->
+    <signal name="ClipboardChanged">
+      <arg type="ay" name="content"/>
+      <arg type="s" name="mime_type"/>
+      <arg type="s" name="source_app"/>
+    </signal>
+
+  </interface>
+</node>

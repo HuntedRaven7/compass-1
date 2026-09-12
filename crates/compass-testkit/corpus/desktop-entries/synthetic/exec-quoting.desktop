@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Quoting
+Exec="/opt/my app/bin/launcher" --flag "an argument with spaces" 'single quoted' plain %U
+Icon=quoting

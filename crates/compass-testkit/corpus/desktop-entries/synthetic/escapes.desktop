@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Escapes
+Comment=line1\nline2\ttabbed\\backslash
+Exec=escapes
+Categories=Utility;Development;
+Keywords=one;two\;still-two;three;
+MimeType=text/plain;application/x-foo;

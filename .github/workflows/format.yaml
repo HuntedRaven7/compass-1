@@ -12,12 +12,26 @@ concurrency:
 
 jobs:
   format:
-    runs-on: depot-ubuntu-24.04
-    container: registry.depot.dev/dwd5s9sq7d:arch-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Plain upstream Arch: the build deps are one pacman invocation, so a
+    # prebuilt image is not worth a registry dependency. Installed below
+    # from the same script the image Dockerfile uses.
+    container: archlinux:latest
 
     steps:
+      # actions/checkout silently falls back to a REST tarball with no .git when
+      # git is missing, which breaks every later git step. The Depot image had
+      # git baked in; plain archlinux:latest does not.
+      - name: Bootstrap git
+        run: pacman -Sy --needed --noconfirm git
+
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ./scripts/runners/arch/install-deps.sh
 
       - name: Install pinned clang-format
         run: |
