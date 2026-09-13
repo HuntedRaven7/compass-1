@@ -1,4 +1,5 @@
 .cache
+.kilo
 /build
 /build-*
 .vscode
