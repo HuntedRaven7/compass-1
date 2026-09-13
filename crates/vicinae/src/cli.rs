@@ -245,6 +245,51 @@ mod tests {
     }
 
     #[test]
+    fn the_parity_harness_invocation_parses() {
+        // crates/compass-testkit/src/parity.rs builds this exact argv, one call
+        // per query, and it is the whole interface Suite 0 (§8.1) diffs the two
+        // engines through. An argv assembled in one crate and parsed in another
+        // has no compiler between the two, which is the same reason
+        // `the_spike_parses_with_its_defaults` above exists.
+        let cli = Cli::try_parse_from([
+            "vicinae",
+            "--socket",
+            "/tmp/compass-parity/ipc.sock",
+            "query",
+            "--json",
+            "firefox",
+        ])
+        .expect("the parity harness's argv must parse");
+
+        let Command::Query { text, json } = cli.command else {
+            panic!("expected the query command");
+        };
+        assert_eq!(text, vec!["firefox".to_owned()]);
+        assert!(
+            json,
+            "parity parses stdout as JSON, so --json must take effect"
+        );
+
+        // Two controls, because a test that only asserts the good case would
+        // pass just as well against a CLI that accepts anything.
+
+        // The order parity used before measurement: rejected, not tolerated.
+        assert!(
+            Cli::try_parse_from(["vicinae", "--json", "query", "firefox"]).is_err(),
+            "a global --json would mean the original invocation was fine after all"
+        );
+
+        // And parity no longer passes --engine, because until the Phase 7
+        // cutover the binary IS the engine: this one refuses `--engine cpp` at
+        // runtime by design, and the C++ binary has no such flag to give.
+        // Parsing is not the refusal — that happens later — so this only pins
+        // that the flag still exists and still defaults to the Rust engine.
+        let defaulted = Cli::try_parse_from(["vicinae", "query", "firefox"])
+            .expect("query without --engine must parse");
+        assert_eq!(defaulted.engine, Engine::Rust);
+    }
+
+    #[test]
     fn the_seeded_grant_names_the_spike_default_id() {
         // The VM image pre-seeds a GlobalShortcuts grant into dconf so that
         // `BindShortcuts` completes without a human at GNOME's consent dialog.

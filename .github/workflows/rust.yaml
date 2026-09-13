@@ -115,3 +115,48 @@ jobs:
         run: |
           rustup run "${{ steps.msrv.outputs.version }}" \
             cargo build --release --locked -p vicinae
+
+  scorer-parity:
+    name: The two scorers agree on the corpus
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: scorer-parity-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: scorer-parity-${{ runner.os }}-
+
+      # No CMake, no Qt, no server, no display. vicinae::fuzzy is a header-only
+      # INTERFACE library, which is the entire reason this tier-1 job can diff
+      # against the C++ engine's real scorer for the price of one translation
+      # unit. PLAN.md §8.1a.
+      - name: Build the C++ scorer probe
+        run: |
+          set -o pipefail
+          c++ -std=c++23 -O2 -Isrc/lib/fuzzy/include \
+            -o /tmp/vicinae-fuzzy-probe src/lib/fuzzy/probe/main.cpp
+          # Asserted, because a probe that cannot run would otherwise surface as
+          # "no divergences" — the harness's own failure looking like success.
+          printf 'a\tSystem Monitor\n' | /tmp/vicinae-fuzzy-probe Sy | grep -q '^a' \
+            || { echo "::error::the probe built but does not score"; exit 1; }
+
+      - name: Diff the C++ scorer against the Rust one
+        run: |
+          cargo run --locked -p compass-testkit --bin scorer-parity -- \
+            --probe /tmp/vicinae-fuzzy-probe
+
+      - name: What this proves, and what it does not
+        if: always()
+        run: |
+          echo 'This diffs the SCORER, not the engines. RootItemManager wraps it'
+          echo 'in provider bucketing, a provider-name score, favourite and'
+          echo 'enabled filtering, and per-item frecency, none of which is'
+          echo 'exercised here. Scorer parity is necessary for the ranking'
+          echo 'parity Phase 1 gates on, and is not the same thing — that needs'
+          echo 'a ranked-output path in the C++ engine (PLAN.md §8.1a rung 2).'

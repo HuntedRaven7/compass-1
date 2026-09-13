@@ -562,6 +562,121 @@ Plus two compatibility checks that matter because both engines coexist for month
 This is also how the ledger's "parity test ✓" column gets filled — a row cannot go green without a
 Suite-0 case.
 
+### 8.1a What Suite 0's harness actually does today
+
+`crates/compass-testkit/src/parity.rs` has existed since early in the port and **has never been
+run**. §11.2's first scoring called it "exists — and nothing has ever invoked it", which was
+generous: running it is how the following came to light, and none of it is visible from reading the
+file.
+
+It shells out once per query, as `<engine> --engine <name> --json query <text>`, and parses stdout
+as a JSON array. Measured against the real binaries:
+
+| | state |
+|---|---|
+| the argv it built | **rejected by clap** — `unexpected argument '--json' found; tip: 'query --json' exists`. `json` is a flag on the subcommand, not a global. Fixed, and pinned by a test in `crates/vicinae/src/cli.rs`. |
+| `query` against the Rust engine | **needs a running engine.** It asks over the IPC socket, so every call returns *"no Compass engine is listening on /tmp/vicinae-default/ipc.sock"*. The harness starts nothing. |
+| `query` against the C++ engine | **the interface does not exist.** `src/cli` has no `--engine` flag and no `query` subcommand; its only `--json` is on the command-list subcommand. |
+
+A fifth problem only appeared once the first four were fixed and the thing actually ran: it passed
+`--engine <name>`, which is wrong in principle rather than in spelling. **Until the Phase 7 cutover
+(§5), the binary *is* the engine.** The Rust binary refuses `--engine cpp` by design, and the C++
+binary has no such flag at all, so passing it can only turn a working invocation into a failing
+one. Suite 0 picks an engine by choosing which path to exec — which is what `--cpp` and `--rust`
+are for.
+
+**The harness now runs.** `RunningEngine` starts a `serve` per side on its own socket, waits until
+`ping` answers — a state, not a sleep, per ADR-0010 — runs the queries, and shuts both down. Against
+the Rust engine on both sides it completes 378 queries and reports 378 identical.
+
+That number is an **identity control only**, and on its own it is indistinguishable from a
+comparison that never compares. So the comparison is separately controlled: perturbing one side
+(dropping its top hit) turns the same run into 105 regressions and a non-zero exit, and
+`compare_results` has unit tests for reordering, rescoring, a missing hit and an empty side. The
+JSON test asserts the old `{key, name, score, quality}` shape is *rejected*, so it would have caught
+the original mismatch rather than passing either way.
+
+#### The C++ side: decided, in two rungs
+
+The question was whether to add the interface §8.1 assumes to the C++ engine, or to re-aim §8.1 at
+an interface it already has. **The second is not available**, which is worth stating rather than
+leaving as an option:
+
+- `src/cli` has no command that emits ranked results. Its `-q/--query` flags on `toggle` and `open`
+  send a deeplink that opens the window with fallback text; nothing prints a ranking.
+- The IPC protocol (`figura/ipc.fig`) has no ranked-search method either. Its only query is
+  `fsQuery`, which searches **files**, not root items.
+
+So there is no existing surface to diff through. What there *is*, and what changes the cost
+completely:
+
+**`vicinae::fuzzy` is a header-only INTERFACE library with no Qt dependency.** All five of its
+public headers compile standalone under plain `g++ -std=c++23` with nothing but their own include
+directory — verified, not assumed. The C++ scorer is separable from the server, the IPC, the window
+and Qt entirely.
+
+That gives a first rung far cheaper than anything previously costed:
+
+1. **A test-only probe binary linking `vicinae::fuzzy`**, emitting the same JSON for a query over a
+   corpus. Seconds to build, no Qt, no 812-object link, no VM, and no product surface added to a
+   tree we are deleting — it dies with `src/`. Diffed against `compass-search`, it covers the part
+   of ranking most likely to drift silently and least likely to be noticed: the scorer's bonus
+   constants and tie-breaks. §8.3 already ports all 21 Catch2 cases, but those compare against
+   *our reading* of the algorithm; this compares against the algorithm.
+
+2. **The full pipeline still needs the engine.** The probe is not a substitute and must not be
+   described as one. `RootItemManager::searchGroupedByProvider` wraps the scorer in provider
+   bucketing, a separate provider-name score, favourite and enabled filtering, and per-item
+   `fuzzyScore` — so scorer parity is not ranking parity, and Phase 1's gate names ranking. Closing
+   that means giving the C++ engine a ranked-output path: an IPC method, a server handler and a CLI
+   command. That is real work in a tree being deleted, and it is justified only because Suite 0 is
+   the migration's safety net — §12 item 3 exists precisely because every other parity test we have
+   compares the port against our reading of the C++ source rather than its behaviour.
+
+**Rung 1 is built and running** (`src/lib/fuzzy/probe/main.cpp`, `compass-testkit`'s
+`scorer-parity` bin, and the `scorer-parity` job in `rust.yaml`). It compiles the C++ scorer with a
+bare `c++ -std=c++23 -Isrc/lib/fuzzy/include` — one translation unit, no CMake, no Qt — and diffs
+it against `compass-search` over the harvested corpus.
+
+Only one corpus parser exists, on the Rust side: the probe scores `id<TAB>text` lines handed to it
+on stdin, so a disagreement about which `Name=` line to take cannot masquerade as a scoring
+divergence.
+
+**Its first run found six queries where the two scorers disagree**, out of 293 derived from the
+corpus. Every one is the same shape — the query matches NON-CONTIGUOUSLY, and the Rust port is more
+permissive than the C++ engine:
+
+| query | entry | C++ | Rust |
+|---|---|---|---|
+| `Ac` | Appearance | rejected | 69 |
+| `Se` | System, System Monitor, System Update, GNOME System Monitor (KDE) | rejected | 75 |
+| `B` | IBus LibBopomofo Preferences | 83 | 72 |
+| `O` | LibreOffice, LibreOffice XSLT based filters | 83 | 72 |
+| `P` | IBus LibPinyin Setup | 83 | 72 |
+| `Py` | IBus LibPinyin Setup | 67 | 61 |
+
+The control is contiguity: `Sy` ranks the System entries at 100 on both sides; `Se` (S…e) drops
+them on the C++ side alone. The other 287 queries agree exactly, which is also what rules out a
+parsing or ordering artifact.
+
+These are **not** the two divergences §8.3 and `PARITY.md` already declare — Latin Extended-A
+folding and an ordering case from upstream #946. Those are unrelated; these are all ASCII and all
+about match contiguity.
+
+**Which engine is right is not decided here.** They are recorded as declared divergences so CI is
+honest about the current state and any *seventh* fails loudly. The list pins both sides' values, so
+a declaration that stops matching — or stops occurring at all — fails too: the harness caught two
+wrong entry ids in its own list that way, on its first run.
+
+Rung 2 stays scoped as its own item.
+
+3. *Then* wire it into the VM tier, where the C++ binary now is. That step is genuinely just
+   wiring, and it was not before.
+
+Three spellings of this harness's invocation were in the repository at once — `--cpp`/`--rust` in
+the code, `--engines cpp,rust` in §8.7, and `--cpp-engine` in §12 — which is what an interface with
+no caller looks like after a while. §8.7 now matches the code.
+
 ### 8.2 Suite 1 — Raycast extension API conformance
 
 - `@vicinae/test-harness` in `src/typescript/`: drives `<List>`, `<Detail>`, `<Form>`,
@@ -677,7 +792,7 @@ cargo test --all-targets --workspace
 cargo clippy --all-targets --workspace -- -D warnings
 cargo bench --bench slas -- --save-baseline pr
 npm --prefix src/typescript test
-cargo run -p compass-testkit --bin parity -- --corpus tests/corpus --engines cpp,rust
+cargo run -p compass-testkit --bin parity -- --cpp <path> --rust <path> --corpus crates/compass-testkit/corpus/desktop-entries
 flatpak run com.vicinae.Vicinae -- doctor --check-only
 ```
 
@@ -1022,7 +1137,7 @@ things, and the corpus is only one:
 | Suite 0 needs | state |
 |---|---|
 | the desktop corpus | **115 of ~500** — partial, and growing |
-| a runner that diffs the two engines | **exists** — `compass-testkit`'s `parity` bin, and nothing has ever invoked it |
+| a runner that diffs the two engines | **exists as a file, and does not yet work** — see below |
 | a C++ engine runnable on the target | **missing** |
 
 The third is the keystone. The corpus can grow to five hundred entries and
@@ -1172,9 +1287,9 @@ Ordered by what unblocks the most:
    is gated on `needs: configure` so a wrong package name costs a minute rather than twenty, and
    ccache is mounted in from the host so a rerun that changed only the workflow is cheap.
 
-   **What is left after that is the wiring, not the build**: layer the tarball into the VM test
-   image, and have `checks.sh` run `parity --cpp-engine` from inside the session. That is a
-   separate change, and it is the point at which Suite 0 runs for the first time.
+   **What is left is NOT just wiring.** An earlier revision of this item said it was — "layer the
+   tarball into the VM test image and have `checks.sh` run `parity --cpp-engine`". That was wrong
+   in two ways, and measuring the harness rather than reading it is what showed them. See §8.1a.
 4. **Grow the corpus — a real constraint, though not the binding one.** An earlier revision of
    this item called it "Phase 1's binding constraint" and put the count at 27. Both are now wrong:
    §11.2 retracted the first (Suite 0 is differential, so item 3 above is the keystone) and the VM

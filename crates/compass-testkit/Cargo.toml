@@ -21,3 +21,9 @@ compass-core.workspace = true
 [[bin]]
 name = "parity"
 path = "src/parity.rs"
+
+# Suite 0 rung 1 (PLAN §8.1a): diffs the C++ scorer against the Rust one. Needs
+# the C++ probe built and passed with --probe; see src/lib/fuzzy/probe/main.cpp.
+[[bin]]
+name = "scorer-parity"
+path = "src/scorer_parity.rs"
