@@ -69,6 +69,38 @@ echo '=== 1b. what is on screen at the moment we press ==='
 sudo -E "$(command -v corral)" screenshot "$vm" -o "$out/at-keypress.png" || true
 
 echo
+echo '=== 1c. does an injected key reach this session at all? (the control) ==='
+# Added after the first run that got a real binding. It reported
+# `bind_outcome: granted`, a live `compass.spike.toggle -> Press <Super>space`,
+# and `activated: false` — and the evidence step above ruled out the obvious
+# culprit, since GNOME here binds the input-source switcher to
+# <Shift><Super>space and leaves plain Super+Space alone.
+#
+# That leaves two explanations which look identical in the report:
+#
+#   a. QEMU's injected key never reaches the Wayland session at all, or
+#   b. it reaches it, and the compositor does not route the grabbed shortcut
+#      to the portal client.
+#
+# Pressing Super ALONE separates them. On GNOME it opens the Activities
+# overview, which is an enormous, unmissable change to the framebuffer. If the
+# frame changes, injection works and (b) is the answer. If it does not, (a) is,
+# and no amount of portal work would have helped. ADR-0010 already listed
+# "corral's QMP key injection cannot produce Super+Space in practice" as a
+# thing that would change our mind, and noted it had never been run; this runs
+# it.
+#
+# Escape afterwards, so the overview is not left covering the screen for the
+# real keypress. Best-effort throughout: a control must never fail the run it
+# exists to explain.
+sudo -E "$(command -v corral)" screenshot "$vm" -o "$out/control-00-before-super.png" || true
+sudo -E "$(command -v corral)" key "$vm" meta_l || true
+sleep 3
+sudo -E "$(command -v corral)" screenshot "$vm" -o "$out/control-01-after-super.png" || true
+sudo -E "$(command -v corral)" key "$vm" esc || true
+sleep 2
+
+echo
 echo "=== 2. press it at QEMU's emulated keyboard ==="
 # meta_l and spc are QEMU key names, passed through unvalidated by corral, and
 # `key` presses them together. This is the step the issue flagged as expected to

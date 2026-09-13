@@ -456,6 +456,73 @@ input-source switcher to it by default, and a collision would present as
 that does not deliver. Those are different answers and the run should not have
 to guess between them.
 
+### The pre-seed worked, and the third question finally got asked
+
+First run with the seeded grant in the image:
+
+```json
+{
+  "portal": "available (interface v1)",
+  "requested_trigger": "LOGO+space",
+  "bind_outcome": "granted",
+  "bound": [{ "id": "compass.spike.toggle",
+              "trigger_description": "Press <Super>space" }],
+  "activated": false,
+  "waited_seconds": 120.0
+}
+```
+
+**`bind_outcome: granted`**, where every previous run said *the portal did not
+answer `BindShortcuts` within 30 s*. The dialog was skipped, the bind completed
+unattended, and a live binding for Super+Space existed in the session. The
+reading of gnome-control-center's source was right and the seed does what it
+was designed to do.
+
+So for the first time there was a binding for the injected key to trigger, and
+Spike A's headline question got asked rather than dodged. The answer is
+**`activated: false`** — and that is a real result now, not the "unknown" of
+every previous run.
+
+**The obvious explanation is ruled out.** `checks.sh spike-a-evidence`, which
+exists precisely for this, reported what else claims the chord:
+
+```
+switch-input-source          ['<Shift><Super>space']
+switch-input-source-backward ['']
+toggle-overview              @as []
+```
+
+GNOME on this image binds the input-source switcher to **Shift**+Super+Space
+and leaves plain Super+Space alone. There is no collision. The hypothesis this
+ADR recorded a section ago — that GNOME's own binding would eat the key — is
+wrong, and the evidence step is what proved it wrong rather than leaving it as
+a plausible story.
+
+Two explanations remain, and they are indistinguishable in the report:
+
+1. QEMU's injected key never reaches the Wayland session at all.
+2. It reaches it, and the compositor does not route the *grabbed* shortcut
+   through to the portal client.
+
+`scripts/vmtest/spike-a.sh` now presses **Super alone** before the real
+keypress, and screenshots either side. On GNOME that opens the Activities
+overview, which is an unmissable change to the framebuffer: if the frame
+changes, injection works and (2) is the answer; if it does not, (1) is, and no
+amount of portal work would have helped. This ADR's own "what would change our
+mind" already listed *"if corral's QMP key injection cannot produce Super+Space
+in practice — expected to work but not run yet"*. It has now been run once, and
+the control is what will say which half was at fault.
+
+One incidental fix the run paid for. `trigger_matches_request` reported **false**
+on a bind that granted exactly what was asked. GNOME does not return an
+accelerator, it returns a sentence: `"Press <Super>space"`. The normaliser split
+on `+`, `-` and space, so it compared `["press", "<super>space"]` against
+`["space", "super"]`. It now strips the lead-in and treats the angle brackets of
+GTK accelerator syntax as separators, with tests for both the sentence form and
+a genuine mismatch dressed in the same syntax — the second half mattering more
+than the first, since the easy fix here is one that turns a false negative into
+a false positive and reports every trigger as correct.
+
 ## Spike B's first answer
 
 Measured in the `Flatpak / build` job — a real bubblewrap sandbox on a hosted
@@ -519,6 +586,56 @@ Three caveats, none of which change the verdict:
 - **V1 is asked for, never detected**, per the `landlock` crate's own guidance
   that runtime detection makes sandboxing non-deterministic. A kernel offering
   more gives us no more. That is deliberate.
+
+## The tier finally points at the product
+
+Everything above tests the platform: does Bluefin boot, does GDM autologin, is
+there a Wayland session, a session bus, a portal, a sandbox that nests. All of
+it was necessary and none of it is the launcher, because until #29 there was no
+launcher to open — `compass-ui` was a library and nothing started a window.
+
+The `launcher` job opens one. It is a third VM job rather than a check inside
+`boot-compass`, for the same structural reason Spike A is: the only observer of
+the framebuffer is corral, on the host side of QEMU, and corral runs each
+`--check` over its own SSH connection with no way to interleave a host command.
+So the run leaves the VM up and `scripts/vmtest/launcher.sh` drives guest, host,
+guest — start the launcher over SSH, screenshot and type from the host, then ask
+the guest whether it is still alive.
+
+**What is gated is narrower than what is recorded, deliberately.** Gated: the
+launcher process starts and stays up, and the screen still passes corral's own
+blank test with the launcher open. Recorded but not gated: the three luminance
+deviations, before, open, and after typing.
+
+It is tempting to assert that opening a launcher raises the deviation, and it
+almost certainly does. But that has never been measured once, and this ADR
+already says that inventing a pixel threshold is how a tier starts flaking —
+the same reasoning that keeps `--require-paint` at corral's 0.02 rather than at
+a number we chose. Both spikes shipped gating on nothing but "produced a
+report", and both were more useful for it. Once a few runs have published
+numbers, the gate can be set from data; that is a two-line change to the driver.
+
+Two details carried over from earlier mistakes in this tier, because both cost a
+run to learn:
+
+- **The readiness predicate matches the process *name*.** The obvious
+  `pgrep -f` against something distinctive also matches the shell evaluating it,
+  so the predicate is true before the launcher has done anything — the same
+  reflexivity that made Spike A's collector time out 180 s every run. Verified
+  both directions locally: no match with nothing running, a match with a real
+  process of that name.
+- **"The process is alive" is not "a window is on screen"**, and nothing inside
+  the guest can tell the difference. That is why the host screenshot exists, and
+  why neither half is sufficient alone. The before-frame is the control: without
+  it, "the launcher drew" cannot be told from "the desktop always looked like
+  that".
+
+There is a side benefit worth stating, since it addresses a risk recorded above.
+The compass image passes `--require-paint` at **0.0254** against a 0.02
+threshold, because a GNOME desktop under llvmpipe is mostly flat dark pixels,
+and that margin is thin enough to flap. A launcher on screen is the honest way
+to widen it. The dishonest way is to move the line, which this ADR has already
+ruled out.
 
 ## What would change our mind
 

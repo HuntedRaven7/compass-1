@@ -326,3 +326,114 @@ jobs:
           path: vmtest-out/
           retention-days: 14
           if-no-files-found: warn
+
+  # The launcher, in a real GNOME session, on the target OS.
+  #
+  # Until #29 there was nothing to point this tier at: its checks answered "can
+  # compass run here" — session type, session bus, portal, sandbox — and the
+  # product itself had no window to open. This is the first job that exercises
+  # the thing the project is for.
+  #
+  # Separate from boot-compass for the same structural reason as spike-a: the
+  # only observer of the framebuffer is corral, on the host side of QEMU, and
+  # corral runs every --check over its own SSH connection with no way to
+  # interleave a host command. So this run leaves the VM up (no --rm) and
+  # scripts/vmtest/launcher.sh drives guest, host, guest.
+  #
+  # It also gives the session something to draw, which matters beyond this job:
+  # ADR-0010 records that --require-paint passes on the compass image at a
+  # deviation of 0.0254 against corral's 0.02 blank threshold, because a GNOME
+  # desktop under llvmpipe is mostly flat dark pixels. That margin is thin
+  # enough to flap. A launcher on screen is the honest way to widen it — the
+  # dishonest way, which ADR-0010 rules out, is to move the threshold.
+  launcher:
+    name: "The launcher opens in a real GNOME session"
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the Flatpak bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: packaging/vmtest
+
+      - uses: ./.github/actions/vm-host
+
+      - name: Build the test image
+        run: |
+          sudo podman build \
+            -t localhost/bluefin-compass:ci \
+            -f packaging/vmtest/Containerfile.compass \
+            packaging/vmtest
+
+      - name: Boot it, and leave it running
+        env:
+          HOME: /mnt/corral
+          TMPDIR: /mnt/corral
+        run: |
+          mkdir -p /mnt/corral
+          # No --rm and no --check: the VM has to outlive vmtest so the host can
+          # screenshot it and type at it.
+          sudo -E "$(which corral)" vmtest launcher \
+            --bootc localhost/bluefin-compass:ci \
+            --ready-marker 'COMPASS-VMTEST: graphical session up' \
+            --require-paint \
+            --video \
+            --cpu 4 --mem 8G --disk 30G \
+            --timeout 30m \
+            --artifacts "$GITHUB_WORKSPACE/vmtest-out"
+
+      - name: Open the launcher, look at it, type at it
+        env:
+          HOME: /mnt/corral
+          TMPDIR: /mnt/corral
+        # The chown's position is the point, not a detail: corral runs under
+        # sudo and creates vmtest-out as root, and the shell opens tee's file
+        # BEFORE the driver runs — so the driver chowning the directory itself,
+        # as it does, is too late. Without this the run works perfectly, prints
+        # everything, and then fails on `tee: Permission denied`. That has
+        # already cost this tier one green run.
+        run: |
+          set -o pipefail
+          sudo chown -R "$(id -un)" vmtest-out
+          scripts/vmtest/launcher.sh vmtest-out launcher 2>&1 \
+            | tee vmtest-out/launcher-driver.log
+
+      - name: What the boot reported
+        if: always()
+        run: scripts/vmtest/report.sh vmtest-out
+
+      # report.sh dumps an ANSI-expanded serial console, hundreds of lines that
+      # bury whatever came before. Everything this job exists to say therefore
+      # prints again, last. Three separate diagnoses in this tier have had to
+      # page back past that dump to find one line.
+      - name: The launcher, last so it survives the serial dump
+        if: always()
+        run: |
+          echo '=============================================================='
+          if [ -f vmtest-out/launcher-driver.log ]; then
+            cat vmtest-out/launcher-driver.log
+          else
+            echo 'no driver log — the step never ran'
+          fi
+          echo '=============================================================='
+
+      # The runner is thrown away either way, but a 30 GB disk image left behind
+      # can starve the artifact upload of space.
+      - name: Delete the VM
+        if: always()
+        env:
+          HOME: /mnt/corral
+        run: sudo -E "$(which corral)" delete launcher --force || true
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher
+          path: vmtest-out/
+          retention-days: 14
+          if-no-files-found: warn

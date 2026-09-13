@@ -214,8 +214,19 @@ impl ShortcutSpikeReport {
 #[must_use]
 pub fn triggers_look_equivalent(requested: &str, granted: &str) -> bool {
     fn normalise(value: &str) -> Vec<String> {
+        // GNOME does not return an accelerator, it returns a sentence:
+        // `trigger_description` for our Super+Space came back as
+        // "Press <Super>space". Strip the lead-in, and treat the angle
+        // brackets of GTK accelerator syntax as separators — without both,
+        // the comparison sees ["press", "<super>space"] against
+        // ["space", "super"] and reports a mismatch that is not one. That is
+        // exactly what the first successful bind reported.
+        let value = value
+            .strip_prefix("Press ")
+            .or_else(|| value.strip_prefix("press "))
+            .unwrap_or(value);
         let mut parts: Vec<String> = value
-            .split(['+', '-', ' '])
+            .split(['+', '-', ' ', '<', '>'])
             .filter(|part| !part.is_empty())
             .map(|part| match part.to_ascii_lowercase().as_str() {
                 // The names the two sides are most likely to disagree on.
@@ -397,6 +408,29 @@ mod tests {
         assert!(triggers_look_equivalent("SUPER+space", "Super+Space"));
         assert!(triggers_look_equivalent("SUPER+space", "Meta+Space"));
         assert!(triggers_look_equivalent("CTRL+ALT+t", "Control+Alt+T"));
+    }
+
+    #[test]
+    fn gnomes_sentence_form_is_the_same_chord() {
+        // Measured, not imagined. The first bind that GNOME actually granted
+        // came back as `trigger_description: "Press <Super>space"` against a
+        // requested "LOGO+space", and the comparison called it a mismatch —
+        // reporting "granted the requested trigger: NO" on a run where the
+        // trigger was exactly what we asked for.
+        assert!(triggers_look_equivalent("LOGO+space", "Press <Super>space"));
+        assert!(triggers_look_equivalent("SUPER+space", "<Super>space"));
+        assert!(triggers_look_equivalent(
+            "CTRL+ALT+t",
+            "Press <Control><Alt>T"
+        ));
+
+        // And it must still catch a real mismatch dressed in the same syntax,
+        // or the fix has just replaced a false negative with a false positive.
+        assert!(!triggers_look_equivalent("LOGO+space", "Press <Super>d"));
+        assert!(!triggers_look_equivalent(
+            "LOGO+space",
+            "Press <Shift><Super>space"
+        ));
     }
 
     #[test]

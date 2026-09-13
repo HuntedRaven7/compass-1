@@ -1028,9 +1028,18 @@ Ordered by what unblocks the most:
    something crashed at load. One dnf transaction, one build job of roughly the Arch job's cost,
    and no toolchain compiled from source anywhere.
 
-   Two things to check when it is written, neither expected to bite: Fedora splits the private
-   headers into `qt6-qtbase-private-devel` where Arch ships them in `qt6-base`, and the C++ engine
-   requires Qt ≥ 6.9 while Bluefin 44 carries 6.10.
+   The dependency side has since been checked rather than assumed, and it is smaller than the Arch
+   list suggests. `qt6-qtbase-private-devel` is the package carrying the private headers Arch ships
+   inside `qt6-base`, and it exists in Fedora 44 at **Qt 6.11.2** — comfortably past the `Qt6 6.9`
+   the top-level `CMakeLists.txt` requires. (An earlier revision of this item said 6.10; that was
+   wrong, and 6.11.2 is what Fedora 44 actually has.)
+
+   The two dependencies that looked like they might block it do not: `qtkeychain` and
+   `layer-shell-qt` are **vendored through `FetchContent`** unless `USE_SYSTEM_QT_KEYCHAIN` /
+   `USE_SYSTEM_LAYER_SHELL` are set, and neither is on by default. They appear in
+   `scripts/runners/arch/install-deps.sh` because Arch *can* supply them, not because the build
+   needs a distro to. The one consequence to remember is that the build container therefore needs
+   network access, which a runner has.
 
    The AppImage path stays disabled either way. Nothing here needs it.
 4. **Widen the parity port.** Both halves of this item turned out to be nearly done when looked at,

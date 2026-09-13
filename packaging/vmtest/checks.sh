@@ -20,6 +20,8 @@ REPORT=/tmp/compass-doctor.json
 SPIKE_OUT=/tmp/compass-spike-a.json
 SPIKE_ERR=/tmp/compass-spike-a.err
 SPIKE_DONE=/tmp/compass-spike-a.done
+UI_ERR=/tmp/compass-ui.err
+UI_DONE=/tmp/compass-ui.done
 
 # uid of the autologin user. Everything about a session is addressed by it.
 uid() { id -u "$SESSION_USER"; }
@@ -261,6 +263,82 @@ PY
     as_session gsettings get org.gnome.desktop.wm.keybindings switch-input-source 2>/dev/null || true
     as_session gsettings get org.gnome.desktop.wm.keybindings switch-input-source-backward 2>/dev/null || true
     as_session gsettings get org.gnome.shell.keybindings toggle-overview 2>/dev/null || true
+    ;;
+
+  # Open the launcher in the session and leave it open.
+  #
+  # This is the first check that exercises the product rather than the platform
+  # under it. Everything above answers "can compass run here"; this answers
+  # "does compass draw a launcher here", which is the question the tier was
+  # built for and could not ask until there was a launcher to open.
+  #
+  # Same setsid + sentinel shape as spike-a-start, and for the same reasons:
+  # without detaching and redirecting all three fds, ssh waits for the channel
+  # and the check never returns; and a sentinel file carries the exit status
+  # without the `pgrep -f` self-match that made an earlier waiter here time out
+  # every single time.
+  #
+  # Unlike the spike, this process is meant to *stay running* — the sentinel
+  # appearing at all is the failure, not the success.
+  launcher-start)
+    u="$(uid)"
+    : > "$UI_ERR"
+    rm -f "$UI_DONE"
+
+    setsid bash -c '
+      runuser -u "$1" -- env \
+        XDG_RUNTIME_DIR="/run/user/$2" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$2/bus" \
+        WAYLAND_DISPLAY="$3" \
+        XDG_SESSION_TYPE=wayland \
+        flatpak run --installation="$4" "$5" ui \
+        > "$6" 2>&1
+      echo "$?" > "$7"
+    ' _ "$SESSION_USER" "$u" "$(wayland_display)" "$INSTALLATION" "$APP" \
+      "$UI_ERR" "$UI_DONE" \
+      < /dev/null >> "$UI_ERR" 2>&1 &
+
+    # Nothing inside the guest can observe "has painted" — ADR-0010 says so and
+    # it is still true: the framebuffer's only observer is corral, on the far
+    # side of QEMU. So what is waited on here is the weaker but real thing, the
+    # app process existing under the session user. A launcher that dies on
+    # startup — the likeliest failure, and one that would otherwise surface as
+    # an inscrutable unchanged frame — fails here instead, with its own output
+    # attached. The host screenshot is what closes the gap between "the process
+    # is alive" and "a launcher is on screen"; neither half is sufficient.
+    #
+    # `pgrep -u ... -x` matches the process *name*, deliberately, not `-f`
+    # against the command line: an `-f` pattern distinctive enough to find this
+    # process is also present in the command line of the shell doing the
+    # matching, so the predicate matches itself and is true before the launcher
+    # has done anything at all. That exact bug cost an earlier waiter here 180
+    # seconds a run, and it presents as a timeout rather than as a mistake.
+    wait_for "the launcher process to appear, or exit" 90 \
+      bash -c 'pgrep -u "$1" -x vicinae >/dev/null || [ -f "$2" ]' \
+      _ "$SESSION_USER" "$UI_DONE"
+
+    if [ -f "$UI_DONE" ]; then
+      echo "the launcher exited $(cat "$UI_DONE") instead of staying open; its output follows" >&2
+      cat "$UI_ERR" >&2
+      exit 1
+    fi
+    echo "the launcher is running; output so far:"
+    cat "$UI_ERR"
+    ;;
+
+  # Assert the launcher is still up, and say what it printed.
+  #
+  # Run after the host has screenshotted and typed at it. A launcher that
+  # crashed on the first keystroke is a real bug and would otherwise be visible
+  # only as two screenshots that happen to look similar.
+  launcher-status)
+    if [ -f "$UI_DONE" ]; then
+      echo "the launcher exited $(cat "$UI_DONE")" >&2
+      cat "$UI_ERR" >&2
+      exit 1
+    fi
+    echo "the launcher is still running"
+    cat "$UI_ERR"
     ;;
 
   *)
