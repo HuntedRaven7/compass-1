@@ -383,6 +383,79 @@ One incidental finding worth keeping: the trigger went out as `LOGO+space`, not
 `logo`, `super`, `meta` and `win` onto one another. Had it not, a successful
 bind would have been reported as a mismatch.
 
+### What blocks Spike A is a dialog, and the dialog is avoidable
+
+The previous section called the consent-dialog explanation "the likely answer,
+not yet proven", because a portal backend simply failing to respond in a
+software-rendered session looks identical from the client. It is proven now,
+from the source of all three components rather than from the symptom, and the
+same reading produced the way past it.
+
+1. **`xdg-desktop-portal`'s frontend checks no permission.**
+   `desktop-portal/global-shortcuts.c` includes `xdp-permissions.h` and then
+   never calls it. There is no portal-level GlobalShortcuts permission, so
+   there is nothing to pre-seed at the layer where one would look first.
+2. **`xdg-desktop-portal-gnome` waits forever, on purpose.**
+   `handle_bind_shortcuts` forwards straight to
+   `org.gnome.Settings.GlobalShortcutsProvider` and completes only from the
+   reply callback, on a proxy built with
+   `g_dbus_proxy_set_default_timeout (settings, G_MAXINT)`. No timeout will
+   ever fire, because a human may take arbitrarily long at a dialog. "No answer
+   in 30 s" is the designed behaviour when nobody answers — not slowness, and
+   not a fault. (The proxy also uses `G_DBUS_PROXY_FLAGS_NONE`, so Settings is
+   D-Bus-activated on demand; "Settings was not running" was never it either.)
+3. **`gnome-control-center` skips the dialog for an already-stored shortcut.**
+   `cc_global_shortcut_dialog_present` opens with
+
+   ```c
+   if (!self->has_new_shortcuts) { emit_done (self, TRUE); return; }
+   ```
+
+   and `has_new_shortcuts` is set by `app_shortcuts_to_settings_variant`, which
+   looks each requested shortcut up in what is already stored **by id alone**.
+   Every id already present means nothing is new, which means no dialog — and
+   that path still calls `store` and returns the full set, so `BindShortcuts`
+   receives a proper reply rather than an empty one.
+
+"Already stored" is `cc_keyboard_manager_get_global_shortcuts`, which is plain
+GSettings on a relocatable schema:
+
+| | |
+|---|---|
+| schema | `org.gnome.settings-daemon.global-shortcuts.application` |
+| path | `/org/gnome/settings-daemon/global-shortcuts/<app_id>/` |
+| key | `shortcuts`, type `a(sa{sv})` |
+
+That is dconf, and dconf is image content. `packaging/vmtest/compass-shortcuts.dconf`
+seeds the grant and the Containerfile compiles it into a **system** database:
+`/var/home` is machine state on a bootc image, so a user database written at
+build time is the kind of thing that works until it quietly does not. A system
+db is not a lock, either — when the provider stores the grant it writes to the
+user db, which shadows ours, exactly as it would for a human who clicked.
+
+Two details that are easy to get wrong and cost nothing to get right:
+
+- **The stored accelerator is not the portal's spelling.** The provider writes
+  what `combo_get_accelerator` produces — GTK syntax, `<Super>space` — while
+  the portal wire format for the same key is `LOGO+space`. The seed uses the
+  former, because it is the shell that consumes it.
+- **The id couples two files that are nowhere near each other.** The bypass
+  keys off the id, so renaming `--id` without editing the dconf seed
+  reinstates the dialog, and the resulting hang reads as a portal regression
+  rather than as a typo. A unit test in `crates/vicinae/src/cli.rs` asserts the
+  CLI default appears in the seed file, so that rename fails in tier 1 instead
+  of thirty minutes into a VM run.
+
+**This does not prove the keypress arrives**, and the pre-seed is not the
+answer to Spike A — it is what finally lets the question be asked. Two things
+are still open and the job now gathers evidence for both before the spike runs
+(`checks.sh spike-a-evidence`): whether the seed is visible to the session at
+all, and whether something else already owns Super+Space. GNOME binds the
+input-source switcher to it by default, and a collision would present as
+`activated: false` — indistinguishable, from inside the spike, from a portal
+that does not deliver. Those are different answers and the run should not have
+to guess between them.
+
 ## Spike B's first answer
 
 Measured in the `Flatpak / build` job — a real bubblewrap sandbox on a hosted
@@ -412,12 +485,30 @@ retired.
 
 Three caveats, none of which change the verdict:
 
-- **This is one kernel, not the target's.** `6.17.0-1022-azure` is the hosted
-  runner's. The VM job runs the same spike on Bluefin's kernel, and Landlock's
-  ABI is a kernel property, so the two are not interchangeable — the second
-  measurement is the one that speaks about the shipping platform.
+- ~~**This is one kernel, not the target's.**~~ **Settled by the VM run.** The
+  first measurement was on the hosted runner's `6.17.0-1022-azure`, and since
+  Landlock's ABI is a kernel property that said nothing about the platform we
+  ship to. The compass VM job has now run the same spike on **Bluefin's own
+  `7.1.8-200.fc44.x86_64`**, inside the real Flatpak, in a real GNOME session,
+  and returned the same verdict with the same four rows green:
+
+  ```
+  inside a Flatpak:      yes
+  kernel:                7.1.8-200.fc44.x86_64
+  Landlock (asked for): V1
+    ruleset:             fully enforced
+    reads inside allow:  yes           (control: must stay yes)
+    reads outside deny:  yes           (the assertion)
+  seccomp filter:        installed
+    blocked call denied: yes           (the assertion)
+    other calls allowed: yes           (the control)
+  ```
+
+  Two kernels, two Flatpak sandboxes, one answer. This is the row that lets
+  Phase 4 be designed rather than guessed at.
 - **`seccomp_mode` came back `null` in the JSON**, despite the filter
-  demonstrably working. The field is read from `/proc/self/status`, which the
+  demonstrably working. (The VM check runs the human-readable form, which does
+  not carry the field, so the VM run neither confirms nor contradicts this.) The field is read from `/proc/self/status`, which the
   Flatpak sandbox evidently does not expose the way an unsandboxed process sees
   it. So the kernel's own account of the filter — the field that caught the
   `SYS_mkdir`/`SYS_mkdirat` bug during development — is *unavailable in exactly

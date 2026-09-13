@@ -1,0 +1,31 @@
+# A GlobalShortcuts grant for the Compass Flatpak, pre-seeded so that
+# `BindShortcuts` completes without a human at the consent dialog.
+#
+# Compiled into /etc/dconf/db/compass by `dconf update` at image build time.
+# See Containerfile.compass for why this works and why it is a system database
+# rather than a user one.
+#
+# The bypass in gnome-control-center keys off the shortcut *id* alone — a
+# stored id means "not new" means no dialog. The accelerator below is therefore
+# not what makes the bind succeed; it is what the bind will hand to the shell,
+# so it is written in the syntax the provider itself would store
+# (`combo_get_accelerator`, i.e. GTK accelerator syntax) rather than the
+# portal's wire spelling `LOGO+space`. Those two are not the same string and
+# the difference is easy to miss.
+#
+# The id must match `vicinae spike global-shortcut --id`, which defaults to
+# `compass.spike.toggle`. A rename there without a change here reinstates the
+# dialog and Spike A goes back to hanging — the failure would look like a
+# regression in the portal rather than a typo, so they are named together in
+# the spike's own CLI test.
+
+[org/gnome/settings-daemon/global-shortcuts/com.vicinae.Vicinae]
+shortcuts=[('compass.spike.toggle', {'description': <'Toggle the Compass launcher'>, 'shortcuts': <['<Super>space']>})]
+
+# Not required for the bypass — `cc_keyboard_manager_get_global_shortcuts`
+# reads the per-app path directly and never consults this list. It is set so
+# the seeded state matches what a real grant leaves behind, since the Settings
+# UI enumerates applications from here and a half-seeded state is the kind of
+# thing that behaves differently from the real one for no visible reason.
+[org/gnome/settings-daemon/global-shortcuts]
+applications=['com.vicinae.Vicinae']

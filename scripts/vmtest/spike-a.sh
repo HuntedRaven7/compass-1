@@ -49,6 +49,14 @@ PY
 
 guest() { "${ssh_argv[@]}" "$@"; }
 
+echo "=== 0. the state the spike is about to run against ==="
+# Before the spike, not after: if the bind hangs, the run's whole value is in
+# knowing whether the pre-seeded grant was actually visible to the session, and
+# a step that runs afterwards would be waiting behind the hang to say so.
+# Best-effort — evidence must never be what fails the run.
+guest "$checks" spike-a-evidence || true
+
+echo
 echo "=== 1. bind the shortcut in the guest ==="
 guest "$checks" spike-a-start "$trigger"
 

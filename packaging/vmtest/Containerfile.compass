@@ -121,6 +121,64 @@ RUN chmod 0755 /usr/libexec/compass-vmtest/wait-graphical.sh && \
 # Enabling it is a test-image change and nothing more — it is off in what ships.
 RUN systemctl enable sshd.service
 
+# ── the GlobalShortcuts consent, pre-seeded ──────────────────────────────────
+#
+# Spike A's headline question — does a keypress reach us? — has been UNKNOWN
+# rather than answered, and not because injecting a key is hard. `BindShortcuts`
+# never returned, so no binding ever existed for a key to trigger.
+#
+# Reading the three components settles why, and how to get past it:
+#
+#   1. xdg-desktop-portal's frontend includes xdp-permissions.h and never calls
+#      it. There is no portal-level permission for GlobalShortcuts, so there is
+#      nothing to pre-seed there.
+#   2. xdg-desktop-portal-gnome forwards straight to
+#      org.gnome.Settings.GlobalShortcutsProvider with the proxy timeout set to
+#      G_MAXINT — no timeout, deliberately, because a human may take arbitrarily
+#      long at a dialog. "No answer in 30s" is the designed behaviour when
+#      nobody answers, not a slow software renderer.
+#   3. gnome-control-center's cc_global_shortcut_dialog_present opens with
+#
+#          if (!self->has_new_shortcuts) { emit_done (self, TRUE); return; }
+#
+#      and has_new_shortcuts is false when every requested shortcut id is
+#      already stored for the app. That path stores and returns the full set,
+#      so BindShortcuts gets a proper reply — not an empty one.
+#
+# "Already stored" is GSettings on a relocatable schema, which means dconf,
+# which means image content. Seeding the id the spike asks for is therefore
+# enough to make the bind complete unattended.
+#
+# The keyfile is written as a system database rather than into the user's
+# ~/.config/dconf/user: /var/home is machine state on a bootc image and is
+# seeded at install time, so a user database written here is the kind of thing
+# that works until it silently does not. A system db is also not a lock — when
+# the provider stores the grant it writes to the user db, which shadows this
+# one, exactly as it would for a human who clicked the dialog.
+#
+# This is a test-image change. Nothing ships pre-granting itself a hotkey.
+#
+# The two assertions after `dconf update` are there because it is not loud
+# enough on its own: a profile that never referenced our database, or a keyfile
+# it declined to compile, both leave a build that succeeded and a guest with no
+# grant — which presents as Spike A hanging exactly as it did before, thirty
+# minutes later. The grep reads a binary GVDB file and is only checking that the
+# app id survived into it; whether the *value* is right is answered in the guest
+# by `checks.sh spike-a-evidence`, which reads it the way GNOME will.
+COPY compass-shortcuts.dconf /etc/dconf/db/compass.d/10-compass-shortcuts
+RUN set -eux; \
+    mkdir -p /etc/dconf/profile; \
+    if [ -f /etc/dconf/profile/user ]; then \
+      grep -qx 'system-db:compass' /etc/dconf/profile/user \
+        || printf 'system-db:compass\n' >> /etc/dconf/profile/user; \
+    else \
+      printf 'user-db:user\nsystem-db:compass\n' > /etc/dconf/profile/user; \
+    fi; \
+    cat /etc/dconf/profile/user; \
+    dconf update; \
+    test -f /etc/dconf/db/compass; \
+    grep -q com.vicinae.Vicinae /etc/dconf/db/compass
+
 # ── the assertions ───────────────────────────────────────────────────────────
 #
 # Baked in rather than pushed over SSH so that they are a real file in the

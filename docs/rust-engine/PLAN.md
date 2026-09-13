@@ -936,32 +936,56 @@ keyboard injection for the hotkey. What they found is §11.1.
 
 ### 11.1 What the spikes measured
 
-**Spike A — the GlobalShortcuts portal.** Two of its three questions are answered:
+**Spike A — the GlobalShortcuts portal.** Two of its three questions are answered, and the third is
+now askable rather than answered:
 
 | Question | Answer |
 |---|---|
 | Is the portal there? | **Yes**, interface v1. The premise of `compass-portals` holds on the target. |
-| Is binding permitted unattended? | **No.** `BindShortcuts` did not return within 30s. |
-| Does a keypress reach us? | **Unknown** — and this run says nothing about it. |
+| Is binding permitted unattended? | **Not by default** — but the consent can be pre-seeded, and now is. |
+| Does a keypress reach us? | **Still unknown**, and the next run is the first that can say. |
 
-That third row is easy to misread. `activated: false` is not evidence about the keyboard: there was
-no binding for `meta_l spc` to trigger. Nothing measured so far says the hotkey does not work.
+That third row is easy to misread. `activated: false` was never evidence about the keyboard: there
+was no binding for `meta_l spc` to trigger. Nothing measured so far says the hotkey does not work.
 
-The likely cause is `xdg-desktop-portal-gnome` showing a consent dialog no CI can click — **likely,
-not proven**, since a backend failing to respond in a software-rendered session is indistinguishable
-from the client side. The run captures the framebuffer at the moment of the keypress for a human to
-settle it.
+The second row was "No" and is now qualified, because the cause has been traced through all three
+components rather than inferred from the symptom (ADR-0010). The portal frontend checks no
+permission at all; `xdg-desktop-portal-gnome` forwards to gnome-control-center on a proxy whose
+D-Bus timeout is `G_MAXINT`, so no timeout ever fires and "no answer in 30 s" is the designed
+behaviour when nobody answers; and gnome-control-center skips its dialog entirely when every
+requested shortcut *id* is already stored, which is GSettings on a relocatable schema — dconf, and
+therefore image content. `packaging/vmtest/compass-shortcuts.dconf` seeds it.
 
-The consequence for the plan: **what blocks Spike A is consent, not key injection.** Phase 1's gate
-says the launcher "binds Super+Space via the portal", and that step cannot currently be demonstrated
-unattended. Either the permission is pre-seeded into the test image, or Phase 1's gate is verified
-by a human on a real machine and CI checks the rest.
+The consequence for the plan has changed accordingly. It previously read "either the permission is
+pre-seeded into the test image, or Phase 1's gate is verified by a human on a real machine". The
+first branch is taken: **Phase 1's gate can be demonstrated unattended**, subject to the one thing
+the pre-seed does not settle — whether the compositor actually routes Super+Space to us, or to
+GNOME's own input-source switcher, which owns that combination by default. The job now records
+both the seeded state and the colliding bindings before the spike runs, because from inside the
+spike a collision and a portal that does not deliver look identical.
 
-**Spike B — sandbox nesting.** Whether Landlock and seccomp confine a process *inside* the Flatpak,
-which Phase 4's extension host is designed on. It runs in the Flatpak CI job — a real bwrap sandbox,
-answering in three minutes — and again in the VM on Bluefin's own kernel, because Landlock's ABI is
-a kernel property. Every assertion is paired with a control, so a boundary that denies everything is
-not mistaken for one that works, nor one that denies nothing for a sandbox at all.
+**Spike B — sandbox nesting.** Answered, and the answer is yes to both:
+
+```
+Landlock (asked for): V1   ruleset: fully enforced
+  reads inside allow:  yes (control)    reads outside deny: yes (assertion)
+seccomp filter:        installed
+  blocked call denied: yes (assertion)  other calls allowed: yes (control)
+```
+
+Measured inside a real bubblewrap sandbox on kernel `6.17.0-1022-azure`. Every assertion is paired
+with a control, so a boundary that denies everything is not mistaken for one that works, nor one
+that denies nothing for a sandbox at all — and here both halves passed on both mechanisms. **Phase
+4's extension host may be designed on Landlock and seccomp**; the risk §6 flagged is retired.
+
+It has since run again in the VM on **Bluefin's own kernel, `7.1.8-200.fc44.x86_64`**, inside the
+real Flatpak in a real GNOME session, with the same verdict and the same four rows green. Two
+kernels, two sandboxes, one answer.
+
+Two caveats still travel with it: the Landlock ABI is requested at V1 and never detected,
+deliberately, since detection makes a security boundary non-deterministic across machines; and
+`seccomp_mode` read back `null` inside the Flatpak although the filter provably worked, which means
+`/proc/self/status` is not a usable self-check for confinement in the environment we ship into.
 
 ## 12. Immediate next steps
 
@@ -983,19 +1007,52 @@ Ordered by what unblocks the most:
 
 1. **Wire the UI into the binary** (#4). A window that opens, a list that moves, and a selection
    that actually launches via `compass-platform`. Everything in Phase 1's gate is downstream.
-2. **Settle Spike A's consent question** (§11.1). Look at the captured frame; if it is a dialog,
-   find whether the grant can be pre-seeded into the test image. Two of Spike A's three questions
-   stay unanswerable until it is.
+2. ~~**Settle Spike A's consent question**~~ — done (§11.1, ADR-0010). Traced through all three
+   components and pre-seeded; what remains is to read the first run that gets a binding, and in
+   particular whether Super+Space survives GNOME's own claim on it.
 3. **Capture the C++ baseline on the target.** Today's parity suites compare the port against *our
-   reading* of the C++ source; this compares it against the C++ behaviour on the real OS. Note the
-   prerequisite nobody has costed yet: getting a Qt6 build into the VM, which the disabled AppImage
-   path used to provide.
-4. **Widen the parity port** — `compass-core`'s index against the harvested corpus, and the
-   remaining Catch2 ordering cases into `compass-search`.
+   reading* of the C++ source; this compares it against the C++ behaviour on the real OS.
+
+   The prerequisite — getting a Qt6 build into the VM — is now costed, and it is much cheaper than
+   this item assumed. The assumption was that it meant reviving the AppImage path, whose build-env
+   image compiles GCC 15.2 and Qt 6.10 from source and takes hours. **That source build is
+   AppImage's portability requirement, not the engine's**: `build-linux.yaml` already builds the
+   whole C++ engine against distro Qt, in an `archlinux:latest` container, in about two minutes,
+   from a dep list of a dozen packages.
+
+   So the route is to build the C++ engine **inside the Bluefin image itself** — it is a container
+   image, so `podman run` it, `dnf install` the Qt6 devel packages and build there — and layer the
+   resulting binary into the test image. Building in the exact image the VM boots is not fussiness:
+   `src/server/CMakeLists.txt` links `Qt6::GuiPrivate`, so the binary is bound to a specific Qt
+   build, and a `fedora:44` container would drift from a pinned Bluefin tag with no warning until
+   something crashed at load. One dnf transaction, one build job of roughly the Arch job's cost,
+   and no toolchain compiled from source anywhere.
+
+   Two things to check when it is written, neither expected to bite: Fedora splits the private
+   headers into `qt6-qtbase-private-devel` where Arch ships them in `qt6-base`, and the C++ engine
+   requires Qt ≥ 6.9 while Bluefin 44 carries 6.10.
+
+   The AppImage path stays disabled either way. Nothing here needs it.
+4. **Widen the parity port.** Both halves of this item turned out to be nearly done when looked at,
+   so what is left is now stated precisely rather than as a direction:
+
+   - *`compass-core`'s index against the harvested corpus* — the corpus is exercised, but its floor
+     was `>= 19` against a corpus of 27, which is exactly the synthetic count: the eight entries
+     harvested from a real host were added later and the guard was never raised, so all eight could
+     have been deleted silently. The floors are now per-provenance and the harvested set has its
+     own test. `Provenance` had been defined in the testkit and used by no consumer at all.
+   - *The remaining Catch2 ordering cases in `compass-search`* — all 21 C++ `TEST_CASE`s are ported
+     across 26 tests. Two assertions remain deferred, and both are **declared divergences with
+     pinning tests**, not gaps: Latin Extended-A folding (nucleo does not fold `Ł`/`ź`) and one
+     ordering case from upstream issue #946. Neither can be closed without shipping our own fold
+     table or reproducing fzf's bonus constants, so neither is a to-do — they are decisions.
+
+   What genuinely remains under this heading is the corpus itself: 8 harvested entries from one
+   host is a thin sample, and `scripts/harvest-desktop-corpus.sh` is how it grows.
 5. **Promote the VM tier to the merge queue** once it has been stable for a couple of weeks
    (ADR-0010). It has three consecutive green runs; that is not two weeks.
 
-Not blocking anything, but worth doing while it is cheap: the two corral bugs this tier found on
-locally built bootc images — `podman create` on a CMD-less image, and the layer builder pulling a
-`localhost/` reference its own disk builder guards against — are both small upstream fixes and
-neither has been filed.
+Both corral bugs this tier found on locally built bootc images are now filed upstream:
+`podman create` on a CMD-less image (tuna-os/corral#303) and the layer builder pulling a
+`localhost/` reference its own disk builder already guards against (tuna-os/corral#304). Our
+workarounds stay until they are fixed; neither is blocking.

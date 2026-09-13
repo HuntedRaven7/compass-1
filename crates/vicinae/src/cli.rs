@@ -245,6 +245,27 @@ mod tests {
     }
 
     #[test]
+    fn the_seeded_grant_names_the_spike_default_id() {
+        // The VM image pre-seeds a GlobalShortcuts grant into dconf so that
+        // `BindShortcuts` completes without a human at GNOME's consent dialog.
+        // That bypass keys off the shortcut *id* alone: gnome-control-center
+        // shows the dialog for any id it has not stored, so a rename here and
+        // not there silently reinstates the dialog — and Spike A goes back to
+        // hanging for its full timeout, which reads as a portal regression
+        // rather than as a typo. Cheap to couple, expensive to debug.
+        let seed = include_str!("../../../packaging/vmtest/compass-shortcuts.dconf");
+        let Command::Spike(Spike::GlobalShortcut { id, .. }) =
+            parse(&["vicinae", "spike", "global-shortcut"]).command
+        else {
+            panic!("expected the global-shortcut spike");
+        };
+        assert!(
+            seed.contains(&format!("'{id}'")),
+            "the seeded dconf grant does not mention the spike's default id {id:?}",
+        );
+    }
+
+    #[test]
     fn the_sandbox_spike_parses() {
         let Command::Spike(Spike::Sandbox { json }) =
             parse(&["vicinae", "spike", "sandbox", "--json"]).command

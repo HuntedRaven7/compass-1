@@ -394,7 +394,26 @@ fn an_action_without_a_name_or_exec_is_skipped() {
 fn the_whole_desktop_entry_corpus_indexes_without_choking() {
     let dir = tempfile::tempdir().unwrap();
     let fixtures = corpus::desktop_entries();
-    assert!(fixtures.len() >= 19, "corpus shrank: {}", fixtures.len());
+
+    // Counted by provenance, not in total, and this is not pedantry: the guard
+    // used to read `>= 19`, which is exactly the number of synthetic fixtures.
+    // Eight entries harvested from a real host were added later and the guard
+    // was never raised — so all eight could have been deleted and this test
+    // would still have passed. The harvested ones are the ones that catch what
+    // nobody thought to write down, so they get their own floor.
+    let real = fixtures
+        .iter()
+        .filter(|f| f.provenance == corpus::Provenance::Real)
+        .count();
+    let synthetic = fixtures.len() - real;
+    assert!(
+        real >= 8,
+        "the harvested corpus shrank: {real} real fixtures, expected at least 8"
+    );
+    assert!(
+        synthetic >= 19,
+        "the synthetic corpus shrank: {synthetic} fixtures, expected at least 19"
+    );
 
     for fixture in &fixtures {
         std::fs::write(
@@ -438,6 +457,72 @@ fn the_whole_desktop_entry_corpus_indexes_without_choking() {
 
     // CRLF line endings are just line endings.
     assert!(index.get("crlf.desktop").is_some());
+}
+
+/// The harvested entries are real desktop files from a real host, and this is
+/// what they are for: none of them was written to make a point, so what they
+/// exercise is whatever a distribution actually ships.
+///
+/// The assertion that earns its place is `NoDisplay`. Six of the eight set it
+/// true and are correctly hidden; `host--libreoffice-startcenter` sets it
+/// **explicitly false**, which is the case that separates reading the key's
+/// *value* from merely noticing the key is *present*. A parser with that bug
+/// hides LibreOffice — the most visible application in the set — and passes
+/// every synthetic test, because nobody writing a fixture by hand thinks to
+/// write `NoDisplay=false`.
+#[test]
+fn the_harvested_entries_index_and_no_display_is_read_as_a_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let harvested: Vec<_> = corpus::desktop_entries()
+        .into_iter()
+        .filter(|f| f.provenance == corpus::Provenance::Real)
+        .collect();
+    assert_eq!(harvested.len(), 8, "the harvested set changed size");
+
+    for fixture in &harvested {
+        std::fs::write(
+            dir.path().join(format!("{}.desktop", fixture.id)),
+            &fixture.bytes,
+        )
+        .expect("stage fixture");
+    }
+
+    let index = builder().dir(dir.path()).build();
+
+    // Every one of them is Type=Application with an Exec, so none may be
+    // malformed, unreadable, or dropped without a reason.
+    assert_eq!(
+        index.skipped().len() + index.applications().count(),
+        harvested.len(),
+        "a harvested entry was dropped silently"
+    );
+    for skip in index.skipped() {
+        assert!(
+            matches!(skip.reason, SkipReason::NotShown),
+            "{}: harvested entries are all valid applications, so NotShown is \
+             the only legitimate reason to skip one; got {}",
+            skip.path.display(),
+            skip.reason
+        );
+    }
+
+    // NoDisplay=false is not NoDisplay. This is the whole point of the test, so
+    // it is asserted before the aggregate count: a parser with the presence bug
+    // fails both, and the count alone ("expected 6, got 7") would send whoever
+    // reads it looking in the wrong place.
+    assert!(
+        index.get("host--libreoffice-startcenter.desktop").is_some(),
+        "NoDisplay=false must be read as false, not as \"the key is present\""
+    );
+    // And one with no NoDisplay key at all, for the third case.
+    assert!(index.get("host--vim.desktop").is_some());
+
+    // NoDisplay=true on the other six, and they are hidden.
+    assert_eq!(
+        index.skipped().len(),
+        6,
+        "expected the six NoDisplay=true entries to be hidden"
+    );
 }
 
 #[test]

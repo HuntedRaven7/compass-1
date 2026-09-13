@@ -214,6 +214,55 @@ PY
       || { echo 'the spike produced no valid JSON report' >&2; exit 1; }
     ;;
 
+  # Evidence for Spike A, gathered before the spike runs so that a hang has
+  # something to be read against. Nothing here asserts: each line is a fact the
+  # report needs in order to be interpretable, and a missing fact is itself
+  # worth seeing.
+  #
+  # Two questions, and they fail in ways that look identical from the client:
+  #
+  #   1. Did the pre-seed land? If the system dconf database did not compile,
+  #      or the profile does not reference it, the grant is simply absent and
+  #      BindShortcuts hangs at the consent dialog exactly as it did before.
+  #      Read as the session user, through the same dconf profile GNOME uses —
+  #      reading the keyfile in /etc would only prove we wrote a file.
+  #   2. Does Super+Space already belong to something else? GNOME binds it to
+  #      the input-source switcher by default. A collision does not stop the
+  #      bind; it means the compositor may route the key elsewhere, so
+  #      "activated: false" would mean "someone else got the key" rather than
+  #      "the portal does not deliver". Those are different answers and the
+  #      spike cannot tell them apart on its own.
+  spike-a-evidence)
+    u="$(uid)"
+    as_session() {
+      runuser -u "$SESSION_USER" -- env \
+        XDG_RUNTIME_DIR="/run/user/$u" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$u/bus" \
+        "$@"
+    }
+
+    echo '--- dconf profile ---'
+    cat /etc/dconf/profile/user 2>/dev/null || echo '(no profile — the seed cannot be visible)'
+    echo '--- compiled system database ---'
+    ls -l /etc/dconf/db/compass 2>/dev/null || echo '(not compiled — dconf update did not run or found nothing)'
+
+    echo '--- the seeded grant, as the session user sees it ---'
+    as_session dconf read \
+      "/org/gnome/settings-daemon/global-shortcuts/$APP/shortcuts" \
+      || echo '(unreadable)'
+    as_session dconf read \
+      /org/gnome/settings-daemon/global-shortcuts/applications || true
+
+    echo '--- who else wants Super+Space ---'
+    # Not exhaustive and not meant to be: these are the two schemas whose
+    # defaults actually collide on this combination. Anything else that claims
+    # it will show up as a keypress that never arrives, which is why the raw
+    # spike report stays the primary evidence.
+    as_session gsettings get org.gnome.desktop.wm.keybindings switch-input-source 2>/dev/null || true
+    as_session gsettings get org.gnome.desktop.wm.keybindings switch-input-source-backward 2>/dev/null || true
+    as_session gsettings get org.gnome.shell.keybindings toggle-overview 2>/dev/null || true
+    ;;
+
   *)
     echo "unknown subcommand: $1" >&2
     exit 64
