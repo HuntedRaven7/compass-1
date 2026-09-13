@@ -146,6 +146,11 @@ jobs:
       - name: Build the test image
         run: |
           ls -lh packaging/vmtest/com.vicinae.Vicinae.flatpak
+          # The Containerfile COPYs the harvester, so it has to be in the
+          # build context. Staged here rather than duplicated in the image:
+          # scripts/harvest-desktop-corpus.sh is the one definition of a
+          # harvest, and it is the copy tier 1 shellchecks.
+          cp scripts/harvest-desktop-corpus.sh packaging/vmtest/
           sudo podman build \
             -t localhost/bluefin-compass:ci \
             -f packaging/vmtest/Containerfile.compass \
@@ -231,6 +236,14 @@ jobs:
           path: packaging/vmtest
 
       - uses: ./.github/actions/vm-host
+
+      # The Containerfile's build context is packaging/vmtest, so anything it
+      # COPYs has to be staged there first — the Flatpak bundle already is.
+      # Copied rather than duplicated: scripts/harvest-desktop-corpus.sh is the
+      # one definition of what a harvest is, and it is the copy tier 1
+      # shellchecks.
+      - name: Stage the corpus harvester into the build context
+        run: cp scripts/harvest-desktop-corpus.sh packaging/vmtest/
 
       - name: Build the test image
         run: |
@@ -361,6 +374,14 @@ jobs:
           path: packaging/vmtest
 
       - uses: ./.github/actions/vm-host
+
+      # The Containerfile's build context is packaging/vmtest, so anything it
+      # COPYs has to be staged there first — the Flatpak bundle already is.
+      # Copied rather than duplicated: scripts/harvest-desktop-corpus.sh is the
+      # one definition of what a harvest is, and it is the copy tier 1
+      # shellchecks.
+      - name: Stage the corpus harvester into the build context
+        run: cp scripts/harvest-desktop-corpus.sh packaging/vmtest/
 
       - name: Build the test image
         run: |

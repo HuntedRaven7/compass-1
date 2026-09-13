@@ -179,6 +179,24 @@ RUN set -eux; \
     test -f /etc/dconf/db/compass; \
     grep -q com.vicinae.Vicinae /etc/dconf/db/compass
 
+# ── the corpus harvester ─────────────────────────────────────────────────────
+#
+# Phase 1's gate wants Suite 0 ranking parity over ~500 real desktop entries and
+# the corpus has 27, which §11.2 identifies as the binding constraint on the
+# whole phase. `scripts/harvest-desktop-corpus.sh` is the tool, and its own
+# header says to run it "on a real desktop — ideally a Bluefin box, since that
+# is the first target and its RPM + Flatpak + Homebrew mix is what users
+# actually have".
+#
+# This image *is* a Bluefin box with a real GNOME application set, booted fresh
+# every run. The machine the script was waiting for has been in CI all along.
+#
+# The real script is copied in rather than reimplemented here, so there is one
+# definition of what a harvest is and it is the one tier 1 already shellchecks.
+# The workflow stages it into the build context alongside the Flatpak bundle.
+COPY harvest-desktop-corpus.sh /usr/libexec/compass-vmtest/harvest-desktop-corpus.sh
+RUN chmod 0755 /usr/libexec/compass-vmtest/harvest-desktop-corpus.sh
+
 # ── the assertions ───────────────────────────────────────────────────────────
 #
 # Baked in rather than pushed over SSH so that they are a real file in the

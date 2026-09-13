@@ -998,6 +998,36 @@ deliberately, since detection makes a security boundary non-deterministic across
 `seccomp_mode` read back `null` inside the Flatpak although the filter provably worked, which means
 `/proc/self/status` is not a usable self-check for confinement in the environment we ship into.
 
+### 11.2 Phase 1's gate, evaluated
+
+This section could not exist until now. Phase 1's gate was unevaluable in
+principle while there was no launcher — §12 said so — and the launcher now
+opens, draws and is verified on every VM run. So the gate can be scored
+honestly rather than deferred, and three of its four criteria turn out to be
+answerable today.
+
+| Gate criterion | State | Evidence |
+|---|---|---|
+| Suite 0 parity for app-search ranking on the **500-entry corpus** | ❌ **not met** | the corpus is **27** entries — 19 synthetic, 8 harvested. 5% of what the gate names. |
+| Runs from a Flatpak on Bluefin with **GNOME 50 and 51** | 🟡 **half** | it runs from a Flatpak on Bluefin in CI on every change. One GNOME, not two, and the version was not recorded — the evidence check now prints `gnome-shell --version`. |
+| **Idle RSS < 30 MB** | 🟡 **now measured** | never measured before, because there was nothing running to measure. `checks.sh launcher-rss` reads `VmRSS` once the window is up. Reported, not gated. |
+| **Works with no Shell extension installed** | ✅ **met** | we ship none at all (ADR-0004), the VM has none, and `doctor` records `gnome.shell-extension` as evidence rather than gating on it. |
+
+Two things this scoring makes concrete, which "the gate cannot be evaluated"
+hid:
+
+- **The corpus is the binding constraint on Phase 1**, not the launcher and not
+  the portal. 27 entries against a gate that names 500 is the largest single
+  distance to close, and `scripts/harvest-desktop-corpus.sh` is how it closes.
+  That is a different kind of work from everything done this week and it is now
+  the top of the list.
+- **The RSS figure is an upper bound, not the shipping number.** It is taken
+  under llvmpipe, where the renderer keeps buffers it would not need on
+  hardware. It is reported rather than gated for the same reason the paint
+  deviation was: one sample is not a budget, and a memory gate set from a single
+  software-rendered run would be the deviation mistake again in a different
+  costume. It goes in the log so the gate can be set from a distribution.
+
 ## 12. Immediate next steps
 
 Rewritten as items land; the previous version listed the VM tier and both spikes as the work to do,
@@ -1031,8 +1061,10 @@ Ordered by what unblocks the most:
    wgpu emits only once it has a surface.
 
    Still true and unaffected: QMP key injection does not reach the session (below).
-1. **Wire the UI into the binary** (#4). A window that opens, a list that moves, and a selection
-   that actually launches via `compass-platform`. Everything in Phase 1's gate is downstream.
+1. ~~**Wire the UI into the binary**~~ — done (#29). `vicinae ui` opens a window, moves a
+   selection with the arrow keys, launches through `compass-platform` and dismisses. It draws on
+   the target, verified on every VM run against a measurement that reproduced three times
+   (ADR-0010). Phase 1's gate is consequently evaluable for the first time — scored in §11.2.
 2. ~~**Settle Spike A's consent question**~~ — done (§11.1, ADR-0010). Traced through all three
    components and pre-seeded; what remains is to read the first run that gets a binding, and in
    particular whether Super+Space survives GNOME's own claim on it.
@@ -1068,7 +1100,22 @@ Ordered by what unblocks the most:
    network access, which a runner has.
 
    The AppImage path stays disabled either way. Nothing here needs it.
-4. **Widen the parity port.** Both halves of this item turned out to be nearly done when looked at,
+4. **Grow the corpus — Phase 1's binding constraint (§11.2), and now unblocked.** The gate names a
+   500-entry corpus for Suite 0 ranking parity; there are 27. Not the launcher, not the portal, not
+   the sandbox: the corpus.
+
+   The harvester's own header asks for "a real desktop — ideally a Bluefin box, since that is the
+   first target and its RPM + Flatpak + Homebrew mix is what users actually have". **The VM tier
+   boots exactly that, every run.** The machine the script was waiting for has been in CI since the
+   tier existed, and nobody noticed — including this plan, which listed the corpus as blocked on
+   hardware nobody had.
+
+   The `launcher` job now runs it and publishes `corpus.tar.gz` as an artifact. What it does *not*
+   do is write into `crates/compass-testkit/corpus/`: a corpus shapes every ranking assertion the
+   project makes, and it must not grow by a job quietly appending to it. Reviewing and committing
+   the harvest is the next step, and it is a person's.
+
+5. **Widen the parity port.** Both halves of this item turned out to be nearly done when looked at,
    so what is left is now stated precisely rather than as a direction:
 
    - *`compass-core`'s index against the harvested corpus* — the corpus is exercised, but its floor
@@ -1084,7 +1131,7 @@ Ordered by what unblocks the most:
 
    What genuinely remains under this heading is the corpus itself: 8 harvested entries from one
    host is a thin sample, and `scripts/harvest-desktop-corpus.sh` is how it grows.
-5. **Promote the VM tier to the merge queue** once it has been stable for a couple of weeks
+6. **Promote the VM tier to the merge queue** once it has been stable for a couple of weeks
    (ADR-0010). It has three consecutive green runs; that is not two weeks.
 
 Both corral bugs this tier found on locally built bootc images are now filed upstream:
