@@ -1013,14 +1013,56 @@ answerable today.
 | **Idle RSS < 30 MB** | 🟡 **now measured** | never measured before, because there was nothing running to measure. `checks.sh launcher-rss` reads `VmRSS` once the window is up. Reported, not gated. |
 | **Works with no Shell extension installed** | ✅ **met** | we ship none at all (ADR-0004), the VM has none, and `doctor` records `gnome.shell-extension` as evidence rather than gating on it. |
 
-Two things this scoring makes concrete, which "the gate cannot be evaluated"
-hid:
+**A correction to this section's own first draft.** It said the corpus was the
+binding constraint on Phase 1. That is not right, and reading §8.1 properly is
+what showed it. Suite 0 is a **differential** harness — "run the operation
+against both engines and diff structured output" — so the gate needs three
+things, and the corpus is only one:
 
-- **The corpus is the binding constraint on Phase 1**, not the launcher and not
-  the portal. 27 entries against a gate that names 500 is the largest single
-  distance to close, and `scripts/harvest-desktop-corpus.sh` is how it closes.
-  That is a different kind of work from everything done this week and it is now
-  the top of the list.
+| Suite 0 needs | state |
+|---|---|
+| the desktop corpus | **115 of ~500** — partial, and growing |
+| a runner that diffs the two engines | **exists** — `compass-testkit`'s `parity` bin, and nothing has ever invoked it |
+| a C++ engine runnable on the target | **missing** |
+
+The third is the keystone. The corpus can grow to five hundred entries and
+Suite 0 still cannot run, because there is no second engine to diff against.
+That makes §12 item 3 — the C++ baseline — the real blocker on Phase 1's gate,
+and item 4 a necessary companion rather than the thing in front.
+
+`.github/workflows/cpp-on-target.yaml` takes the cheap half: it installs the
+Fedora dependencies inside the Bluefin image and runs `cmake` configure, which
+exercises every `find_package(Qt6 … COMPONENTS …)` in the tree without
+compiling 144k lines. About a minute against twenty-plus, and it answers the
+riskiest unknown — whether Fedora's packages cover what Arch's do — before the
+expensive half is written.
+
+It answered on its first run, and the answer is mostly yes:
+
+- **Every Qt6 component resolves.** Configure reached
+  `src/lib/script-command/CMakeLists.txt:26` before failing, which is well past
+  `find_package(Qt6 6.9 REQUIRED …)` and past `src/server`'s eleven components
+  including `GuiPrivate`. Fedora's Qt6 packaging covers what the engine needs.
+- **Catch2 does not.** Fedora 44 ships 2.13.10 and the tests require Catch2 3.
+  There is no v3 package — checked against Fedora's package database, not
+  assumed.
+
+The fix is `-DBUILD_TESTS=OFF` and it is the right answer rather than a
+workaround: Suite 0 diffs engine *behaviour* through
+`vicinae --engine=cpp --json`, not by running the C++ unit tests, and those
+already run on Arch in `build-linux.yaml` where Catch2 is v3. If they ever need
+to run on Bluefin, Catch2 3 can be vendored through `FetchContent` exactly as
+qtkeychain, layer-shell and cmark-gfm already are.
+
+Two further things this scoring makes concrete, which "the gate cannot be
+evaluated" hid:
+
+- **The corpus is a real constraint, just not the binding one.** 115 entries
+  against a gate that names 500 is a genuine distance, and one Bluefin image
+  yields 88, so closing it needs different machines rather than more runs.
+  §8.1 also asks for "host RPM apps, Flatpak exports and Homebrew entries
+  together"; the VM harvest produced only the first, because a freshly
+  installed bootc image has no user Flatpaks and an empty `/home/linuxbrew`.
 - **The RSS figure is an upper bound, not the shipping number.** It is taken
   under llvmpipe, where the renderer keeps buffers it would not need on
   hardware. It is reported rather than gated for the same reason the paint
@@ -1092,12 +1134,23 @@ Ordered by what unblocks the most:
    the top-level `CMakeLists.txt` requires. (An earlier revision of this item said 6.10; that was
    wrong, and 6.11.2 is what Fedora 44 actually has.)
 
-   The two dependencies that looked like they might block it do not: `qtkeychain` and
-   `layer-shell-qt` are **vendored through `FetchContent`** unless `USE_SYSTEM_QT_KEYCHAIN` /
-   `USE_SYSTEM_LAYER_SHELL` are set, and neither is on by default. They appear in
-   `scripts/runners/arch/install-deps.sh` because Arch *can* supply them, not because the build
-   needs a distro to. The one consequence to remember is that the build container therefore needs
-   network access, which a runner has.
+   **A correction: an earlier revision of this item had the vendoring backwards**, and two red CI
+   runs paid for it. It claimed `qtkeychain` and `layer-shell-qt` are vendored through
+   `FetchContent` "and neither is on by default". The opposite is true on Linux:
+
+   - `USE_SYSTEM_DEFAULT` is `ON`, and `OFF` only for `APPLE OR WIN32`;
+   - `USE_SYSTEM_LAYER_SHELL` is `ON` unconditionally (`CMakeLists.txt:53`);
+   - `USE_SYSTEM_QT_KEYCHAIN` follows `USE_SYSTEM_DEFAULT`, so `ON` here.
+
+   The `FetchContent` calls I had read are reached only under `PREFER_STATIC_LIBS` — the AppImage
+   path. A normal Linux build links system libraries, which is exactly what the comment above those
+   options says it prefers. So the Arch list is not padding: it names what the build genuinely
+   wants.
+
+   For Fedora that means `layer-shell-qt-devel` is required and available (6.7.5), while
+   `qtkeychain` has no Qt6 build at all and has to be switched to the vendored copy explicitly with
+   `-DUSE_SYSTEM_QT_KEYCHAIN=OFF`. That flag makes the build fetch, so the build container needs
+   network — which a runner has.
 
    The AppImage path stays disabled either way. Nothing here needs it.
 4. **Grow the corpus — Phase 1's binding constraint (§11.2), and now unblocked.** The gate names a

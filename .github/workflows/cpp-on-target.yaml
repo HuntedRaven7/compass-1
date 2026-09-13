@@ -1,0 +1,149 @@
+name: C++ on the target
+
+# Phase 1's gate is Suite 0 parity, and Suite 0 is a *differential* harness:
+# §8.1 says "for each item, run the operation against both engines and diff
+# structured output". crates/compass-testkit/src/parity.rs exists and takes a
+# --cpp-engine path. It has never run, because there is no C++ engine on the
+# target to point it at.
+#
+# So the gate needs three things: the corpus (115 of ~500), the runner (exists,
+# dormant) and a C++ build on Bluefin (this). That last one is the keystone —
+# the corpus can grow forever and Suite 0 still cannot run without it.
+#
+# THIS JOB IS THE CHEAP HALF, DELIBERATELY. It installs the dependencies and
+# runs `cmake` configure, which exercises every find_package(Qt6 COMPONENTS …)
+# in the tree, and stops before compiling 144k lines of C++23. Configure is
+# about a minute; the full build is twenty-plus. The riskiest unknown here is
+# whether Fedora's package names cover what Arch's do, and configure answers
+# that for a twentieth of the cost.
+#
+# PLAN.md §12 item 3 costs the rest: build inside this same image rather than a
+# fedora:44 container, because src/server/CMakeLists.txt links Qt6::GuiPrivate
+# and a binary bound to private headers must be built against the exact Qt the
+# VM boots.
+
+on:
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+      - 'scripts/runners/**'
+      - '.github/workflows/cpp-on-target.yaml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    name: The C++ engine configures against Bluefin's Qt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull the target image
+        run: |
+          # The same image the VM tier boots, so what configures here is what
+          # would build there.
+          podman pull ghcr.io/ublue-os/bluefin:stable
+          podman run --rm ghcr.io/ublue-os/bluefin:stable \
+            sh -c 'cat /etc/os-release | grep -E "^(NAME|VERSION)="'
+
+      - name: What Qt does the target actually have?
+        run: |
+          # Printed before the install, because "which Qt" is a fact worth
+          # having in the log even when the install below fails.
+          podman run --rm ghcr.io/ublue-os/bluefin:stable \
+            sh -c 'dnf -q list --available "qt6-qtbase*" 2>/dev/null | head -20' \
+            || echo '(listing failed; the install step will say why)'
+
+      - name: Install the build dependencies and configure
+        run: |
+          set -o pipefail
+          # Arch's list translated. qt6-qtbase-private-devel is the one Arch has
+          # no separate package for — it ships private headers inside qt6-base,
+          # and src/server/CMakeLists.txt links Qt6::GuiPrivate.
+          #
+          # A correction, paid for by two red runs. I first claimed qtkeychain
+          # and layer-shell-qt were "vendored through FetchContent and neither
+          # is on by default", and dropped both. That is backwards:
+          #
+          #   USE_SYSTEM_DEFAULT is ON, and OFF only for APPLE or WIN32
+          #   USE_SYSTEM_LAYER_SHELL is ON unconditionally (CMakeLists.txt:53)
+          #   USE_SYSTEM_QT_KEYCHAIN follows USE_SYSTEM_DEFAULT, so ON on Linux
+          #
+          # Vendoring happens only under PREFER_STATIC_LIBS, which is the
+          # AppImage path — that is where the FetchContent calls I had read come
+          # from. A normal Linux build links system libraries, exactly as the
+          # comment above those options says it prefers to.
+          #
+          # So layer-shell-qt-devel is installed (Fedora has it, 6.7.5) and
+          # qtkeychain is switched to the vendored copy explicitly with
+          # -DUSE_SYSTEM_QT_KEYCHAIN=OFF, because Fedora has no Qt6 build of it.
+          #
+          # The rest of this list was ENUMERATED rather than discovered. Three
+          # red runs each found one missing package, which is a bad way to
+          # spend cycles even cheap ones, so the tree's own requirements were
+          # read out instead:
+          #
+          #   find_package: ECM, KF6SyntaxHighlighting, LayerShellQt, OpenSSL,
+          #                 PkgConfig, X11 (REQUIRED, with the xcb, xcb_keysyms
+          #                 and xcb_xkb components), plus glaze and numen which
+          #                 are fetched rather than packaged
+          #   and the vendored qtkeychain needs libsecret-1, which the
+          #   USE_SYSTEM_QT_KEYCHAIN option's own help text says outright —
+          #   "Note: still depends on system libsecret" — and which I quoted
+          #   here two revisions ago without acting on.
+          podman run --rm -v "$PWD:/src:z" -w /src \
+            ghcr.io/ublue-os/bluefin:stable bash -euxo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False \
+                gcc gcc-c++ cmake ninja-build git \
+                qt6-qtbase-devel qt6-qtbase-private-devel \
+                qt6-qtsvg-devel qt6-qtdeclarative-devel \
+                qt6-qtshadertools-devel qt6-qttools-devel \
+                qt6-qtwayland-devel \
+                kf6-syntax-highlighting-devel extra-cmake-modules \
+                layer-shell-qt-devel \
+                libqalculate-devel \
+                wayland-devel wayland-protocols-devel \
+                libsecret-devel openssl-devel \
+                libX11-devel libxcb-devel xcb-util-keysyms-devel \
+                nodejs npm
+
+              echo "--- what Qt did we get? ---"
+              qmake6 -query QT_VERSION || rpm -q qt6-qtbase
+
+              echo "--- configure ---"
+              # BUILD_TESTS=OFF, unlike build-linux.yaml, and the first run of
+              # this job is why: Fedora 44 ships Catch2 2.13.10 and the tests
+              # require Catch2 3. There is no v3 package — checked, not assumed.
+              #
+              # That is the right answer rather than a workaround. Suite 0 diffs
+              # engine *behaviour* through `vicinae --engine=cpp --json`; it does
+              # not run the C++ unit tests. Those already run on Arch in
+              # build-linux.yaml, where Catch2 is v3, and building them again on
+              # Bluefin would prove nothing Suite 0 needs. Vendoring Catch2 3
+              # through FetchContent — as the build already does for qtkeychain,
+              # layer-shell and cmark-gfm — is available if that ever changes.
+              cmake -S . -B /tmp/build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_TESTS=OFF \
+                -DUSE_SYSTEM_CMARK_GFM=OFF \
+                -DUSE_SYSTEM_QT_KEYCHAIN=OFF
+            '
+
+      - name: What this proves, and what it does not
+        if: always()
+        run: |
+          echo 'Configure exercises every find_package(Qt6 COMPONENTS ...) in the'
+          echo 'tree against the Qt the target actually ships. It does NOT prove'
+          echo 'the code compiles or links there — that is PLAN.md §12 item 3, and'
+          echo 'it is the expensive half. This job exists so the expensive half'
+          echo 'starts from a known-good dependency set instead of discovering a'
+          echo 'missing package twenty minutes in.'
