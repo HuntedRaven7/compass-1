@@ -57,6 +57,30 @@ pub fn main() -> ExitCode {
 /// ranking a query is CPU work and on a single thread one slow query would
 /// stall every other connection.
 pub fn run(cli: Cli) -> Result<ExitCode> {
+    // Before any runtime exists, and deliberately. Iced owns the thread it is
+    // started on, and on Wayland that has to be the process's main thread —
+    // so the launcher cannot be dispatched from inside `block_on` like every
+    // other command. ADR-0011 records what this costs and what it defers.
+    if matches!(cli.command, Command::Ui) {
+        // Checked here rather than left to Iced. With no display, `iced::run`
+        // does not return an error — winit panics inside it, and the user gets
+        // a backtrace naming winit's source file for the entirely ordinary
+        // situation of running the launcher from a TTY or over ssh. `doctor`
+        // already diagnoses this properly, so point at it.
+        if std::env::var_os("WAYLAND_DISPLAY").is_none()
+            && std::env::var_os("WAYLAND_SOCKET").is_none()
+            && std::env::var_os("DISPLAY").is_none()
+        {
+            bail!(
+                "no graphical session: neither WAYLAND_DISPLAY nor DISPLAY is set, so there is \
+                 nothing to open a window on. Run `vicinae doctor` for the full picture"
+            );
+        }
+        compass_ui::run(compass_ui::AppFlags::default())
+            .map_err(|err| anyhow::anyhow!("the launcher could not start: {err}"))?;
+        return Ok(ExitCode::from(EXIT_OK));
+    }
+
     let runtime = if matches!(cli.command, Command::Serve) {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -184,6 +208,9 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::from(EXIT_OK))
         }
+
+        // Handled in `run`, before the runtime exists.
+        Command::Ui => unreachable!("the launcher is dispatched before the runtime"),
 
         Command::Toggle => window_command(&socket, cli.engine, Request::Toggle).await,
         Command::Show => window_command(&socket, cli.engine, Request::Show).await,

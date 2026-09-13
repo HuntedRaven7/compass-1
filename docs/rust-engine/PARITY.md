@@ -151,6 +151,42 @@ whether a real GNOME session grants the shortcut we ask for.
 | `src/builtins/vicinae` | `compass-core` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
 | `src/builtins/wm` | `compass-core` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
 
+## The window
+
+`src/server/src/ui` — about **29,700 lines** across Qt Widgets and QML, and until this section
+existed the ledger did not mention it. That was the largest omission in the file: 110 rows covered
+every service, library and builtin, and none of them covered the thing a user actually looks at.
+A row per subdirectory, with its C++ size, so that the distance is visible rather than implied.
+
+| C++ source | lines | Rust home | Phase | C++ ✓ | Rust ✓ | parity test ✓ | C++ deleted ✓ |
+|---|--:|---|---|:-:|:-:|:-:|:-:|
+| `src/server/src/ui/qml` | 14,660 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/quick` | 3,806 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/views` | 2,760 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/settings` | 2,292 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/image` | 2,154 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/windows` | 1,881 | `compass-ui` | Phase 3 | ✅ | 🟡 | ❌ | ❌ |
+| `src/server/src/ui/action-panel` | 1,366 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/bridges` | 539 | `compass-ui` | Phase 4 | ✅ | ❌ | ❌ | ❌ |
+| `src/server/src/ui/alert` | 279 | `compass-ui` | Phase 5 | ✅ | ❌ | ❌ | ❌ |
+
+The single 🟡 is `windows`, and it is generous: `compass-ui` opens one window, shows a text input
+and a result list, moves a selection with the arrow keys, launches on Enter and dismisses on
+Escape. That is the launcher's core loop and nothing else — no navigation stack, no action panel,
+no views, no settings, no theming, no icons.
+
+Three things about this section are worth stating plainly, because a table of ❌s invites the wrong
+reading:
+
+- **These rows are not all ports.** ADR-0001 chose Iced over Qt Widgets and QML, so most of this
+  tree has no Rust counterpart to write — it has a *replacement* to design. `parity test ✓` on a
+  QML row cannot mean a differential against the C++ widget; it will mean the ported behavioural
+  tests §8.3 describes, or nothing.
+- **`bridges` is Phase 4, not Phase 5**, because it is the seam the extension host renders through
+  rather than chrome. `compass-extension-api` already models the view tree and its diff; what is
+  missing is the half that turns a diff into pixels.
+- **No line of this can be deleted before the Phase 7 cutover**, like every other row.
+
 ## Not-yet-ported scope
 
 Tracked here so a 🟡 does not quietly become a ✅.

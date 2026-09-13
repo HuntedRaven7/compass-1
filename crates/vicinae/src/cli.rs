@@ -126,6 +126,14 @@ pub enum Command {
     #[command(hide = true, subcommand)]
     Spike(Spike),
 
+    /// Open the launcher window.
+    ///
+    /// Runs the launcher in the foreground until it is dismissed or something
+    /// is launched. It does not talk to `serve` and does not need one running:
+    /// it indexes and ranks in-process. See ADR-0011 for why the window is its
+    /// own command rather than something the engine hosts.
+    Ui,
+
     /// Report what works on this machine and what does not.
     #[command(after_help = EXIT_CODE_HELP, after_long_help = EXIT_CODE_HELP)]
     Doctor {
@@ -257,6 +265,11 @@ mod tests {
             .clone();
         assert!(spike.is_hide_set(), "the spike should not appear in --help");
         assert!(Cli::try_parse_from(["vicinae", "spike", "global-shortcut"]).is_ok());
+    }
+
+    #[test]
+    fn the_ui_command_parses() {
+        assert_eq!(parse(&["vicinae", "ui"]).command, Command::Ui);
     }
 
     #[test]

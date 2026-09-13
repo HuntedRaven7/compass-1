@@ -4042,6 +4042,7 @@ dependencies = [
  "compass-ipc",
  "compass-portals",
  "compass-testkit",
+ "compass-ui",
  "landlock",
  "libc",
  "seccompiler",
