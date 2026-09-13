@@ -783,6 +783,180 @@ obvious explanation was wrong again. First the input-source collision that
 turned out to be `<Shift><Super>space`, now wgpu that turns out never to run.
 Both were caught by building the measurement before believing the story.
 
+### What the kernel said, and what it does not prove
+
+The probe ran, twice, and the two readings are **byte-identical** — same thread,
+same `wchan`, same syscall, same stack pointer, same arguments:
+
+```
+pid 4212   State: S (sleeping)   Threads: 13
+  tid 4212  wchan=poll_schedule_timeout   syscall: 7  (poll)  nfds=2  timeout=0xffffffff
+  tid 4225  wchan=ep_poll                 syscall: 281 (epoll_wait)
+  … eleven more, all futex_do_wait
+```
+
+So the main thread is parked in `poll()` on **two** file descriptors with an
+**infinite** timeout, and nothing moved between before-the-keystroke and
+after-it.
+
+**The tempting reading is wrong, and worth saying so before anyone repeats it.**
+"Blocked in an infinite poll" sounds like a deadlock, but a two-fd infinite poll
+is exactly what winit's Wayland event loop looks like when it is *idle* — the
+display fd plus calloop's eventfd. A perfectly healthy launcher sitting with
+nothing to do would show the same three lines. Identical stack pointers across
+probes prove only that it has not moved, which an idle event loop also has not.
+
+What makes it a fault is the combination with what is missing:
+
+| evidence | says |
+|---|---|
+| main thread in winit's event-loop poll | `create_window` returned; the loop is running |
+| **no wgpu log records at all** | `Compositor::new` never ran to the point of touching wgpu |
+| window never became visible | `iced_winit` only calls `set_visible(true)` after `window.renderer` exists |
+
+Reading `iced_winit 0.14.0` closes the loop: compositor creation happens inside
+`runtime.block_on(create_compositor)`, and the window is shown only once a
+renderer exists. So the launcher is not wedged in a syscall it cannot leave — it
+is **waiting for a Wayland event that never arrives**, with the window created,
+hidden, and no renderer behind it.
+
+That is as far as the evidence goes. What it does *not* establish is why the
+compositor never sends that event, and the honest list of candidates is still
+open: a surface configure that mutter withholds under llvmpipe, something about
+this window's own attributes (`transparent: true` with `decorations: false` is
+an unusual pair), or a winit/iced interaction specific to a software-rendered
+session. Picking one now would be the fourth guess in a row on this bug, and
+the previous three were all wrong.
+
+One diagnostic lesson, paid for immediately. The probe's socket step printed
+`(ss unavailable or no match)` — one message for two conditions that want
+completely different fixes, so it said nothing useful about either. It now
+distinguishes them, and falls back to matching fd inodes against
+`/proc/net/unix`, which needs no tools at all. That fallback's limit is stated
+in the code rather than discovered in the guest: a *connected* AF_UNIX socket
+has an empty path column, so it names listening sockets and leaves client ends
+unnamed. Checked on this machine before shipping.
+
+### The control this job should have had from the start
+
+Every measurement so far says our launcher puts no window on screen. **None of
+them distinguishes that from nothing being able to.** A session in which no
+client can render at all would produce byte-for-byte the same evidence, and
+would exonerate the launcher completely.
+
+The desktop painting does not settle it. Deviation 0.1564 is GNOME Shell
+compositing its own furniture — a top bar, a wallpaper — not a client surface.
+No client application has been shown to draw in this session, ever, by any job
+in this tier.
+
+So `checks.sh control-app-start` launches a stock GNOME application and the
+host screenshots it. If it draws and ours does not, the fault is ours. If
+neither draws, the fault is the session and every conclusion about the launcher
+above is void. This is the same assertion-plus-control shape as Spike B and the
+Super-alone keypress, and it should have been here in the first version of the
+job rather than three runs later.
+
+The application is picked at runtime from what the image actually has, rather
+than hard-coded: a name that turns out to be absent reads as "the control
+failed" when it means "the control never ran", and those are opposite
+conclusions.
+
+**A note on the predicate, because this is the fourth time.** The obvious way to
+wait for that application is `pgrep -f "$app"`, and it is wrong for the same
+reason it was wrong in Spike A's collector: the app's name is in the command
+line of the shell doing the matching, so the predicate matches itself and is
+true immediately. `pgrep -x` is not the escape either — `comm` is truncated to
+15 characters, so `gnome-text-editor` is `gnome-text-edit` and an exact match
+silently never fires. The check compares the resolved `/proc/PID/exe` instead,
+which is neither a string anyone typed nor truncated. Tested three ways before
+shipping: absent binary, running binary, and the sentinel short-circuit.
+
+That failure mode has now appeared four times in this tier — `pgrep -f` in the
+collector, `ls /proc/*/fd | grep wayland-` in the first launcher predicate,
+`pgrep -c` in a throwaway wait loop, and `pgrep -f` again here. Three were
+caught by testing the predicate before trusting it. The one that was not cost
+seventy minutes of a loop that could never terminate. **A predicate that has
+not been run against both a true and a false case is not a predicate, it is a
+guess** — which is the same rule this ADR already applies to sandboxes and
+paint gates, arrived at from a different direction.
+
+## Retraction: the launcher draws. It was measured too early, twice.
+
+Three sections above say the launcher does not put a window on screen. **That
+is wrong, and the control added to catch exactly this kind of mistake is what
+caught it.**
+
+The run that added a stock GNOME application as a control also, incidentally,
+delayed the screenshot by the few seconds the diagnostic step takes. In that
+run the launcher's own window is plainly there:
+
+| | pixels changed | bounding box |
+|---|--:|---|
+| our launcher | 8.22% | x 335–942, y 152–796 |
+| nautilus (control) | 16.80% | x 166–1122, y 206–796 |
+
+The launcher's window is configured **640 × 480 centred**, which on this
+1280 × 800 display is x 320–960, y 160–640. The measured box is x 335–942,
+starting at y 152. That is our window.
+
+And the log carries **119 wgpu records** where the previous run had none:
+
+```
+wgpu_core::instance: Instance::new: created Vulkan backend
+wgpu_core::instance: Adapter AdapterInfo { name: "llvmpipe (LLVM 19.1.7, 256 bits)",
+                     device_type: Cpu, driver: "llvmpipe",
+                     driver_info: "Mesa 26.1.8", backend: Vulkan }
+```
+
+Software rendering works. Vulkan through lavapipe, Mesa 26.1.8. Everything the
+earlier sections treated as broken is fine.
+
+### What actually happened
+
+Startup under llvmpipe is slow and the spread is wide. Timestamps from the two
+runs, same image, same job:
+
+| | launcher started | wgpu initialising | window seen |
+|---|---|---|---|
+| earlier run | 13:23:47.0 | *not yet at 13:23:55.1* (8.1 s in) | no |
+| later run | 14:21:16.6 | 14:21:18.9 (2.4 s in) | 14:21:20.3 (3.7 s) |
+
+The job screenshotted as soon as the *process* existed. In the fast run that
+happened to be late enough; in the slow ones it was not. `launcher-start` was
+waiting on the wrong thing.
+
+### The rule I broke is this ADR's own
+
+"Key assertions off states, never off durations" is written near the top of this
+document, learned from `graphical.target` and from GDM blanking the framebuffer.
+Then `launcher-start` waited for a process to exist — which is a state, but not
+the state that matters — and everything downstream sampled a moment.
+
+`launcher-start` now waits for `Adapter AdapterInfo` in the launcher's own log:
+wgpu reports a chosen adapter only once it has a surface to render to, which is
+a real state and a much later one. The three-second settle after it is slack
+after a state, the same shape and justification as `wait-graphical.sh`.
+
+### What survives, and what does not
+
+**Does not survive:** "the launcher does not draw", the 258 × 81 bottom-centre
+box read as "GNOME's furniture, not ours" (it was the launcher not yet painted,
+plus a notification), and PLAN §12's item 0 as originally written.
+
+**Survives, and is still true:** QMP key injection does not reach this session
+(the Super-alone control frames are byte-identical, and that is independent of
+any of this); the deviation statistic is too coarse to answer "did a window
+appear" — 0.1564 to four decimal places across visibly different frames — and
+gating on it would still have been wrong, though for the opposite reason than
+the one recorded earlier; and the `sctk-adwaita` portal timeout is still a red
+herring, still bounded, still not the cause of anything.
+
+The habit that produced the error is worth naming as precisely as the error. I
+built a control for the *keypress* question and for the *sandbox* question, and
+did not build one for "is anything on screen" until three runs in — and the
+moment it existed it overturned the conclusion. A measurement with no control is
+a guess with a number attached, and it took a stock file manager to say so.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through

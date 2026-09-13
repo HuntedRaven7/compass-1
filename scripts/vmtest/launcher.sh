@@ -94,6 +94,17 @@ echo "=== 3b. and is it blocked in the same place after the keystroke? ==="
 guest "$checks" launcher-diagnose || true
 
 echo
+echo "=== 3c. can ANY client draw in this session? (the control) ==="
+# The control this job should have had from the start. Everything above says
+# our launcher puts no window on screen; none of it distinguishes that from
+# nothing being able to. A session where no client can render would produce
+# identical evidence and would exonerate the launcher entirely — and the
+# desktop painting does not settle it, because that is GNOME Shell compositing
+# its own furniture, not a client surface.
+guest "$checks" control-app-start || true
+shot "launcher-03-control-app.png"
+
+echo
 echo "=== 4. is it still running? ==="
 # A launcher that dies on the first keystroke is a real bug, and without this
 # it would show up only as two screenshots that happen to look alike.
