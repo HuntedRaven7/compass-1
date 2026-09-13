@@ -1037,15 +1037,24 @@ compiling 144k lines. About a minute against twenty-plus, and it answers the
 riskiest unknown — whether Fedora's packages cover what Arch's do — before the
 expensive half is written.
 
-It answered on its first run, and the answer is mostly yes:
+**It is green, and the answer is yes.** CMake reaches *Configuring done /
+Generating done* against Fedora's Qt 6.11.2, so every `find_package` in the tree
+— `Qt6 6.9 REQUIRED`, `src/server`'s eleven components including `GuiPrivate`,
+ECM, KF6SyntaxHighlighting, LayerShellQt, OpenSSL and X11 with its xcb
+components — resolves on the target.
 
-- **Every Qt6 component resolves.** Configure reached
-  `src/lib/script-command/CMakeLists.txt:26` before failing, which is well past
-  `find_package(Qt6 6.9 REQUIRED …)` and past `src/server`'s eleven components
-  including `GuiPrivate`. Fedora's Qt6 packaging covers what the engine needs.
-- **Catch2 does not.** Fedora 44 ships 2.13.10 and the tests require Catch2 3.
-  There is no v3 package — checked against Fedora's package database, not
-  assumed.
+Two things it found along the way:
+
+- **Catch2 is the one gap.** Fedora 44 ships 2.13.10 and the tests require
+  Catch2 3. There is no v3 package — checked against Fedora's package database,
+  not assumed.
+- **Four red runs is a poor way to enumerate a dependency list.** Three of them
+  each found exactly one missing package, and the last was avoidable from text
+  already quoted in the job's own comment: the `USE_SYSTEM_QT_KEYCHAIN` option
+  says *"Note: still depends on system libsecret"*. The list is now derived from
+  the tree's `find_package` calls and lives in
+  `scripts/runners/bluefin/install-deps.sh`, next to the Arch one, so the build
+  job and the configure job cannot drift apart.
 
 The fix is `-DBUILD_TESTS=OFF` and it is the right answer rather than a
 workaround: Suite 0 diffs engine *behaviour* through
@@ -1153,9 +1162,24 @@ Ordered by what unblocks the most:
    network — which a runner has.
 
    The AppImage path stays disabled either way. Nothing here needs it.
-4. **Grow the corpus — Phase 1's binding constraint (§11.2), and now unblocked.** The gate names a
-   500-entry corpus for Suite 0 ranking parity; there are 27. Not the launcher, not the portal, not
-   the sandbox: the corpus.
+
+   **Where this stands.** `.github/workflows/cpp-on-target.yaml` now has both halves.
+   `configure` is green (§11.2). `build` compiles the tree in the same image, stages an
+   installable tree with `DESTDIR=… cmake --install`, and publishes it as `vicinae-cpp-bluefin`.
+   It asserts the two files that matter rather than trusting the install — `usr/bin/vicinae`, the
+   entrypoint `parity --cpp-engine` invokes, and `usr/libexec/vicinae/vicinae-server` — because
+   `cmake --install` succeeding says nothing about which targets carried an `install()` rule. It
+   is gated on `needs: configure` so a wrong package name costs a minute rather than twenty, and
+   ccache is mounted in from the host so a rerun that changed only the workflow is cheap.
+
+   **What is left after that is the wiring, not the build**: layer the tarball into the VM test
+   image, and have `checks.sh` run `parity --cpp-engine` from inside the session. That is a
+   separate change, and it is the point at which Suite 0 runs for the first time.
+4. **Grow the corpus — a real constraint, though not the binding one.** An earlier revision of
+   this item called it "Phase 1's binding constraint" and put the count at 27. Both are now wrong:
+   §11.2 retracted the first (Suite 0 is differential, so item 3 above is the keystone) and the VM
+   harvest answered the second. The gate names a 500-entry corpus for Suite 0 ranking parity, and
+   there are 115.
 
    The harvester's own header asks for "a real desktop — ideally a Bluefin box, since that is the
    first target and its RPM + Flatpak + Homebrew mix is what users actually have". **The VM tier

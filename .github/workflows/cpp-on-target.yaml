@@ -66,71 +66,26 @@ jobs:
       - name: Install the build dependencies and configure
         run: |
           set -o pipefail
-          # Arch's list translated. qt6-qtbase-private-devel is the one Arch has
-          # no separate package for — it ships private headers inside qt6-base,
-          # and src/server/CMakeLists.txt links Qt6::GuiPrivate.
-          #
-          # A correction, paid for by two red runs. I first claimed qtkeychain
-          # and layer-shell-qt were "vendored through FetchContent and neither
-          # is on by default", and dropped both. That is backwards:
-          #
-          #   USE_SYSTEM_DEFAULT is ON, and OFF only for APPLE or WIN32
-          #   USE_SYSTEM_LAYER_SHELL is ON unconditionally (CMakeLists.txt:53)
-          #   USE_SYSTEM_QT_KEYCHAIN follows USE_SYSTEM_DEFAULT, so ON on Linux
-          #
-          # Vendoring happens only under PREFER_STATIC_LIBS, which is the
-          # AppImage path — that is where the FetchContent calls I had read come
-          # from. A normal Linux build links system libraries, exactly as the
-          # comment above those options says it prefers to.
-          #
-          # So layer-shell-qt-devel is installed (Fedora has it, 6.7.5) and
-          # qtkeychain is switched to the vendored copy explicitly with
-          # -DUSE_SYSTEM_QT_KEYCHAIN=OFF, because Fedora has no Qt6 build of it.
-          #
-          # The rest of this list was ENUMERATED rather than discovered. Three
-          # red runs each found one missing package, which is a bad way to
-          # spend cycles even cheap ones, so the tree's own requirements were
-          # read out instead:
-          #
-          #   find_package: ECM, KF6SyntaxHighlighting, LayerShellQt, OpenSSL,
-          #                 PkgConfig, X11 (REQUIRED, with the xcb, xcb_keysyms
-          #                 and xcb_xkb components), plus glaze and numen which
-          #                 are fetched rather than packaged
-          #   and the vendored qtkeychain needs libsecret-1, which the
-          #   USE_SYSTEM_QT_KEYCHAIN option's own help text says outright —
-          #   "Note: still depends on system libsecret" — and which I quoted
-          #   here two revisions ago without acting on.
+          # The dependency list lives in scripts/runners/bluefin/install-deps.sh,
+          # next to the Arch one and for the same reason: the build job below
+          # needs the identical set, and a list duplicated between two jobs is a
+          # list that drifts. That script also carries the reasoning for each
+          # translation from Arch's names, including the two corrections four
+          # red runs paid for.
           podman run --rm -v "$PWD:/src:z" -w /src \
             ghcr.io/ublue-os/bluefin:stable bash -euxo pipefail -c '
-              dnf install -y --setopt=install_weak_deps=False \
-                gcc gcc-c++ cmake ninja-build git \
-                qt6-qtbase-devel qt6-qtbase-private-devel \
-                qt6-qtsvg-devel qt6-qtdeclarative-devel \
-                qt6-qtshadertools-devel qt6-qttools-devel \
-                qt6-qtwayland-devel \
-                kf6-syntax-highlighting-devel extra-cmake-modules \
-                layer-shell-qt-devel \
-                libqalculate-devel \
-                wayland-devel wayland-protocols-devel \
-                libsecret-devel openssl-devel \
-                libX11-devel libxcb-devel xcb-util-keysyms-devel \
-                nodejs npm
+              ./scripts/runners/bluefin/install-deps.sh
+
+              # Catches what configure structurally cannot: dependencies this
+              # tree links by bare name or includes with no find_package behind
+              # them. A missing libxkbcommon-devel configures perfectly and
+              # then fails at object 624 of 812.
+              ./scripts/runners/bluefin/verify-deps.sh
 
               echo "--- what Qt did we get? ---"
               qmake6 -query QT_VERSION || rpm -q qt6-qtbase
 
               echo "--- configure ---"
-              # BUILD_TESTS=OFF, unlike build-linux.yaml, and the first run of
-              # this job is why: Fedora 44 ships Catch2 2.13.10 and the tests
-              # require Catch2 3. There is no v3 package — checked, not assumed.
-              #
-              # That is the right answer rather than a workaround. Suite 0 diffs
-              # engine *behaviour* through `vicinae --engine=cpp --json`; it does
-              # not run the C++ unit tests. Those already run on Arch in
-              # build-linux.yaml, where Catch2 is v3, and building them again on
-              # Bluefin would prove nothing Suite 0 needs. Vendoring Catch2 3
-              # through FetchContent — as the build already does for qtkeychain,
-              # layer-shell and cmark-gfm — is available if that ever changes.
               cmake -S . -B /tmp/build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_TESTS=OFF \
@@ -147,3 +102,141 @@ jobs:
           echo 'it is the expensive half. This job exists so the expensive half'
           echo 'starts from a known-good dependency set instead of discovering a'
           echo 'missing package twenty minutes in.'
+
+  build:
+    name: The C++ engine builds on Bluefin
+    needs: configure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # ccache lives on the host and is mounted into the build container, so
+      # the cache key is the runner's business rather than podman's. Without it
+      # every run recompiles 144k lines from scratch; with it a rerun that only
+      # changed the workflow is minutes.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: cpp-bluefin-ccache-${{ github.sha }}
+          restore-keys: |
+            cpp-bluefin-ccache-
+
+      - name: Build, and stage an installable tree
+        run: |
+          set -o pipefail
+          mkdir -p ~/.cache/ccache
+          # /root IS NOT A USABLE HOME DIRECTORY IN THIS IMAGE, and two
+          # separate things in this job tripped over that before the rule was
+          # written down here.
+          #
+          # First crun, on the ccache mount:
+          #
+          #   creating `/root/.cache/ccache`: openat2 `root`: No such file or
+          #   directory
+          #
+          # Then, once the mount moved to /ccache, npm six minutes into the
+          # build:
+          #
+          #   ENOTDIR: not a directory, mkdir '/root'
+          #
+          # The first fix treated one consumer rather than the cause, which is
+          # why the second cost a full build cycle. So: nothing here writes to
+          # the default HOME. It is set to a real directory below, and the
+          # container prints what /root actually is so the log carries the fact
+          # rather than my inference about bootc's /var/roothome symlink.
+          # Same image and same dependency list as the configure job above,
+          # via the same script, so the two cannot drift apart. The expensive
+          # half is deliberately gated on `needs: configure`: if a package name
+          # is wrong, that job says so in a minute rather than this one saying
+          # so in twenty.
+          podman run --rm \
+            -v "$PWD:/src:z" -v "$HOME/.cache/ccache:/ccache:z" \
+            -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=2G \
+            -e HOME=/tmp/home \
+            -w /src \
+            ghcr.io/ublue-os/bluefin:stable bash -euxo pipefail -c '
+              ./scripts/runners/bluefin/install-deps.sh
+              dnf install -y --setopt=install_weak_deps=False ccache
+              ./scripts/runners/bluefin/verify-deps.sh
+
+              # What /root actually is, recorded rather than assumed. Both
+              # failures above are explained by it; the log should say so.
+              ls -ld /root || true
+              readlink -f /root || true
+
+              # HOME must exist and be writable before anything that uses it —
+              # npm, which the build invokes for the TypeScript API client, is
+              # the consumer that found this the hard way at step 113 of 812.
+              mkdir -p "$HOME"
+              test -d "$HOME" && test -w "$HOME"
+
+              # Checked before the build rather than after it. ccache degrades
+              # silently when its directory is unwritable — every compile is a
+              # miss and the job simply takes twenty minutes every time — so a
+              # broken mount would otherwise look like success.
+              test -w "$CCACHE_DIR"
+              ccache --zero-stats
+
+              # And prove npm can actually run under that HOME, in a second,
+              # rather than discovering it six minutes into a compile.
+              npm --version
+              npm config get cache
+
+              cmake -S . -B /tmp/build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_TESTS=OFF \
+                -DUSE_SYSTEM_CMARK_GFM=OFF \
+                -DUSE_SYSTEM_QT_KEYCHAIN=OFF \
+                -DCMAKE_INSTALL_PREFIX=/usr \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+              cmake --build /tmp/build --parallel "$(nproc)"
+
+              # DESTDIR staging rather than installing into the container: the
+              # container is thrown away, and what the VM tier needs is a tree
+              # it can unpack over / in the test image. Staged under /tmp
+              # rather than the bind mount, to keep the install tree out of the
+              # checkout — though the build writes into it regardless, since
+              # Figura generates the TypeScript client in-tree and npm puts
+              # node_modules next to it.
+              DESTDIR=/tmp/stage cmake --install /tmp/build
+
+              echo "--- what got staged ---"
+              find /tmp/stage -type f | sort
+
+              # The two files Suite 0 actually needs, asserted rather than
+              # assumed: `cmake --install` succeeding says nothing about which
+              # targets carried an install() rule, and src/cli is the engine
+              # entrypoint `parity --cpp-engine` will invoke.
+              test -x /tmp/stage/usr/bin/vicinae
+              test -x /tmp/stage/usr/libexec/vicinae/vicinae-server
+
+              tar -C /tmp/stage -czf /src/vicinae-bluefin.tar.gz .
+              ccache --show-stats || true
+            '
+          # podman ran as root, so the staged files are root-owned and the
+          # runner user cannot read them to upload.
+          sudo chown "$(id -un)" vicinae-bluefin.tar.gz
+          ls -lh vicinae-bluefin.tar.gz
+
+      - name: Publish the C++ engine for the VM tier
+        uses: actions/upload-artifact@v4
+        with:
+          name: vicinae-cpp-bluefin
+          path: vicinae-bluefin.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: What this unblocks
+        if: always()
+        run: |
+          echo 'This tarball is the second engine Suite 0 has been missing.'
+          echo 'PLAN.md §8.1 diffs `vicinae --engine=cpp --json` against the Rust'
+          echo 'engine; crates/compass-testkit/src/parity.rs takes --cpp-engine'
+          echo 'and has never run because there was nothing to point it at.'
+          echo
+          echo 'Layering it into the VM image and running parity there is the'
+          echo 'next step, and it is a separate change.'

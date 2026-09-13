@@ -40,17 +40,17 @@ jobs:
       # all of scripts/. This repository is a fork carrying the whole C++ tree,
       # and its inherited scripts have their own shellcheck warnings that are
       # not this project's to fix — failing the build on somebody else's shell
-      # is how a lint job gets turned off. These three directories are the ones
+      # is how a lint job gets turned off. These directories are the ones
       # the Rust port added, so a warning in them is ours and is a defect.
-      # Deliberately not `find . -name '*.sh'`: this repository still contains a
-      # large vendored C++ tree with its own scripts, and failing the build on
-      # somebody else's shell is how a lint job gets disabled. These are ours.
+      # scripts/runners/bluefin is named specifically rather than
+      # scripts/runners, because that directory also holds the inherited arch/
+      # and appimage/ scripts, which are not.
       #
       # Written to a file rather than a step output, so nothing this job runs is
       # assembled by string-interpolating a path into a shell command.
       - name: Collect
         run: |
-          find packaging/vmtest scripts/vmtest scripts/flatpak -name '*.sh' -type f | sort > /tmp/ours.txt
+          find packaging/vmtest scripts/vmtest scripts/flatpak scripts/runners/bluefin -name '*.sh' -type f | sort > /tmp/ours.txt
           test -s /tmp/ours.txt || { echo "::error::no scripts found — the paths have moved"; exit 1; }
           sed 's/^/  /' /tmp/ours.txt
 
