@@ -24,6 +24,8 @@ UI_ERR=/tmp/compass-ui.err
 UI_DONE=/tmp/compass-ui.done
 CONTROL_ERR=/tmp/compass-control-app.err
 CONTROL_DONE=/tmp/compass-control-app.done
+KBD_CAP=/tmp/compass-kbd-capture.bin
+KBD_CAP_DONE=/tmp/compass-kbd-capture.done
 
 # uid of the autologin user. Everything about a session is addressed by it.
 uid() { id -u "$SESSION_USER"; }
@@ -231,6 +233,68 @@ PY
     cat "$SPIKE_OUT"
     python3 -c "import json,sys; json.load(open('$SPIKE_OUT'))" \
       || { echo 'the spike produced no valid JSON report' >&2; exit 1; }
+    ;;
+
+  # Does an injected scancode reach the guest KERNEL?
+  #
+  # This splits the one question left about Spike A. Pressing Super alone
+  # changes nothing on screen, and the guest does have a keyboard — the
+  # evidence check shows an "AT Translated Set 2 keyboard" with an evdev node,
+  # so the earlier guess that corral adds no input device was wrong. That
+  # leaves two possibilities that look identical from outside:
+  #
+  #   a. QEMU never delivers the scancode to the emulated keyboard, or
+  #   b. it does, and something above the kernel — mutter, the seat, focus —
+  #      discards it.
+  #
+  # Reading the evdev node decides it. Bytes arriving while the host injects a
+  # key means the kernel got the event and (b) is the answer; silence means (a),
+  # and it is corral's or QEMU's to fix rather than ours.
+  #
+  # The node is resolved from /proc/bus/input/devices rather than hard-coded to
+  # event1: it is event1 today, and a hard-coded node that silently moves would
+  # report "no input" for a keyboard that is working perfectly.
+  keyboard-capture-start)
+    node="$(awk '
+      /^N: Name=/ { name=$0 }
+      /^H: Handlers=/ { handlers=$0 }
+      /^B: EV=/ {
+        if (name ~ /[Kk]eyboard/ && handlers ~ /event[0-9]+/) {
+          match(handlers, /event[0-9]+/)
+          print substr(handlers, RSTART, RLENGTH)
+        }
+        name=""; handlers=""
+      }' /proc/bus/input/devices | head -1)"
+    if [ -z "$node" ]; then
+      echo "no keyboard evdev node found; /proc/bus/input/devices follows" >&2
+      cat /proc/bus/input/devices >&2
+      exit 1
+    fi
+    echo "capturing from /dev/input/$node"
+    rm -f "$KBD_CAP" "$KBD_CAP_DONE"
+    # timeout, not a kill later: the capture must end on its own even if the
+    # collector never runs, or a failed run leaves a cat holding the device.
+    setsid bash -c '
+      timeout 25 cat "/dev/input/$1" > "$2" 2>/dev/null
+      echo done > "$3"
+    ' _ "$node" "$KBD_CAP" "$KBD_CAP_DONE" < /dev/null > /dev/null 2>&1 &
+    # A moment for the redirect to actually open the device, so a key pressed
+    # immediately afterwards is not injected into a capture that has not started.
+    sleep 2
+    ;;
+
+  # Read back what the kernel saw. Run after the host has injected the key.
+  keyboard-capture-report)
+    wait_for "the keyboard capture to finish" 40 test -f "$KBD_CAP_DONE"
+    bytes=$(wc -c < "$KBD_CAP" 2>/dev/null || echo 0)
+    echo "captured $bytes bytes of input events while the key was injected"
+    # struct input_event is 24 bytes on 64-bit; any whole number of them means
+    # the kernel genuinely saw input.
+    if [ "$bytes" -gt 0 ]; then
+      echo "VERDICT: the scancode REACHED the guest kernel — the loss is above it"
+    else
+      echo "VERDICT: NOTHING reached the guest kernel — QEMU never delivered it"
+    fi
     ;;
 
   # Evidence for Spike A, gathered before the spike runs so that a hang has

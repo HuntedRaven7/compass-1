@@ -668,13 +668,33 @@ arrived. Not the portal, not the compositor's routing, not our event loop —
 which the `Changed` signal arriving through that same broadcast channel during
 the wait had already made unlikely.
 
-A first hypothesis, and it is only that: corral builds its command line with
-`-vga virtio -display none`, `virtio-net-pci` and `virtio-rng-pci`, and adds
-**no input device**. x86's default machine type still provides a PS/2
-controller, so a keyboard should be present — "should" being the word that
-earns a measurement. `checks.sh spike-a-evidence` now dumps
-`/proc/bus/input/devices` and, where available, libinput's view, so the next
-run says whether there is a keyboard for the scancodes to arrive on at all.
+The first hypothesis was that corral adds **no input device** — its command
+line is `-vga virtio -display none` with `virtio-net-pci` and `virtio-rng-pci`
+and nothing else. That was hedged as a guess that had earned a measurement, and
+the measurement refuted it. `/proc/bus/input/devices` in the guest:
+
+```
+N: Name="AT Translated Set 2 keyboard"
+H: Handlers=sysrq kbd leds event1
+B: EV=120013
+```
+
+x86's default machine type provides the PS/2 controller, the kernel binds it,
+and there is a working evdev node. **There is a keyboard.**
+
+So two possibilities remain, and they are indistinguishable from outside the
+guest: QEMU never delivers the scancode to that emulated keyboard, or it does
+and something above the kernel — mutter, the seat, focus — discards it.
+
+Reading the evdev node decides it, and needs nothing installed.
+`checks.sh keyboard-capture-start` opens `/dev/input/eventN` for the duration of
+the keypress and `keyboard-capture-report` says how many bytes arrived. Bytes
+mean the kernel saw the event and the loss is above it; silence means QEMU never
+delivered it, and it is corral's to fix rather than ours. The node is resolved
+from `/proc/bus/input/devices` rather than hard-coded to `event1`, because a
+hard-coded node that silently moves would report "no input" for a keyboard that
+is working perfectly — and the resolver was tested against the guest's actual
+output before shipping.
 
 ### 2. The launcher starts, stays alive, says nothing, and draws nothing
 

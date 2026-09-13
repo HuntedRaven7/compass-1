@@ -93,12 +93,22 @@ echo '=== 1c. does an injected key reach this session at all? (the control) ==='
 # Escape afterwards, so the overview is not left covering the screen for the
 # real keypress. Best-effort throughout: a control must never fail the run it
 # exists to explain.
+# And while the key is pressed, watch the guest's own keyboard device. The
+# screenshot says whether the desktop reacted; the evdev capture says whether
+# the kernel even saw the scancode, and those are different failures with
+# different owners. The guest does have a keyboard — the evidence step above
+# shows an "AT Translated Set 2 keyboard" with an evdev node — so "corral adds
+# no input device", which was the first guess, is already ruled out.
+guest "$checks" keyboard-capture-start || true
+
 sudo -E "$(command -v corral)" screenshot "$vm" -o "$out/control-00-before-super.png" || true
 sudo -E "$(command -v corral)" key "$vm" meta_l || true
 sleep 3
 sudo -E "$(command -v corral)" screenshot "$vm" -o "$out/control-01-after-super.png" || true
 sudo -E "$(command -v corral)" key "$vm" esc || true
 sleep 2
+
+guest "$checks" keyboard-capture-report || true
 
 echo
 echo "=== 2. press it at QEMU's emulated keyboard ==="
