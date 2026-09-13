@@ -55,18 +55,34 @@ jobs:
             ghcr.io/ublue-os/bluefin:stable bash -euxo pipefail -c '
               dnf install -y --setopt=install_weak_deps=False cpio >/dev/null
 
-              dnf repoquery --quiet --qf "%{name}" \
+              # The \n is load-bearing. Without it dnf runs the format string
+              # together for every package and emits ~1500 names as ONE line,
+              # which sort -u happily reports as a single unique entry. The
+              # first run of this job did exactly that and the guard below
+              # caught it at "1 package" — with the whole Fedora desktop set
+              # visibly present in the log, on that one line.
+              #
+              # No apostrophes in these comments: the whole payload is a
+              # single-quoted bash -c argument, and one apostrophe ends it.
+              dnf repoquery --quiet --qf "%{name}\n" \
                 --file "/usr/share/applications/*.desktop" \
                 | sort -u > /src/desktop-packages.txt
 
               count=$(wc -l < /src/desktop-packages.txt)
-              echo "packages shipping a desktop entry: $count"
+              longest=$(awk "{ if (length(\$0) > m) m = length(\$0) } END { print m + 0 }" \
+                /src/desktop-packages.txt)
+              echo "packages shipping a desktop entry: $count (longest name: $longest chars)"
               head -20 /src/desktop-packages.txt
 
-              # An empty list is the failure this step exists to catch, and it
-              # would otherwise look like a successful harvest of nothing.
+              # Two failures, distinguished, because the first run proved they
+              # are not the same thing and a guard that conflates them sends you
+              # looking in the wrong place. Too few packages means the query
+              # matched nothing; one absurdly long line means it matched
+              # everything and the output was not separated.
+              test "$longest" -lt 200 \
+                || { echo "::error::a package name is $longest chars — the format string lost its newline"; exit 1; }
               test "$count" -gt 50 \
-                || { echo "::error::repoquery named $count packages; the query is wrong"; exit 1; }
+                || { echo "::error::repoquery named only $count packages; the --file query matched nothing"; exit 1; }
             '
           sudo chown "$(id -un)" desktop-packages.txt
 

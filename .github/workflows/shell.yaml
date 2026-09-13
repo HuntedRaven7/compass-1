@@ -101,9 +101,18 @@ jobs:
       # framediff.py, and a syntax error in it would otherwise surface thirty
       # minutes into a VM run rather than here in ten seconds — which is the
       # entire premise of this workflow.
+      # Workflow YAML hides shell from every other check here: a container
+      # payload passed as `bash -c '...'` is just a string until its quoting
+      # breaks. Two defects of that exact shape have already reached a branch —
+      # an inner heredoc terminator matching the outer one, and an apostrophe in
+      # the word "Fedora's" closing the payload early. Neither is visible to a
+      # YAML parser, and both cost a CI round.
+      - name: Parse the shell embedded in workflow YAML
+        run: python3 scripts/ci/check-workflow-payloads.py
+
       - name: Compile the standalone Python
         run: |
-          mapfile -t files < <(find packaging/vmtest scripts/vmtest scripts/flatpak \
+          mapfile -t files < <(find packaging/vmtest scripts/vmtest scripts/flatpak scripts/ci \
             -name '*.py' -type f | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no standalone Python found — the paths have moved"

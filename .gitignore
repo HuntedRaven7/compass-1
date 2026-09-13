@@ -55,3 +55,4 @@ BACKUP/
 
 /build-flatpak
 /.flatpak-builder
+__pycache__/
