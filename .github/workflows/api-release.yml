@@ -7,6 +7,16 @@ on:
         type: string
         required: true
 
+# The default for every job in this file. Jobs that need more say so
+# themselves, and a job-level block REPLACES this one rather than adding to it —
+# so an elevated job must restate `contents: read` if it also checks out code.
+#
+# The point is what happens to the NEXT job somebody adds here: without this it
+# inherits the repository default, which may be write-all. With it, a new job
+# has to ask.
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest
