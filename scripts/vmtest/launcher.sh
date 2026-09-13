@@ -67,6 +67,14 @@ echo "=== 1. open the launcher in the session ==="
 guest "$checks" launcher-start
 
 echo
+echo "=== 1b. what is the launcher blocked on? ==="
+# Added after the instrumented run: the log stops 200ms in and the process sits
+# there alive, so logging cannot say where it stopped — the stuck code is not
+# the code doing the logging. The kernel can. Best-effort; a diagnostic must
+# never fail the run it exists to explain.
+guest "$checks" launcher-diagnose || true
+
+echo
 echo "=== 2. the screen with the launcher open ==="
 sudo -E "$corral_bin" screenshot "$vm" -o "$out/launcher-01-open.png" --require-paint
 
@@ -77,6 +85,13 @@ echo "=== 3. type a query at it ==="
 # itself. This is the same mechanism Spike A uses to press Super+Space.
 sudo -E "$corral_bin" type "$vm" "$query"
 shot "launcher-02-typed.png"
+
+echo
+echo "=== 3b. and is it blocked in the same place after the keystroke? ==="
+# The same probe again, deliberately. A process parked in the same syscall on
+# the same socket both times is stuck; one that has moved is merely slow, and
+# those two want completely different fixes.
+guest "$checks" launcher-diagnose || true
 
 echo
 echo "=== 4. is it still running? ==="

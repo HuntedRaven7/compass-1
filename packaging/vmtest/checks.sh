@@ -314,7 +314,8 @@ PY
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$2/bus" \
         WAYLAND_DISPLAY="$3" \
         XDG_SESSION_TYPE=wayland \
-        RUST_LOG="info,wgpu=debug,wgpu_hal=debug,iced_wgpu=debug,winit=debug" \
+        RUST_LOG="info,wgpu=debug,wgpu_hal=debug,iced_wgpu=debug,winit=debug,\
+sctk_adwaita=debug,smithay_client_toolkit=debug,wayland_client=debug,calloop=debug" \
         RUST_BACKTRACE=1 \
         flatpak run --installation="$4" "$5" ui \
         > "$6" 2>&1
@@ -349,6 +350,62 @@ PY
     fi
     echo "the launcher is running; output so far:"
     cat "$UI_ERR"
+    ;;
+
+  # What is the launcher actually blocked on?
+  #
+  # The instrumented run answered one question and posed a sharper one: the log
+  # ends 200 ms in, at an `sctk_adwaita` XDG-Settings-Portal timeout inside
+  # `create_window`, and then nothing — no wgpu lines at all, though wgpu,
+  # wgpu_hal and iced_wgpu were all at debug. So execution never reaches wgpu,
+  # and the process sits there alive for the rest of the run.
+  #
+  # Logs cannot say where it stopped, because the stuck code is not logging.
+  # The kernel can. /proc/PID/wchan and /proc/PID/syscall name the syscall a
+  # thread is parked in, and the open fds say which socket it is parked on —
+  # a Wayland socket and a D-Bus socket look nothing alike here. No debugger
+  # needed, nothing to install, and it works on a stripped image.
+  #
+  # Reading the host's /proc for a Flatpak process is fine: bwrap namespaces
+  # the guest's view, not root's.
+  launcher-diagnose)
+    pid="$(pgrep -u "$SESSION_USER" -x vicinae | head -1 || true)"
+    if [ -z "$pid" ]; then
+      echo "no vicinae process to diagnose"
+      exit 0
+    fi
+    echo "pid $pid"
+    echo "--- state ---"
+    grep -E '^(State|Threads|SigBlk):' "/proc/$pid/status" 2>/dev/null || true
+    echo "--- per-thread: what each one is parked in ---"
+    # The main thread is the interesting one, but a hang in a worker looks
+    # identical from outside, so all of them are printed.
+    for t in /proc/"$pid"/task/*; do
+      tid="$(basename "$t")"
+      printf '  tid %s  state=%s  wchan=%s\n' \
+        "$tid" \
+        "$(awk '/^State:/{print $2}' "$t/status" 2>/dev/null)" \
+        "$(cat "$t/wchan" 2>/dev/null || echo '?')"
+      printf '    syscall: %s\n' "$(cat "$t/syscall" 2>/dev/null || echo '?')"
+    done
+    echo "--- sockets it holds open ---"
+    # readlink over a glob rather than `ls -l | grep`: shellcheck SC2010 is
+    # right that parsing ls breaks on odd names, and /proc/PID/fd is exactly
+    # where symlink targets get interesting.
+    found=0
+    for fd in "/proc/$pid/fd"/*; do
+      [ -e "$fd" ] || continue
+      target="$(readlink "$fd" 2>/dev/null || true)"
+      case "$target" in
+        socket:*|*wayland*|*dbus*|*bus)
+          printf '  %s -> %s\n' "$(basename "$fd")" "$target"; found=1 ;;
+      esac
+    done
+    [ "$found" = 1 ] || echo '(no sockets listed)'
+    echo "--- and which of those the kernel can name ---"
+    # Matching the socket inodes against unix sockets gives the peer path, which
+    # is what distinguishes "waiting on Wayland" from "waiting on the portal".
+    ss -x -p 2>/dev/null | grep -F "pid=$pid" || echo '(ss unavailable or no match)'
     ;;
 
   # Assert the launcher is still up, and say what it printed.

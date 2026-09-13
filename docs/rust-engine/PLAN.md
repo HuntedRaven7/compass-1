@@ -1020,10 +1020,19 @@ Ordered by what unblocks the most:
    it: `vicinae ui` starts in 2 s, stays alive, prints nothing, and its 640×480 centred window
    never appears — the only region of the screen that changes is a 258×81 box at bottom-centre,
    which is GNOME's own furniture, not ours. This outranks everything below it, because every other
-   item assumes a launcher that renders. The next run is instrumented (`wgpu`, `wgpu_hal`,
-   `iced_wgpu`, `winit` at debug) rather than guessed at; the likely story is Iced failing to get a
-   surface in a VM with no GPU, but a silent process is the least trustworthy kind of evidence and
-   it has not been measured yet.
+   item assumes a launcher that renders.
+
+   The instrumented run has narrowed it and ruled out the obvious answer. With `wgpu`, `wgpu_hal`
+   and `iced_wgpu` all at debug the process logs **three records in 200 ms and then nothing** for
+   the rest of the run — and **not one of them is from wgpu**. So it never reaches wgpu
+   initialisation, and "no GPU in the VM" is not the explanation. The last thing logged is
+   `sctk-adwaita` timing out after 100 ms reading `color-scheme` from the XDG Settings portal,
+   inside `create_window` — and that is a **red herring**, settled from its source: both of that
+   crate's portal queries shell out to `dbus-send --reply-timeout=100` and take `.output()`, so
+   both are bounded and neither can block. The block is after it and before wgpu, with nothing
+   logging on the way. `checks.sh launcher-diagnose` now reads the kernel's own
+   view — per-thread `wchan`/`syscall` and the open sockets — before and after the keystroke,
+   because the stuck code is not the code that logs.
 
 1. **Wire the UI into the binary** (#4). A window that opens, a list that moves, and a selection
    that actually launches via `compass-platform`. Everything in Phase 1's gate is downstream.

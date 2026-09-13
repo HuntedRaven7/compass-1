@@ -721,6 +721,68 @@ launcher does not draw" every run, before anyone knows why, trains people to
 ignore the tier. Both are recorded, both are instrumented, and the gate follows
 the diagnosis rather than preceding it.
 
+### Instrumented: it never reaches wgpu, and my hypothesis was wrong
+
+The previous section guessed that Iced could not get a rendering surface in a
+VM with no GPU, and flagged that as a hypothesis with a silent process behind
+it. The instrumented run says it is wrong.
+
+With `wgpu`, `wgpu_hal`, `iced_wgpu` and `winit` all at debug, the launcher
+produced exactly three log records and then went quiet:
+
+```
+INFO  iced_winit: System theme: None
+INFO  iced_winit: Window attributes for id `Id(1)`: WindowAttributes { … }
+ERROR winit::ActiveEventLoop::create_window{…}: sctk_adwaita::config:
+      XDG Settings Portal did not return response in time:
+      timeout: 100ms, key: color-scheme
+```
+
+The last is at **T+200 ms**. The log read again at the *end* of the run — after
+both screenshots and the typed query, ten seconds later — is byte-identical.
+
+**There is not one wgpu line.** Not an adapter enumeration, not a failure, not
+a warning. So execution never reaches wgpu initialisation at all, and "wgpu
+cannot find an adapter under llvmpipe" is not the explanation. The failure is
+earlier, inside or just after `create_window`.
+
+The one error on the way is `sctk-adwaita` — the client-side decoration
+provider — timing out after 100 ms reading `color-scheme` from the XDG Settings
+portal. That timeout is **not** the hang, and this is settled from source rather than
+from another run. `sctk-adwaita 0.10.1`'s `config.rs` implements both of its
+portal queries by shelling out to `dbus-send --reply-timeout=100` and taking
+`.output()`. Both are bounded at 100 ms; neither can block. The logging is
+self-consistent too: the error only fires when `dbus-send` actually ran and
+returned empty stdout, so the binary exists in the runtime and simply timed
+out, and `prefer_dark()` then returns `false` and carries on.
+
+So the most visible error in the log is a red herring, and worth naming as one
+before somebody spends a day on the portal. What remains is that the process
+blocks somewhere after that and before wgpu — inside or just after
+`create_window` — with nothing logging on the way.
+
+Logs cannot settle it, because the code that is stuck is not the code that is
+logging. The kernel can. `checks.sh launcher-diagnose` reads
+`/proc/PID/{status,wchan,syscall}` per thread and resolves the process's open
+sockets, which names the syscall a thread is parked in and what it is parked
+on — a Wayland socket and a D-Bus socket look nothing alike. No debugger, no
+package to install, and it works on a stripped image. Reading the host's
+`/proc` for a Flatpak process is fine: bwrap namespaces the guest's view of
+`/proc`, not root's.
+
+It runs **twice**, before and after the keystroke, deliberately. A thread
+parked in the same syscall on the same socket both times is stuck; one that has
+moved is merely slow, and those want completely different fixes.
+
+`RUST_LOG` also gains `sctk_adwaita`, `smithay_client_toolkit`, `wayland_client`
+and `calloop` at debug, so the Wayland protocol exchange is visible next time
+rather than inferred.
+
+Worth stating plainly, because it is the second time in two sections: the
+obvious explanation was wrong again. First the input-source collision that
+turned out to be `<Shift><Super>space`, now wgpu that turns out never to run.
+Both were caught by building the measurement before believing the story.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through
