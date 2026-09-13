@@ -878,7 +878,8 @@ supplied files they had not committed, and that is now checked rather than assum
   XDG variable pointed into a tempdir.
 - **`compass-testkit`** (5) — corpus loader; entries expose raw bytes, not `String`.
 - **ADRs 0001–0009.**
-- **Flatpak manifest** for the Bluefin target — syntax-validated only; never built.
+- **Flatpak manifest** for the Bluefin target — built, installed and run in CI on every change
+  (`.github/workflows/flatpak.yaml`), and layered into the VM tier's test image.
 - **i18n converter** — 7,347 messages across 7 locales, all parsing with the real `fluent-syntax`
   crate. ADR-0003's claim that the donated translations survive is demonstrated, not asserted.
 
@@ -912,8 +913,10 @@ covered. The container has no display server, no `flatpak`, no `qemu`, and no `/
 - the VM tier in §8.9 itself.
 
 Every one of those is now reachable **in CI** even though it is unreachable *here*, via the corral
-VM tier (ADR-0010). The distinction matters: the container's limits are no longer the project's
-limits, and nothing in this list is waiting on a human with a laptop any more.
+VM tier (ADR-0010) — and three of the four have since been exercised there rather than merely made
+reachable: the Flatpak builds and runs, the VM boots a real GNOME session that paints, and the
+GlobalShortcuts portal has been asked a real question (§11.1). `compass-ui` is the one still
+untested, because nothing starts a window yet.
 
 It *can* run a real DBus session bus (`dbus-run-session` works), so the GNOME Shell integration and
 its mock-bus suite are genuinely testable here. That is why Phase 3's testing is further along than
@@ -925,48 +928,74 @@ work.
 - **Run the corpus harvester on a real Bluefin box.** The synthetic corpus is a model of the spec,
   not of reality. (Or take it from the VM tier below, which boots one.)
 
-**Spikes A and B are no longer blocked.** They were filed here as needing hardware this container
-cannot provide. [ADR-0010](./adr/0010-corral-vm-tier.md) removes that: `corral vmtest` boots a real
-Bluefin VM on the x86_64 hosted runners we already have — measured, not assumed, see §8.9 — with a
-real GNOME session, a real portal, a real Flatpak sandbox and console keyboard injection for the
-hotkey. Both spikes become CI jobs. Phase 4's design was explicitly waiting on Spike B; it no longer
-has to.
+**Spikes A and B are no longer blocked, and both have now run.** They were filed here as needing
+hardware this container cannot provide. [ADR-0010](./adr/0010-corral-vm-tier.md) removed that:
+`corral vmtest` boots a real Bluefin VM on the x86_64 hosted runners we already have — measured, not
+assumed, see §8.9 — with a real GNOME session, a real portal, a real Flatpak sandbox and console
+keyboard injection for the hotkey. What they found is §11.1.
+
+### 11.1 What the spikes measured
+
+**Spike A — the GlobalShortcuts portal.** Two of its three questions are answered:
+
+| Question | Answer |
+|---|---|
+| Is the portal there? | **Yes**, interface v1. The premise of `compass-portals` holds on the target. |
+| Is binding permitted unattended? | **No.** `BindShortcuts` did not return within 30s. |
+| Does a keypress reach us? | **Unknown** — and this run says nothing about it. |
+
+That third row is easy to misread. `activated: false` is not evidence about the keyboard: there was
+no binding for `meta_l spc` to trigger. Nothing measured so far says the hotkey does not work.
+
+The likely cause is `xdg-desktop-portal-gnome` showing a consent dialog no CI can click — **likely,
+not proven**, since a backend failing to respond in a software-rendered session is indistinguishable
+from the client side. The run captures the framebuffer at the moment of the keypress for a human to
+settle it.
+
+The consequence for the plan: **what blocks Spike A is consent, not key injection.** Phase 1's gate
+says the launcher "binds Super+Space via the portal", and that step cannot currently be demonstrated
+unattended. Either the permission is pre-seeded into the test image, or Phase 1's gate is verified
+by a human on a real machine and CI checks the rest.
+
+**Spike B — sandbox nesting.** Whether Landlock and seccomp confine a process *inside* the Flatpak,
+which Phase 4's extension host is designed on. It runs in the Flatpak CI job — a real bwrap sandbox,
+answering in three minutes — and again in the VM on Bluefin's own kernel, because Landlock's ABI is
+a kernel property. Every assertion is paired with a control, so a boundary that denies everything is
+not mistaken for one that works, nor one that denies nothing for a sandbox at all.
 
 ## 12. Immediate next steps
 
-Phase 0 is done: the workspace, CI, the Flatpak manifest, ADRs 0001–0008 and the parity ledger have
-all landed, and the corpus exists in synthetic form. What remains splits by whether this container
-can verify it.
+Rewritten as items land; the previous version listed the VM tier and both spikes as the work to do,
+and all three now exist.
 
-**Verifiable here, so in progress:**
+**Done since the last revision:** the Flatpak builds and runs in CI; the VM tier boots Bluefin with
+our Flatpak in it and asserts from a real GNOME session; Spike A has an answer (§11.1); Spike B runs
+in both the Flatpak job and the VM; every workflow defaults to read-only permissions.
 
-1. ~~`EventCounted<T>` in the extension-API seam.~~ Closed by ADR-0009.
-2. ~~An engine that runs.~~ `vicinae serve` landed: until then every crate was a library and every
-   subcommand was a client looking for a server that did not exist. It is headless — no `compass-ui`
-   yet — but it indexes, ranks and answers over the real socket, and it is the thing the VM tier
-   (#18) and the C++ behavioural baseline will be run against.
-3. Widen the parity port: `compass-core`'s index against the harvested corpus, and the remaining
-   Catch2 ordering cases into `compass-search`.
-4. Grow the mock-bus suite in `compass-shell` toward the full surface the Shell extension exposes,
-   since a real session bus is the one piece of the desktop this container does have.
+**The largest gap is that there is no launcher.** `compass-ui` and `compass-wayland` exist as
+libraries, but nothing wires them into the binary: `vicinae` still answers `toggle`, `show` and
+`hide` with "this engine is headless", `LaunchSelected` returns `Task::none()`, and no code starts a
+window. Until that changes, Phase 1's gate cannot be evaluated at all and the VM tier's subject is
+the portal and sandbox questions rather than the launcher. This is issue #4 and it is the next thing
+that matters.
 
-**Newly unblocked by the corral VM tier (ADR-0010), and the highest-value work available:**
+Ordered by what unblocks the most:
 
-4. **Stand up the VM tier.** One workflow: build the Flatpak, layer it onto
-   `ghcr.io/ublue-os/bluefin:stable` with the Shell extension and GDM autologin, `corral vmtest
-   --require-paint`. Everything below depends on it, and it is also the first time
-   `packaging/flatpak/` gets built rather than syntax-checked.
-5. **Spike A**, now a CI job: bind Super+Space through the GlobalShortcuts portal, send `meta_l spc`
-   at the emulated keyboard with `corral key`, and screenshot the result. `compass-portals` cannot
-   tell whether a bind is permitted, whether the trigger granted is the one requested, or whether
-   the compositor delivers the keypress; this can.
-6. **Spike B**, likewise: Landlock + seccomp around a child process inside a real Flatpak. Phase 4's
-   sandbox design is unproven until this answers, and nothing should be built on it first.
-7. **Capture the C++ baseline on the target.** With the tier up, run the *existing* C++ engine in the
-   VM and record what it actually does. Today's parity suites compare the Rust port against our
-   reading of the C++ source; this compares it against the C++ behaviour on the real OS, which is
-   the difference between a port that matches the code and one that matches the product.
+1. **Wire the UI into the binary** (#4). A window that opens, a list that moves, and a selection
+   that actually launches via `compass-platform`. Everything in Phase 1's gate is downstream.
+2. **Settle Spike A's consent question** (§11.1). Look at the captured frame; if it is a dialog,
+   find whether the grant can be pre-seeded into the test image. Two of Spike A's three questions
+   stay unanswerable until it is.
+3. **Capture the C++ baseline on the target.** Today's parity suites compare the port against *our
+   reading* of the C++ source; this compares it against the C++ behaviour on the real OS. Note the
+   prerequisite nobody has costed yet: getting a Qt6 build into the VM, which the disabled AppImage
+   path used to provide.
+4. **Widen the parity port** — `compass-core`'s index against the harvested corpus, and the
+   remaining Catch2 ordering cases into `compass-search`.
+5. **Promote the VM tier to the merge queue** once it has been stable for a couple of weeks
+   (ADR-0010). It has three consecutive green runs; that is not two weeks.
 
-The spikes are independent and run in parallel once (4) exists. Note what this does **not** unblock:
-the Rust engine has no UI, so the tier's first subject is the C++ engine and the portal/sandbox
-questions, not the Rust launcher.
+Not blocking anything, but worth doing while it is cheap: the two corral bugs this tier found on
+locally built bootc images — `podman create` on a CMD-less image, and the layer builder pulling a
+`localhost/` reference its own disk builder guards against — are both small upstream fixes and
+neither has been filed.

@@ -125,6 +125,18 @@ print('\nall gated checks ok:', ', '.join(required))
 PY
     ;;
 
+  # Spike B (#3): the same question on the target kernel. The Flatpak CI job
+  # answers it in three minutes on the runner's kernel; this one answers it on
+  # Bluefin's, which is what actually ships, and Landlock's ABI is a kernel
+  # property. Evidence only — no assertion, because every outcome is a finding.
+  spike-b)
+    u="$(uid)"
+    runuser -u "$SESSION_USER" -- env \
+      XDG_RUNTIME_DIR="/run/user/$u" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$u/bus" \
+      flatpak run --installation="$INSTALLATION" "$APP" spike sandbox
+    ;;
+
   # ── Spike A ────────────────────────────────────────────────────────────────
   #
   # Two halves, because a host-side keypress has to happen between them. corral

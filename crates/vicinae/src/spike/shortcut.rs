@@ -1,17 +1,4 @@
-//! One-off experiments that answer a question the code cannot answer about
-//! itself.
-//!
-//! A spike is not a feature and not a test. It exists because some questions
-//! about a desktop can only be answered by asking a running desktop, and until
-//! they are answered a design cannot honestly be finished. `docs/rust-engine`
-//! issue #3 names two; this module implements the first.
-//!
-//! Spikes are hidden from `--help` on purpose. They are addressed to whoever is
-//! answering the question — CI, or a person on a real machine — not to users,
-//! and each one should be deleted or folded into a real subsystem once its
-//! question has an answer.
-//!
-//! # Spike A: does the GlobalShortcuts portal actually give us Super+Space?
+//! Spike A: does the GlobalShortcuts portal actually give us Super+Space?
 //!
 //! [`compass_portals::shortcuts`] can already ask. What it structurally cannot
 //! tell us, with no session to talk to, is what a real GNOME says back:

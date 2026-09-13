@@ -383,6 +383,52 @@ One incidental finding worth keeping: the trigger went out as `LOGO+space`, not
 `logo`, `super`, `meta` and `win` onto one another. Had it not, a successful
 bind would have been reported as a mismatch.
 
+## Spike B's first answer
+
+Measured in the `Flatpak / build` job — a real bubblewrap sandbox on a hosted
+runner, which is the environment the question is actually about:
+
+```
+inside a Flatpak:      yes
+kernel:                6.17.0-1022-azure
+Landlock (asked for): V1   ruleset: fully enforced
+  reads inside allow:  yes (control)    reads outside deny: yes (assertion)
+seccomp filter:        installed
+  blocked call denied: yes (assertion)  other calls allowed: yes (control)
+verdict: both confine a process here; Phase 4's sandbox design stands
+```
+
+**Both nest.** Landlock applies inside bubblewrap's sandbox and the kernel
+reports the ruleset *fully* enforced — not the partial enforcement a kernel
+older than the requested ABI would give. seccomp installs a second filter on
+top of bubblewrap's own and it bites. In both cases the control passed too, so
+this is a boundary that denies what it should while still allowing what it
+should, rather than one that denies everything or nothing.
+
+This is what #7 was waiting on. Phase 4 may design its extension host on
+Landlock for the filesystem boundary and seccomp for the syscall filter, on this
+kernel class, inside the Flatpak we ship. The risk PLAN.md §6 flagged is
+retired.
+
+Three caveats, none of which change the verdict:
+
+- **This is one kernel, not the target's.** `6.17.0-1022-azure` is the hosted
+  runner's. The VM job runs the same spike on Bluefin's kernel, and Landlock's
+  ABI is a kernel property, so the two are not interchangeable — the second
+  measurement is the one that speaks about the shipping platform.
+- **`seccomp_mode` came back `null` in the JSON**, despite the filter
+  demonstrably working. The field is read from `/proc/self/status`, which the
+  Flatpak sandbox evidently does not expose the way an unsandboxed process sees
+  it. So the kernel's own account of the filter — the field that caught the
+  `SYS_mkdir`/`SYS_mkdirat` bug during development — is *unavailable in exactly
+  the environment we care most about*. The assertion and control still stand on
+  their own, and the verdict rests on them; but the corroborating evidence is
+  absent here, and a future failure in this job will be harder to diagnose
+  because of it.
+- **V1 is asked for, never detected**, per the `landlock` crate's own guidance
+  that runtime detection makes sandboxing non-deterministic. A kernel offering
+  more gives us no more. That is deliberate.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through

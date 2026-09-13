@@ -44,11 +44,17 @@ dirs = "6"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 toml = "0.9"
 
+# Spike B (docs/rust-engine issue #3): the sandbox primitives Phase 4 plans to
+# use. Both expose safe APIs, so `unsafe_code = "forbid"` still holds here.
+landlock = "0.4"
+seccompiler = "0.5"
+libc = "0.2"
+
 # dev
 insta = "1"
 proptest = "1"
 walkdir = "2"
-tempfile = "3"
+tempfile = "3"     # also a runtime dep of the sandbox spike
 parking_lot = "0.12"
 criterion = { version = "0.5", features = ["async"] }
 

@@ -177,6 +177,21 @@ pub enum Spike {
         #[arg(long)]
         json: bool,
     },
+
+    /// Spike B: can we sandbox a process inside an already-sandboxed Flatpak?
+    ///
+    /// Applies a Landlock ruleset and a seccomp filter to this process and
+    /// tests whether each actually denies what it should while still allowing
+    /// what it should. Phase 4's extension-host sandbox is designed on the
+    /// assumption that both nest inside bubblewrap's; this measures it.
+    ///
+    /// Irreversible by nature: the process it runs in is confined afterwards,
+    /// which is why it is its own command and not a doctor check.
+    Sandbox {
+        /// Emit the report as JSON, for CI.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(test)]
@@ -218,6 +233,16 @@ mod tests {
         assert_eq!(trigger, None);
         assert_eq!(id, "compass.spike.toggle");
         assert_eq!(wait, 60);
+        assert!(json);
+    }
+
+    #[test]
+    fn the_sandbox_spike_parses() {
+        let Command::Spike(Spike::Sandbox { json }) =
+            parse(&["vicinae", "spike", "sandbox", "--json"]).command
+        else {
+            panic!("expected the sandbox spike");
+        };
         assert!(json);
     }
 

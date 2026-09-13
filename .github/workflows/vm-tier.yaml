@@ -183,6 +183,7 @@ jobs:
             --check '/usr/libexec/compass-vmtest/checks.sh session' \
             --check '/usr/libexec/compass-vmtest/checks.sh doctor' \
             --check '/usr/libexec/compass-vmtest/checks.sh doctor-assert' \
+            --check '/usr/libexec/compass-vmtest/checks.sh spike-b' \
             --cpu 4 --mem 8G --disk 30G \
             --timeout 30m \
             --artifacts "$GITHUB_WORKSPACE/vmtest-out" \

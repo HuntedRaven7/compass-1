@@ -82,6 +82,14 @@ jobs:
         run: flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
 
       # Keyed on the manifest, since that is what names the runtime versions.
+      # Caches the runtime, and unavoidably the installed applications with it:
+      # ~/.local/share/flatpak holds both. Keyed on the manifest, which barely
+      # changes — so a com.vicinae.Vicinae installed by an earlier run comes
+      # back, and `flatpak install` finds it already present and does nothing.
+      # That is not hypothetical: this job spent a run testing a binary built
+      # before `spike` existed and reporting `unrecognized subcommand 'spike'`.
+      # See --reinstall and the commit assertion below, which are what make the
+      # cache safe to keep.
       - name: Cache the runtime
         uses: actions/cache@v4
         with:
@@ -126,7 +134,22 @@ jobs:
         # has no desktop, so checks will legitimately fail; the assertion is that the
         # binary runs and produces a report, not that the report is clean.
         run: |
-          flatpak install --user --noninteractive /tmp/repo com.vicinae.Vicinae
+          # --reinstall, not a plain install: see the cache step. Without it a
+          # cached copy wins and every assertion below is about the wrong build.
+          flatpak install --user --noninteractive --reinstall /tmp/repo com.vicinae.Vicinae
+
+          # And then prove it, rather than trusting the flag. These two commits
+          # must be equal; if they are not, the job is testing something other
+          # than what it just built, which is exactly the failure this guards.
+          built="$(ostree --repo=/tmp/repo rev-parse app/com.vicinae.Vicinae/$(flatpak --default-arch)/master)"
+          installed="$(flatpak info --user --show-commit com.vicinae.Vicinae)"
+          echo "built     $built"
+          echo "installed $installed"
+          if [ "$built" != "$installed" ]; then
+            echo "::error::the installed Flatpak is not the one this job built"
+            exit 1
+          fi
+
           flatpak run --user com.vicinae.Vicinae --socket /tmp/ci.sock doctor --json | tee /tmp/doctor.json
           python3 -c "
           import json, sys
@@ -137,6 +160,44 @@ jobs:
           for c in checks:
               print(f\"  {c['status']:5} {c['name']}\")
           "
+
+      # Spike B (#3), and the reason it lives here rather than only in the VM
+      # tier: the question is whether Landlock and seccomp nest inside
+      # bubblewrap's sandbox, and this is a real Flatpak — same bwrap, same
+      # dropped privileges, same pre-installed seccomp filter. It answers in
+      # three minutes where the VM takes twenty-five. The VM still runs it too,
+      # because the kernel differs and Landlock's ABI is a kernel property.
+      #
+      # Not gated. Every outcome is a finding, including "neither confines a
+      # process here" — which would be a fact about Phase 4's design rather than
+      # a broken build.
+      - name: "Spike B: does a sandbox nest inside the Flatpak?"
+        run: |
+          flatpak run --user com.vicinae.Vicinae spike sandbox | tee /tmp/spike-b.txt
+          flatpak run --user com.vicinae.Vicinae spike sandbox --json > /tmp/spike-b.json
+          python3 - <<'PY'
+          import json
+          r = json.load(open('/tmp/spike-b.json'))
+          assert r['in_flatpak'], "not inside a Flatpak — this run answers the wrong question"
+          # The one thing worth failing on: a filter the kernel says is loaded
+          # while the call it blocks still succeeds means the spike is wrong,
+          # not the platform. That distinction is the whole value of the field.
+          if r['seccomp_applied'] and r['seccomp_denies_blocked_syscall'] is False:
+              print(f"::warning::seccomp loaded ({r['seccomp_mode']}) but inert — "
+                    "check the blocked syscall numbers before believing this")
+          print('verdict evidence:', json.dumps({k: r[k] for k in (
+              'kernel', 'landlock_status', 'landlock_denies_outside',
+              'seccomp_mode', 'seccomp_denies_blocked_syscall')}, indent=2))
+          PY
+
+      - name: Upload the Spike B report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-b-flatpak
+          path: /tmp/spike-b.*
+          retention-days: 14
+          if-no-files-found: warn
 
       # A single file, not the ostree repo. The VM tier consumes this through the
       # artifact store, and a repo is thousands of small files whose on-disk modes

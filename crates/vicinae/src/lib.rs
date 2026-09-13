@@ -152,7 +152,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             // asks the *desktop* a question and never touches our engine, so
             // refusing to run it under --engine cpp would only make the answer
             // harder to get.
-            let report = spike::global_shortcut(&spike::ShortcutSpike {
+            let report = spike::shortcut::global_shortcut(&spike::shortcut::ShortcutSpike {
                 id,
                 description: "compass (spike): toggle the launcher".to_owned(),
                 preferred_trigger: trigger,
@@ -168,6 +168,20 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             // Always zero. The report is the deliverable and every outcome in
             // it is a finding; a non-zero exit would make the harness treat
             // "GNOME said no" as a broken run.
+            Ok(ExitCode::from(EXIT_OK))
+        }
+
+        Command::Spike(Spike::Sandbox { json }) => {
+            // Not gated on the engine either, and for a sharper reason than the
+            // shortcut spike: this one confines the process it runs in, and
+            // there is deliberately no way to undo that. It answers a question
+            // about the machine, then exits.
+            let report = spike::sandbox::run();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render_human());
+            }
             Ok(ExitCode::from(EXIT_OK))
         }
 
