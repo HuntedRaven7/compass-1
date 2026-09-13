@@ -20,9 +20,16 @@ on:
   pull_request:
     paths: *paths
   workflow_dispatch:
+  # The VM tier calls this workflow so that "how the Flatpak is built" has one
+  # definition. The bundle it uploads is what gets layered into the test image.
+  workflow_call:
 
+# The literal prefix matters. `github.workflow` in a *called* workflow is the
+# CALLER's name, so without it this group would be identical to the VM tier's
+# own workflow-level group — and with cancel-in-progress that means the called
+# job cancels the run that called it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: flatpak-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -121,7 +128,26 @@ jobs:
               print(f\"  {c['status']:5} {c['name']}\")
           "
 
+      # A single file, not the ostree repo. The VM tier consumes this through the
+      # artifact store, and a repo is thousands of small files whose on-disk modes
+      # an artifact round trip does not promise to preserve; a bundle is one blob
+      # that `flatpak install --bundle` takes offline. It is also what a human
+      # would be handed to try a build.
+      - name: Export a single-file bundle
+        run: |
+          flatpak build-bundle /tmp/repo /tmp/com.vicinae.Vicinae.flatpak com.vicinae.Vicinae
+          ls -lh /tmp/com.vicinae.Vicinae.flatpak
+
       - name: Upload the bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: /tmp/com.vicinae.Vicinae.flatpak
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload the repo
         if: always()
         uses: actions/upload-artifact@v4
         with:

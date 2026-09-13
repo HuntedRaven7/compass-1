@@ -1,0 +1,87 @@
+# Tier 1 for the shell we ship.
+#
+# The VM tier's assertions are a shell script baked into a test image and a
+# Python heredoc inside it. Both are only executed 30 minutes into a VM run, on
+# a nightly schedule — so a quoting mistake in either would be found by the
+# slowest, least frequent job we have. This finds it in ten seconds instead, and
+# is what packaging/vmtest/checks.sh means when its header says `bash -n` runs
+# over it before CI does.
+name: Shell
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: shell-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Parse and lint every script we own
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # An explicit list of directories, not `find . -name '*.sh'` and not even
+      # all of scripts/. This repository is a fork carrying the whole C++ tree,
+      # and its inherited scripts have their own shellcheck warnings that are
+      # not this project's to fix — failing the build on somebody else's shell
+      # is how a lint job gets turned off. These three directories are the ones
+      # the Rust port added, so a warning in them is ours and is a defect.
+      # Deliberately not `find . -name '*.sh'`: this repository still contains a
+      # large vendored C++ tree with its own scripts, and failing the build on
+      # somebody else's shell is how a lint job gets disabled. These are ours.
+      #
+      # Written to a file rather than a step output, so nothing this job runs is
+      # assembled by string-interpolating a path into a shell command.
+      - name: Collect
+        run: |
+          find packaging/vmtest scripts/vmtest scripts/flatpak -name '*.sh' -type f | sort > /tmp/ours.txt
+          test -s /tmp/ours.txt || { echo "::error::no scripts found — the paths have moved"; exit 1; }
+          sed 's/^/  /' /tmp/ours.txt
+
+      - name: bash -n
+        run: |
+          status=0
+          while read -r f; do
+            if bash -n "$f"; then echo "ok   $f"; else echo "::error file=$f::bash -n failed"; status=1; fi
+          done < /tmp/ours.txt
+          exit $status
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version | head -2
+          # -S warning, not the default: style advice on a script that works is
+          # not worth a red build, while a warning here is a real defect class
+          # (unquoted expansion, masked exit status).
+          xargs -a /tmp/ours.txt shellcheck -S warning
+
+      # The assertions the VM tier gates on are Python inside a shell heredoc.
+      # Nothing else in CI would ever parse them.
+      - name: Compile the embedded Python
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          failed = []
+          found = 0
+          for path in sorted(pathlib.Path(p.strip()) for p in open('/tmp/ours.txt')):
+              text = path.read_text()
+              for match in re.finditer(r"<<'PY'\n(.*?)\nPY\n", text, re.S):
+                  found += 1
+                  try:
+                      compile(match.group(1), f'{path}:heredoc', 'exec')
+                  except SyntaxError as err:
+                      failed.append(f'{path}: {err}')
+          print(f'{found} embedded Python blocks compiled')
+          if not found:
+              sys.exit('found no embedded Python — the extraction pattern has drifted')
+          for f in failed:
+              print(f'::error::{f}')
+          sys.exit(1 if failed else 0)
+          PY

@@ -1,4 +1,4 @@
-# A Bluefin image that `podman create` will accept.
+# Stock Bluefin, made testable: a CMD podman will accept, and a readiness marker.
 #
 # WHY THIS EXISTS — delete it once corral is fixed.
 #
@@ -23,9 +23,42 @@
 #
 # The upstream fix is one word — `podman create --entrypoint=""`, or passing a
 # dummy command — since neither probe ever starts the container. Until that
-# lands, adding a CMD here makes the image createable. It changes no OS content:
-# CMD is metadata that a bootc install ignores entirely.
+# lands, adding a CMD here makes the image createable. CMD itself changes no OS
+# content: it is metadata that a bootc install ignores entirely.
+#
+# The readiness marker below IS OS content, and it is the one thing this control
+# image adds beyond stock Bluefin. It observes; it changes nothing about how the
+# desktop comes up.
 FROM ghcr.io/ublue-os/bluefin:stable
+
+# ── the readiness marker ─────────────────────────────────────────────────────
+#
+# `Started gdm.service` is the wrong marker and cost a red run to learn: it
+# fires as GDM takes the DRM device and blanks it, so corral — which captures
+# its final frame at readiness and does not retry — sampled a deliberately
+# blank screen and `--require-paint` failed at deviation exactly 0.0000. This
+# unit announces a *state* instead: logind reports a graphical session.
+COPY wait-graphical.sh /usr/libexec/compass-vmtest/wait-graphical.sh
+COPY compass-vmtest-graphical.service /usr/lib/systemd/system/compass-vmtest-graphical.service
+RUN chmod 0755 /usr/libexec/compass-vmtest/wait-graphical.sh && \
+    systemctl enable compass-vmtest-graphical.service
+
+# ── sshd ─────────────────────────────────────────────────────────────────────
+#
+# corral's checks and diagnostics all arrive over SSH, and `bootc install
+# --root-ssh-authorized-keys` puts the run's key in root's authorized_keys — but
+# a key is no use if nothing is listening. Bluefin is a desktop image and does
+# not enable sshd, so both VM jobs failed with
+#
+#   kex_exchange_identification: read: Connection reset by peer
+#
+# which reads like a broken sshd and is not one: QEMU's user-mode hostfwd
+# accepts the connection on the host and the guest resets it because no process
+# holds port 22. "Refused" would have been the clearer message; the reset is an
+# artifact of the forward.
+#
+# Enabling it is a test-image change and nothing more — it is off in what ships.
+RUN systemctl enable sshd.service
 
 # Never executed. Present only so `podman create` has something to record.
 CMD ["/bin/bash"]

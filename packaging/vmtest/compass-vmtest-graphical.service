@@ -1,0 +1,17 @@
+# Emits the VM tier's readiness marker. See wait-graphical.sh for why the
+# obvious marker (`Started gdm.service`) races GDM blanking the display.
+[Unit]
+Description=Announce on the console when a graphical session exists
+After=systemd-logind.service gdm.service
+Wants=gdm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/compass-vmtest/wait-graphical.sh
+# Bounded well above the script's own timeout, so a hang is reported by the
+# script — with its session listing — rather than killed silently by systemd.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

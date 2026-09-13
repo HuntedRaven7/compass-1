@@ -5,11 +5,15 @@
 # so the things most likely to break are exactly the things a container cannot
 # exercise.
 #
-# THIS RUN DELIBERATELY TESTS STOCK BLUEFIN, with none of our software in it.
-# The riskiest unknown is whether a GNOME desktop boots and paints under QEMU on
-# a hosted runner at all. Layering compass in at the same time would mean a
-# failure could be either half. Once this is green, #18 step 2 adds our Flatpak
-# on top and the failure is unambiguous.
+# Two jobs, and the split is deliberate:
+#
+#   boot-bluefin  stock Bluefin, none of our software. The control. If GNOME
+#                 stops booting under QEMU on a hosted runner, this is red and
+#                 the other job's redness means nothing.
+#   boot-compass  Bluefin with our Flatpak in it and a user logged in. This is
+#                 the one that can find our bugs.
+#
+# Keeping the control is what makes a failure in the second job attributable.
 #
 # KVM was measured, not assumed: ubuntu-24.04 has /dev/kvm with nested=1 and
 # QEMU offers the kvm accelerator (PLAN.md §8.9). arm64 does not, so x86_64 only.
@@ -27,7 +31,11 @@ on:
   pull_request:
     paths:
       - .github/workflows/vm-tier.yaml
+      - .github/workflows/flatpak.yaml
+      - .github/actions/vm-host/**
+      - packaging/vmtest/**
       - packaging/flatpak/**
+      - scripts/vmtest/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,73 +48,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      # `bootc install to-disk` writes a full OS image, and the Bluefin OCI image
-      # is several GB before that. The default runner has ~14 GB free on /, which
-      # is not enough; /mnt has far more.
-      - name: Make room
-        run: |
-          echo "before:"; df -h / /mnt | sed 's/^/  /'
-          sudo rm -rf /opt/hostedtoolcache /usr/local/lib/android /usr/share/dotnet
-          sudo mkdir -p /mnt/corral /mnt/containers
-          sudo chown -R "$USER" /mnt/corral /mnt/containers
-          echo "after:"; df -h / /mnt | sed 's/^/  /'
-
-      - name: Confirm KVM is actually usable
-        # Not a formality. If this silently degrades to TCG the boot takes an
-        # order of magnitude longer and times out looking like an image problem.
-        run: |
-          ls -l /dev/kvm
-          sudo apt-get update -qq && sudo apt-get install -y -qq cpu-checker qemu-system-x86
-          kvm-ok
-          qemu-system-x86_64 -accel help | grep -qw kvm
-
-      - name: Install podman and ffmpeg, with storage on /mnt
-        run: |
-          sudo apt-get install -y -qq podman ffmpeg
-          podman --version
-          ffmpeg -version | head -1
-
-          # The Bluefin OCI image is several GB and `bootc install` runs podman as
-          # root, whose graphroot defaults to /var/lib/containers/storage on the
-          # small root filesystem.
-          #
-          # Move the BYTES, not the PATH. Pointing graphroot at /mnt via
-          # storage.conf looks equivalent and is not: `bootc install to-disk` runs
-          # in a privileged container that bind-mounts the *default* location, so
-          # the image it was told to install becomes invisible to it and the run
-          # dies after partitioning with
-          #   OpenImage: reference "[overlay@/var/lib/containers/storage+...]"
-          #   does not resolve to an image ID
-          # A bind mount satisfies both: the path stays canonical, the space is /mnt's.
-          sudo mkdir -p /mnt/containers/storage /var/lib/containers/storage
-          sudo mount --bind /mnt/containers/storage /var/lib/containers/storage
-          findmnt -no SOURCE,TARGET,FSTYPE /var/lib/containers/storage
-          sudo podman info --format 'graphroot={{.Store.GraphRoot}}'
-          df -h /var/lib/containers/storage | tail -1
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      # Pinned to a commit, not @latest, for two reasons. `vmtest` is NOT IN ANY
-      # TAGGED RELEASE -- v0.6.0 (Aug 6) has no cmd/vmtest.go -- so @latest
-      # resolves to a corral that fails with `unknown command "vmtest"`, which is
-      # exactly how this job failed the first time. And a moving dependency would
-      # let our CI change behaviour without a commit of ours, which is the thing
-      # pinning exists to prevent.
-      #
-      # Bump deliberately. When corral cuts a release containing vmtest, this
-      # should become that tag.
-      - name: Install corral
-        env:
-          CORRAL_REF: 81529beffa1d108dd18fbc116c0afb90f0a5c630
-        run: |
-          go install "github.com/tuna-os/corral@${CORRAL_REF}"
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
-          # Fail here rather than 20 minutes later if the pin ever loses vmtest.
-          "$HOME/go/bin/corral" vmtest --help >/dev/null
-          echo "corral installed at ${CORRAL_REF} and vmtest is present"
+      - uses: ./.github/actions/vm-host
 
       # See packaging/vmtest/Containerfile.bluefin for why this indirection is
       # needed. Short version: corral `podman create`s the image to probe its
@@ -130,16 +72,18 @@ jobs:
           TMPDIR: /mnt/corral
         run: |
           mkdir -p /mnt/corral
-          # --ready-marker is 'Started .*gdm\.service', not a graphical.target
-          # match, because graphical.target is never reached on this image:
-          # plymouth-quit-wait.service starts and never finishes with no real
-          # display, and it gates the target. GDM itself starts fine, and the
-          # captured frames show stddev ~0.36 against corral's 0.02 blank
-          # threshold — the desktop is up and drawing. "Started" not "Starting":
-          # the latter appears a moment earlier and means only that it was asked to.
+          # The marker comes from a unit we install, not from systemd's own
+          # output, and the two obvious alternatives are both wrong here.
+          # graphical.target is never reached on this image: plymouth-quit-wait
+          # starts and never finishes with no real display, and it gates the
+          # target. 'Started .*gdm\.service' does fire — as GDM takes the DRM
+          # device and blanks it, several seconds before the greeter draws — so
+          # corral, which captures its final frame at readiness and does not
+          # retry, sampled a blank screen and --require-paint failed at
+          # deviation exactly 0.0000. See packaging/vmtest/wait-graphical.sh.
           sudo -E "$(which corral)" vmtest bluefin \
             --bootc localhost/bluefin-testable:ci \
-            --ready-marker 'Started .*gdm\.service' \
+            --ready-marker 'COMPASS-VMTEST: graphical session up' \
             --require-paint \
             --video \
             --cpu 4 --mem 8G --disk 30G \
@@ -150,78 +94,98 @@ jobs:
         #   2 this host cannot run it   6 guest never became ready
         #   4 the disk build failed     9 the guest painted nothing
 
-      # Ordering matters and I got it wrong: the 40-line serial tail is expanded by
-      # ANSI into hundreds of log lines, so the verdict scrolled off the end and
-      # three separate attempts to read the exit code came back showing only the
-      # boot. The verdict now prints LAST, so it is the final thing in the job log.
       - name: What the run reported
         if: always()
-        run: |
-          # corral ran under sudo, so everything it wrote is root-owned and
-          # upload-artifact cannot even scandir it (EACCES on vmtest-out/ssh).
-          sudo chown -R "$USER" vmtest-out 2>/dev/null || true
-          # Deliberately not the whole document: the frame list is ~20 entries and
-          # buries the fields that decide what to do next.
-          if [ -f vmtest-out/result.json ]; then
-            python3 - <<'PY'
-          import json
-          r = json.load(open('vmtest-out/result.json'))
-          frames = r.pop('frames', [])
-          print(json.dumps(r, indent=2)[:3000])
-          if frames:
-              devs = [f.get('stddev', 0) for f in frames]
-              print(f"\nframes: {len(frames)}  stddev min={min(devs):.4f} max={max(devs):.4f}"
-                    f"  (corral calls <=0.02 blank)")
-          PY
-          else
-            echo "no result.json — the run died before writing one"
-          fi
-          # The targets the guest actually reached. This is the decisive diagnostic
-          # for a readiness timeout: the first run matched nothing because the
-          # marker was 'Reached target Graphical' while systemd prints the unit
-          # name lowercase ("Reached target graphical.target - Graphical
-          # Interface."). Printing the real lines means a second timeout is
-          # answered by reading, not by guessing again.
-          echo '--- targets reached, and the display-manager path ---'
-          if [ -f vmtest-out/serial.log ]; then
-            # Strip ANSI first. systemd colourises the unit name, so the escape
-            # sequence sits between "target " and "network.target" and an
-            # un-stripped grep silently reports only the early-boot lines — which
-            # is exactly how the previous run's diagnostic misled me.
-            sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07\x1b]*(\x07|\x1b\\\\)//g' \
-              vmtest-out/serial.log > /tmp/serial-plain.log 2>/dev/null || \
-              cp vmtest-out/serial.log /tmp/serial-plain.log
-            grep -aoE 'Reached target [A-Za-z0-9._@-]+' /tmp/serial-plain.log | sort -u || true
-            echo '--- gdm / plymouth / display ---'
-            grep -aiE 'gdm|plymouth|graphical|wayland|greeter' /tmp/serial-plain.log \
-              | tail -40 || true
-          else
-            echo "no serial.log"
-          fi
-          echo '--- serial console tail ---'
-          tail -40 vmtest-out/serial.log 2>/dev/null || echo "no serial.log"
-
-          # Last line of the job, so it survives any amount of log truncation.
-          echo '=============================================================='
-          if [ -f vmtest-out/result.json ]; then
-            python3 -c "
-          import json
-          r = json.load(open('vmtest-out/result.json'))
-          print('VERDICT:', r.get('status'), '| exit', r.get('exitCode'),
-                '| ready', r.get('ready'), '| bootSeconds', r.get('bootSeconds'))
-          if r.get('failure'):
-              print('FAILURE:', str(r['failure']).splitlines()[-1][:400])
-          "
-          else
-            echo 'VERDICT: no result.json'
-          fi
-          echo '=============================================================='
+        run: scripts/vmtest/report.sh vmtest-out
 
       - name: Upload the evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vmtest-bluefin
+          path: vmtest-out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # One definition of how the Flatpak is built, called rather than copied. What
+  # this job produces is the `flatpak-bundle` artifact the image build consumes.
+  flatpak:
+    name: Flatpak
+    uses: ./.github/workflows/flatpak.yaml
+
+  boot-compass:
+    name: Compass runs in a real GNOME session
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      # Into the build context, which is what Containerfile.compass COPYs from.
+      - name: Fetch the Flatpak bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: packaging/vmtest
+
+      - uses: ./.github/actions/vm-host
+
+      - name: Build the test image
+        run: |
+          ls -lh packaging/vmtest/com.vicinae.Vicinae.flatpak
+          sudo podman build \
+            -t localhost/bluefin-compass:ci \
+            -f packaging/vmtest/Containerfile.compass \
+            packaging/vmtest
+          sudo podman image inspect localhost/bluefin-compass:ci \
+            --format 'Cmd={{.Config.Cmd}}  Size={{.Size}}'
+
+      - name: Boot it and run the assertions
+        env:
+          HOME: /mnt/corral
+          TMPDIR: /mnt/corral
+        run: |
+          mkdir -p /mnt/corral
+          # Deliberately no --user: that would make corral derive an image
+          # layer, and its layer builder pulls the base unconditionally, which
+          # cannot work for a localhost/ reference (exit 3, "pinging container
+          # registry localhost"). The compass account is created in the image
+          # instead — see packaging/vmtest/Containerfile.compass — and root SSH
+          # comes from `bootc install --root-ssh-authorized-keys` during the
+          # disk build, with no layer involved. So this job, like the control,
+          # tests the image exactly as built.
+          #
+          # Same marker as the control job, for the same reason, and here it
+          # does double duty: it is satisfied by the autologin session rather
+          # than a greeter, so by the time the checks run there is a real user
+          # session to inspect. The checks still do their own waiting with
+          # explicit timeouts, because a named check timing out is a better
+          # failure message than a readiness timeout.
+          sudo -E "$(which corral)" vmtest compass \
+            --bootc localhost/bluefin-compass:ci \
+            --ready-marker 'COMPASS-VMTEST: graphical session up' \
+            --require-paint \
+            --video \
+            --check '/usr/libexec/compass-vmtest/checks.sh installed' \
+            --check '/usr/libexec/compass-vmtest/checks.sh session' \
+            --check '/usr/libexec/compass-vmtest/checks.sh doctor' \
+            --check '/usr/libexec/compass-vmtest/checks.sh doctor-assert' \
+            --cpu 4 --mem 8G --disk 30G \
+            --timeout 30m \
+            --artifacts "$GITHUB_WORKSPACE/vmtest-out" \
+            --rm
+        # Adds one exit code to the list above: 8, a check failed. That is the
+        # one that means "the OS is fine and our software is not".
+
+      - name: What the run reported
+        if: always()
+        run: scripts/vmtest/report.sh vmtest-out
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmtest-compass
           path: vmtest-out/
           retention-days: 14
           if-no-files-found: warn

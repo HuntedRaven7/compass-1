@@ -1,0 +1,134 @@
+# Bluefin with compass in it: the image the VM tier actually tests.
+#
+# #18 step 2. The first VM job (Containerfile.bluefin) boots stock Bluefin and
+# proves only that a GNOME desktop comes up and paints under QEMU on a hosted
+# runner. That was deliberate — layering our software in at the same time would
+# have meant a failure could be either half. This file is the second half.
+#
+# Three things are added, and nothing else:
+#
+#   1. the compass Flatpak, as a single-file bundle built by the Flatpak
+#      workflow in the same CI run;
+#   2. GDM autologin, so the run reaches a real user session rather than a
+#      greeter — every interesting doctor check (session bus, portals, session
+#      type) is meaningless at a login screen;
+#   3. a CMD, for the same corral/podman reason as Containerfile.bluefin.
+#
+# The GNOME Shell extension that #18 also lists is NOT here: this repository
+# does not contain one yet (ADR-0004 — we speak to it, we never ship it), so
+# there is nothing to install. `doctor`'s gnome.shell-extension check will
+# report it absent, which is the honest answer.
+
+FROM ghcr.io/ublue-os/bluefin:stable
+
+# ── where the Flatpak goes, and why it is not the system installation ────────
+#
+# A bootc image's /var is not image content: it is copied in once at install
+# time and is machine state thereafter. The system Flatpak installation lives in
+# /var/lib/flatpak, so `flatpak install --system` at container-build time is
+# exactly the pattern Universal Blue avoids — it works, until a rebase, and then
+# the apps are silently the old ones. Their own images install Flatpaks from a
+# first-boot service for this reason.
+#
+# A first-boot service would need network in the guest and would race the
+# session we are trying to test. So instead the app goes in a *named extra
+# installation* under /usr, which is image content and is what bootc actually
+# versions. Flatpak reads these from /etc/flatpak/installations.d, `flatpak run`
+# finds apps in them without being told, and the systemd environment generator
+# adds their exports to XDG_DATA_DIRS so the desktop file is visible too.
+RUN mkdir -p /usr/lib/compass-flatpak /etc/flatpak/installations.d && \
+    printf '[Installation "compass"]\nPath=/usr/lib/compass-flatpak\nDisplayName=Compass (image)\n' \
+      > /etc/flatpak/installations.d/compass.conf
+
+# The bundle carries the app and nothing else, so the runtime still has to come
+# from somewhere. It comes from Flathub *here*, during the image build, where
+# there is network — never in the guest, which is offline by the time it matters.
+COPY com.vicinae.Vicinae.flatpak /tmp/com.vicinae.Vicinae.flatpak
+RUN flatpak remote-add --installation=compass --if-not-exists \
+      flathub https://flathub.org/repo/flathub.flatpakrepo && \
+    flatpak install --installation=compass --noninteractive --assumeyes \
+      flathub org.freedesktop.Platform//24.08 && \
+    flatpak install --installation=compass --noninteractive --assumeyes \
+      --bundle /tmp/com.vicinae.Vicinae.flatpak && \
+    rm -f /tmp/com.vicinae.Vicinae.flatpak && \
+    flatpak --installation=compass list --columns=ref,origin
+
+# ── the session user, and autologin ──────────────────────────────────────────
+#
+# The account is created HERE rather than by corral's `--user compass`, and that
+# is a workaround for an upstream bug rather than a preference.
+#
+# Asking corral for a user makes it derive a thin image layer, and its layer
+# builder pulls the base image unconditionally (pkg/vmtest/image.go, "the base
+# image has to be local before anything can be read out of it"). For a
+# localhost/ reference there is nothing to pull, so podman reads "localhost" as
+# a registry and the run dies at exit 3:
+#
+#   podman pull localhost/bluefin-compass:ci: ... pinging container registry
+#   localhost: Get "https://localhost/v2/": dial tcp [::1]:443: connection refused
+#
+# corral already knows this: pkg/bootc/local.go guards exactly this case with
+# `isLocalRef` before its own pull, with a comment explaining that a locally
+# built image is the whole point. The guard is simply missing from the layer
+# builder — a two-line upstream fix, and the second corral bug this tier has
+# found on locally built bootc images.
+#
+# Doing it ourselves costs nothing, because corral's layer was never how the
+# checks get in: `bootc install --root-ssh-authorized-keys` injects the run's
+# key for root during the disk build, with no layer involved, and the checks
+# already run as root and reach the user with runuser.
+#
+# /var/home, not /home: on a bootc system /home is a symlink into /var, and /var
+# from the image is seeded once at install time — so a home directory created
+# here reaches the installed system, while one created on first boot would not
+# survive a rebase.
+RUN mkdir -p /var/home && \
+    useradd --create-home --home-dir /var/home/compass --shell /bin/bash compass && \
+    id compass
+
+# WaylandEnable is spelled out rather than left to the default: the whole point
+# of this tier is that compass is Wayland-only, and a silent fallback to Xorg
+# would turn a real failure into a green run.
+RUN printf '[daemon]\nWaylandEnable=true\nAutomaticLoginEnable=True\nAutomaticLogin=compass\n' \
+      > /etc/gdm/custom.conf
+
+# ── the readiness marker ─────────────────────────────────────────────────────
+#
+# `Started gdm.service` is the wrong marker and cost a red run to learn: it
+# fires as GDM takes the DRM device and blanks it, so corral — which captures
+# its final frame at readiness and does not retry — sampled a deliberately
+# blank screen and `--require-paint` failed at deviation exactly 0.0000. This
+# unit announces a *state* instead: logind reports a graphical session.
+COPY wait-graphical.sh /usr/libexec/compass-vmtest/wait-graphical.sh
+COPY compass-vmtest-graphical.service /usr/lib/systemd/system/compass-vmtest-graphical.service
+RUN chmod 0755 /usr/libexec/compass-vmtest/wait-graphical.sh && \
+    systemctl enable compass-vmtest-graphical.service
+
+# ── sshd ─────────────────────────────────────────────────────────────────────
+#
+# corral's checks and diagnostics all arrive over SSH, and `bootc install
+# --root-ssh-authorized-keys` puts the run's key in root's authorized_keys — but
+# a key is no use if nothing is listening. Bluefin is a desktop image and does
+# not enable sshd, so both VM jobs failed with
+#
+#   kex_exchange_identification: read: Connection reset by peer
+#
+# which reads like a broken sshd and is not one: QEMU's user-mode hostfwd
+# accepts the connection on the host and the guest resets it because no process
+# holds port 22. "Refused" would have been the clearer message; the reset is an
+# artifact of the forward.
+#
+# Enabling it is a test-image change and nothing more — it is off in what ships.
+RUN systemctl enable sshd.service
+
+# ── the assertions ───────────────────────────────────────────────────────────
+#
+# Baked in rather than pushed over SSH so that they are a real file in the
+# repository: `bash -n` and a Python compile check run over them in tier 1,
+# before a 30-minute VM run finds a quoting mistake.
+COPY checks.sh /usr/libexec/compass-vmtest/checks.sh
+RUN chmod 0755 /usr/libexec/compass-vmtest/checks.sh
+
+# Never executed. See Containerfile.bluefin: corral `podman create`s the image
+# to probe its filesystem, and podman refuses an image with no CMD.
+CMD ["/bin/bash"]

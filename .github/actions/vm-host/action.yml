@@ -1,0 +1,100 @@
+# Turn a hosted runner into a machine that can build and boot a bootc disk.
+#
+# Extracted from the VM tier's first job when a second one arrived. Every step
+# here is load-bearing and most of them are here because they were once missing;
+# the comments say which failure each prevents, because that is the information
+# that stops someone "simplifying" one of them away.
+name: Prepare a VM host
+description: Free disk, verify KVM, install podman/ffmpeg/corral for corral vmtest.
+
+inputs:
+  corral-ref:
+    description: >-
+      corral commit to install. Pinned, never @latest: vmtest is not in any
+      tagged release (v0.6.0 has no cmd/vmtest.go), so @latest resolves to a
+      corral that fails with `unknown command "vmtest"` — which is exactly how
+      this job failed the first time. A moving dependency would also let CI
+      change behaviour without a commit of ours. Bump deliberately; when corral
+      cuts a release containing vmtest, this should become that tag.
+    required: false
+    default: 81529beffa1d108dd18fbc116c0afb90f0a5c630
+
+runs:
+  using: composite
+  steps:
+    # `bootc install to-disk` writes a full OS image, and the Bluefin OCI image
+    # is several GB before that. The default runner has ~14 GB free on /, which
+    # is not enough; /mnt has far more.
+    - name: Make room
+      shell: bash
+      run: |
+        echo "before:"; df -h / /mnt | sed 's/^/  /'
+        sudo rm -rf /opt/hostedtoolcache /usr/local/lib/android /usr/share/dotnet
+        sudo mkdir -p /mnt/corral /mnt/containers
+        sudo chown -R "$(id -un)" /mnt/corral /mnt/containers
+        echo "after:"; df -h / /mnt | sed 's/^/  /'
+
+    # Not a formality. If this silently degrades to TCG the boot takes an order
+    # of magnitude longer and times out looking like an image problem.
+    - name: Confirm KVM is actually usable
+      shell: bash
+      run: |
+        ls -l /dev/kvm
+        sudo apt-get update -qq && sudo apt-get install -y -qq cpu-checker qemu-system-x86
+        kvm-ok
+        qemu-system-x86_64 -accel help | grep -qw kvm
+
+    - name: Install podman and ffmpeg, with storage on /mnt
+      shell: bash
+      run: |
+        sudo apt-get install -y -qq podman ffmpeg
+        podman --version
+        ffmpeg -version | head -1
+
+        # The Bluefin OCI image is several GB and `bootc install` runs podman as
+        # root, whose graphroot defaults to /var/lib/containers/storage on the
+        # small root filesystem.
+        #
+        # Move the BYTES, not the PATH. Pointing graphroot at /mnt via
+        # storage.conf looks equivalent and is not: `bootc install to-disk` runs
+        # in a privileged container that bind-mounts the *default* location, so
+        # the image it was told to install becomes invisible to it and the run
+        # dies after partitioning with
+        #   OpenImage: reference "[overlay@/var/lib/containers/storage+...]"
+        #   does not resolve to an image ID
+        # A bind mount satisfies both: the path stays canonical, the space is /mnt's.
+        sudo mkdir -p /mnt/containers/storage /var/lib/containers/storage
+        sudo mount --bind /mnt/containers/storage /var/lib/containers/storage
+        findmnt -no SOURCE,TARGET,FSTYPE /var/lib/containers/storage
+        sudo podman info --format 'graphroot={{.Store.GraphRoot}}'
+        # `sudo df`, not `df`, and the reason is not the graphroot's own mode.
+        # statfs needs search permission on every *parent* of its argument, and
+        # /var/lib/containers is root-only 0700 on this runner image — so an
+        # unprivileged df fails with
+        #   df: /var/lib/containers/storage: Permission denied
+        # even though the graphroot below it is world-readable. Measured, not
+        # guessed: with the parent at 0700 an unprivileged df on a 0700 child
+        # gets EACCES; with the parent at 0755 the same df succeeds.
+        #
+        # Because every step is `bash -e`, that took the whole job down 60
+        # seconds in, over a line that only prints a number. It is intermittent
+        # because it depends on whether /var/lib/containers already existed with
+        # that mode or was created here by `mkdir -p` under a 022 umask, and it
+        # is very likely the unexplained failure ADR-0010 records under
+        # "stability is not yet established".
+        sudo df -h /var/lib/containers/storage | tail -1
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+
+    - name: Install corral
+      shell: bash
+      env:
+        CORRAL_REF: ${{ inputs.corral-ref }}
+      run: |
+        go install "github.com/tuna-os/corral@${CORRAL_REF}"
+        echo "$HOME/go/bin" >> "$GITHUB_PATH"
+        # Fail here rather than 20 minutes later if the pin ever loses vmtest.
+        "$HOME/go/bin/corral" vmtest --help >/dev/null
+        echo "corral installed at ${CORRAL_REF} and vmtest is present"
