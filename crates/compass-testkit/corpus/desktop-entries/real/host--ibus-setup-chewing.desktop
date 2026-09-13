@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=IBus Chewing Preferences
+Name[zh_TW]=IBus 酷音偏好設定
+Comment=Set IBus Chewing Preferences
+Comment[zh_TW]=設定 IBus 酷音偏好
+Exec=/usr/libexec/ibus-setup-chewing
+Icon=org.freedesktop.IBus.Chewing.Setup
+NoDisplay=true
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=Settings;

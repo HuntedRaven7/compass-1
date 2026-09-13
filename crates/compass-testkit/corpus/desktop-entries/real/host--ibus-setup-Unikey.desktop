@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=IBus Unikey Setup
+Comment=Set up IBus Unikey engine
+Exec=/usr/libexec/ibus-setup-unikey
+Icon=ibus-unikey
+NoDisplay=true
+Type=Application
+StartupNotify=true
+X-Desktop-File-Install-Version=0.28

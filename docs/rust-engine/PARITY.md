@@ -43,7 +43,7 @@ that. The plan has been corrected.
 | `compass-portals` | 55 | XDG portals; availability is a three-state outcome, not a boolean |
 | `compass-extension-api` | 74 | view tree, derived identity, diff, dispatch, capabilities, controlled inputs |
 | `vicinae` | 137 | CLI, an 11-check `doctor`, and **the engine daemon** |
-| `compass-testkit` | 5 | corpora |
+| `compass-testkit` | 5 | corpora — 115 desktop entries, 96 of them harvested from a real Bluefin |
 | **Total** | **597** | all green under fmt, clippy `-D warnings`, doctests |
 
 ## Progress

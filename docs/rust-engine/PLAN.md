@@ -1008,7 +1008,7 @@ answerable today.
 
 | Gate criterion | State | Evidence |
 |---|---|---|
-| Suite 0 parity for app-search ranking on the **500-entry corpus** | ❌ **not met** | the corpus is **27** entries — 19 synthetic, 8 harvested. 5% of what the gate names. |
+| Suite 0 parity for app-search ranking on the **500-entry corpus** | ❌ **not met, but moving** | the corpus is **115** entries — 19 synthetic, 96 harvested — after the VM harvest. Was 27. Still 23% of what the gate names. |
 | Runs from a Flatpak on Bluefin with **GNOME 50 and 51** | 🟡 **half** | it runs from a Flatpak on Bluefin in CI on every change. One GNOME, not two, and the version was not recorded — the evidence check now prints `gnome-shell --version`. |
 | **Idle RSS < 30 MB** | 🟡 **now measured** | never measured before, because there was nothing running to measure. `checks.sh launcher-rss` reads `VmRSS` once the window is up. Reported, not gated. |
 | **Works with no Shell extension installed** | ✅ **met** | we ship none at all (ADR-0004), the VM has none, and `doctor` records `gnome.shell-extension` as evidence rather than gating on it. |
@@ -1112,8 +1112,13 @@ Ordered by what unblocks the most:
 
    The `launcher` job now runs it and publishes `corpus.tar.gz` as an artifact. What it does *not*
    do is write into `crates/compass-testkit/corpus/`: a corpus shapes every ranking assertion the
-   project makes, and it must not grow by a job quietly appending to it. Reviewing and committing
-   the harvest is the next step, and it is a person's.
+   project makes, and it must not grow by a job quietly appending to it.
+
+   **The first harvest is committed: 88 new entries, taking the real set from 8 to 96 and the
+   corpus to 115.** All stock Fedora/GNOME, reviewed before landing. What a single Bluefin image
+   yields is 88, so the remaining distance to 500 is not one more run of the same job — it needs
+   *different* machines, or an image with more Flatpaks installed. That is the shape of the
+   remaining work, and it is now a known shape rather than an unknown one.
 
 5. **Widen the parity port.** Both halves of this item turned out to be nearly done when looked at,
    so what is left is now stated precisely rather than as a direction:

@@ -407,8 +407,8 @@ fn the_whole_desktop_entry_corpus_indexes_without_choking() {
         .count();
     let synthetic = fixtures.len() - real;
     assert!(
-        real >= 8,
-        "the harvested corpus shrank: {real} real fixtures, expected at least 8"
+        real >= 96,
+        "the harvested corpus shrank: {real} real fixtures, expected at least 96"
     );
     assert!(
         synthetic >= 19,
@@ -463,21 +463,49 @@ fn the_whole_desktop_entry_corpus_indexes_without_choking() {
 /// what they are for: none of them was written to make a point, so what they
 /// exercise is whatever a distribution actually ships.
 ///
-/// The assertion that earns its place is `NoDisplay`. Six of the eight set it
-/// true and are correctly hidden; `host--libreoffice-startcenter` sets it
-/// **explicitly false**, which is the case that separates reading the key's
-/// *value* from merely noticing the key is *present*. A parser with that bug
-/// hides LibreOffice — the most visible application in the set — and passes
-/// every synthetic test, because nobody writing a fixture by hand thinks to
-/// write `NoDisplay=false`.
+/// The assertion that earns its place is `NoDisplay`, and the corpus now covers
+/// all three of its cases at scale — 76 entries set it true, 3 set it
+/// explicitly **false**, and 17 omit it. The false case is the one that
+/// separates reading the key's *value* from merely noticing the key is
+/// *present*. A parser with that bug hides LibreOffice and passes every
+/// synthetic test, because nobody writing a fixture by hand thinks to write
+/// `NoDisplay=false`.
+///
+/// The expected hidden set is derived from the fixtures rather than hard-coded.
+/// An earlier version asserted "exactly 8 harvested, exactly 6 hidden" and had
+/// to be rewritten the first time the corpus grew — a test that must be edited
+/// whenever its input changes is a test that will eventually be edited without
+/// being understood.
 #[test]
 fn the_harvested_entries_index_and_no_display_is_read_as_a_value() {
+    /// `NoDisplay=true` in the main group only — a value in `[Desktop Action …]`
+    /// is a different key and must not count.
+    fn hidden_by_no_display(bytes: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(bytes);
+        let mut in_main = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_main = line == "[Desktop Entry]";
+                continue;
+            }
+            if in_main && line.eq_ignore_ascii_case("nodisplay=true") {
+                return true;
+            }
+        }
+        false
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let harvested: Vec<_> = corpus::desktop_entries()
         .into_iter()
         .filter(|f| f.provenance == corpus::Provenance::Real)
         .collect();
-    assert_eq!(harvested.len(), 8, "the harvested set changed size");
+    assert!(
+        harvested.len() >= 96,
+        "the harvested corpus shrank: {} entries",
+        harvested.len()
+    );
 
     for fixture in &harvested {
         std::fs::write(
@@ -489,8 +517,8 @@ fn the_harvested_entries_index_and_no_display_is_read_as_a_value() {
 
     let index = builder().dir(dir.path()).build();
 
-    // Every one of them is Type=Application with an Exec, so none may be
-    // malformed, unreadable, or dropped without a reason.
+    // Every one is Type=Application with an Exec, so none may be malformed,
+    // unreadable, or dropped without a reason.
     assert_eq!(
         index.skipped().len() + index.applications().count(),
         harvested.len(),
@@ -507,9 +535,8 @@ fn the_harvested_entries_index_and_no_display_is_read_as_a_value() {
     }
 
     // NoDisplay=false is not NoDisplay. This is the whole point of the test, so
-    // it is asserted before the aggregate count: a parser with the presence bug
-    // fails both, and the count alone ("expected 6, got 7") would send whoever
-    // reads it looking in the wrong place.
+    // it is asserted before the aggregate: a parser with the presence bug fails
+    // both, and the aggregate alone would send the reader to the wrong place.
     assert!(
         index.get("host--libreoffice-startcenter.desktop").is_some(),
         "NoDisplay=false must be read as false, not as \"the key is present\""
@@ -517,12 +544,28 @@ fn the_harvested_entries_index_and_no_display_is_read_as_a_value() {
     // And one with no NoDisplay key at all, for the third case.
     assert!(index.get("host--vim.desktop").is_some());
 
-    // NoDisplay=true on the other six, and they are hidden.
-    assert_eq!(
-        index.skipped().len(),
-        6,
-        "expected the six NoDisplay=true entries to be hidden"
+    // Every entry that says NoDisplay=true is hidden. One direction only, and
+    // deliberately: the reverse — predicting the exact hidden count — means
+    // modelling OnlyShowIn, NotShowIn and Hidden too, which is re-implementing
+    // the index inside its own test, where it can be wrong in exactly the same
+    // way. That version was written first and failed at 82 against a predicted
+    // 76, because seven harvested entries carry OnlyShowIn/NotShowIn. The
+    // failure was the test's, not the index's.
+    let declared_hidden: Vec<&str> = harvested
+        .iter()
+        .filter(|f| hidden_by_no_display(&f.bytes))
+        .map(|f| f.id.as_str())
+        .collect();
+    assert!(
+        !declared_hidden.is_empty(),
+        "no fixture sets NoDisplay=true, so this test proves nothing about it"
     );
+    for id in &declared_hidden {
+        assert!(
+            index.get(&format!("{id}.desktop")).is_none(),
+            "{id} sets NoDisplay=true and must not be indexed"
+        );
+    }
 }
 
 #[test]
