@@ -1,0 +1,128 @@
+name: Harvest desktop entries
+
+# Phase 1's gate names a ~500-entry desktop corpus for Suite 0 ranking parity
+# (PLAN.md §8.1). There are 115. The first VM harvest took the real set from 8
+# to 96 and then stopped being useful, because one Bluefin image has one app
+# set: re-running it yields the same 88 files.
+#
+# PLAN.md called the remainder blocked on "different machines". THAT WAS A
+# MISREADING of the harvester's own closing note, which says to run it on more
+# machines "or install more Flatpaks". The constraint is the APP SET, not the
+# hardware — and an app set is something CI can produce.
+#
+# WHY DOWNLOAD RATHER THAN INSTALL
+#
+# We do not need the applications, only the .desktop files they ship, and those
+# are identical either way — the same bytes land on a user's disk. Downloading
+# the RPMs and extracting just usr/share/applications skips dependency
+# resolution entirely, so hundreds of packages cost a few minutes instead of
+# pulling gigabytes of runtime nobody runs.
+#
+# WHAT THIS DOES NOT DO
+#
+# It never writes into crates/compass-testkit/corpus/. A corpus shapes every
+# ranking assertion the project makes, and it must not grow by a job quietly
+# appending to it — the same rule the VM tier's harvest follows. The output is
+# an artifact for a human to review and commit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'How many desktop-entry packages to fetch'
+        required: false
+        default: '400'
+
+permissions:
+  contents: read
+
+jobs:
+  harvest:
+    name: Fetch desktop entries from Fedora's package set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ordered cheap-first, deliberately. The unknown here is whether the
+      # repoquery below names packages at all; if the syntax is wrong this step
+      # says so in about a minute rather than twenty minutes into a download.
+      # #41 paid four red runs to learn that lesson on the C++ dependency list.
+      - name: How many packages even ship a desktop entry?
+        run: |
+          set -o pipefail
+          podman run --rm -v "$PWD:/src:z" -w /src \
+            ghcr.io/ublue-os/bluefin:stable bash -euxo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False cpio >/dev/null
+
+              dnf repoquery --quiet --qf "%{name}" \
+                --file "/usr/share/applications/*.desktop" \
+                | sort -u > /src/desktop-packages.txt
+
+              count=$(wc -l < /src/desktop-packages.txt)
+              echo "packages shipping a desktop entry: $count"
+              head -20 /src/desktop-packages.txt
+
+              # An empty list is the failure this step exists to catch, and it
+              # would otherwise look like a successful harvest of nothing.
+              test "$count" -gt 50 \
+                || { echo "::error::repoquery named $count packages; the query is wrong"; exit 1; }
+            '
+          sudo chown "$(id -un)" desktop-packages.txt
+
+      - name: Fetch them and take only the desktop entries
+        run: |
+          set -o pipefail
+          podman run --rm -v "$PWD:/src:z" -w /src \
+            -e WANT="${{ github.event.inputs.packages || '400' }}" \
+            ghcr.io/ublue-os/bluefin:stable bash -euxo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False cpio >/dev/null
+              mkdir -p /tmp/rpms
+              head -n "$WANT" /src/desktop-packages.txt > /tmp/want.txt
+
+              # --resolve is deliberately absent: dependencies ship their own
+              # desktop entries only if they are themselves desktop packages,
+              # and those are already in the list.
+              xargs -a /tmp/want.txt dnf download --destdir /tmp/rpms \
+                --setopt=install_weak_deps=False || true
+
+              cd /tmp/rpms
+              found=0
+              for rpm in *.rpm; do
+                [ -e "$rpm" ] || continue
+                rpm2cpio "$rpm" \
+                  | cpio -idm --quiet "./usr/share/applications/*.desktop" 2>/dev/null || true
+                found=$((found + 1))
+              done
+              echo "unpacked $found rpms"
+
+              # Into the real root, so the harvester runs unmodified: it reads
+              # fixed roots by design, and pointing it at a scratch tree would
+              # mean maintaining a second definition of where entries live.
+              mkdir -p /usr/share/applications
+              cp -n /tmp/rpms/usr/share/applications/*.desktop /usr/share/applications/ 2>/dev/null || true
+              ls /usr/share/applications/*.desktop | wc -l
+
+              /src/scripts/harvest-desktop-corpus.sh --out /src/harvested
+            '
+          sudo chown -R "$(id -un)" harvested
+          echo "harvested $(find harvested -name "*.desktop" | wc -l) entries"
+
+      - name: Publish for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-corpus
+          path: harvested
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: What to do with this
+        if: always()
+        run: |
+          echo 'These entries are NOT committed by this job, on purpose: a corpus'
+          echo 'shapes every ranking assertion the project makes and must not grow'
+          echo 'by a job quietly appending to it.'
+          echo
+          echo 'Download the artifact, read what it contains, drop anything that is'
+          echo 'not a plausible user-facing application, and commit the rest into'
+          echo 'crates/compass-testkit/corpus/desktop-entries/real/.'

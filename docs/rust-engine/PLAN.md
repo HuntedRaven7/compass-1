@@ -1183,10 +1183,12 @@ evaluated" hid:
 
 - **The corpus is a real constraint, just not the binding one.** 115 entries
   against a gate that names 500 is a genuine distance, and one Bluefin image
-  yields 88, so closing it needs different machines rather than more runs.
-  §8.1 also asks for "host RPM apps, Flatpak exports and Homebrew entries
-  together"; the VM harvest produced only the first, because a freshly
-  installed bootc image has no user Flatpaks and an empty `/home/linuxbrew`.
+  yields 88 — re-running the same job yields the same 88. An earlier revision
+  concluded from that that closing the gap "needs different machines". **That
+  was a misreading**: the constraint is the APP SET, not the hardware, and the
+  harvester's own closing note says so — run it on more machines *"or install
+  more Flatpaks"*. Only half that sentence got read.
+  `.github/workflows/corpus-harvest.yaml` acts on the other half.
 - **The RSS figure is an upper bound, not the shipping number.** It is taken
   under llvmpipe, where the renderer keeps buffers it would not need on
   hardware. It is reported rather than gated for the same reason the paint
@@ -1307,10 +1309,26 @@ Ordered by what unblocks the most:
    project makes, and it must not grow by a job quietly appending to it.
 
    **The first harvest is committed: 88 new entries, taking the real set from 8 to 96 and the
-   corpus to 115.** All stock Fedora/GNOME, reviewed before landing. What a single Bluefin image
-   yields is 88, so the remaining distance to 500 is not one more run of the same job — it needs
-   *different* machines, or an image with more Flatpaks installed. That is the shape of the
-   remaining work, and it is now a known shape rather than an unknown one.
+   corpus to 115.** All stock Fedora/GNOME, reviewed before landing.
+
+   One Bluefin image yields 88, and running that job again yields the same 88. An earlier revision
+   read that as needing *different machines*, and that was wrong — **it needs a different app set,
+   which is not the same problem and is not blocked on hardware at all.**
+
+   `.github/workflows/corpus-harvest.yaml` produces one. It asks dnf which packages ship a
+   `/usr/share/applications/*.desktop`, downloads a bounded batch of them, and extracts only the
+   desktop entries — no installation, so there is no dependency resolution and no gigabytes of
+   runtime for applications nobody launches. The bytes are the same ones that would land on a
+   user's disk. It runs on `workflow_dispatch`, publishes an artifact, and like the VM harvest it
+   **never writes into the corpus itself**.
+
+   The cheap step runs first and asserts its own premise: if the `repoquery` names fewer than fifty
+   packages the job fails in about a minute, because an empty list would otherwise present as a
+   successful harvest of nothing. §12 item 3's four red runs are why that ordering is deliberate.
+
+   What this still does not produce is the Flatpak and Homebrew halves of §8.1's "host RPM apps,
+   Flatpak exports and Homebrew entries together" — those export paths shape entry *names* and
+   `Exec` lines differently, and RPM extraction cannot fake them.
 
 5. **Widen the parity port.** Both halves of this item turned out to be nearly done when looked at,
    so what is left is now stated precisely rather than as a direction:
