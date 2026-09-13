@@ -99,6 +99,8 @@ echo '=== 1c. does an injected key reach this session at all? (the control) ==='
 # different owners. The guest does have a keyboard — the evidence step above
 # shows an "AT Translated Set 2 keyboard" with an evdev node — so "corral adds
 # no input device", which was the first guess, is already ruled out.
+guest "$checks" compositor-input || true
+
 guest "$checks" keyboard-capture-start || true
 
 sudo -E "$(command -v corral)" screenshot "$vm" -o "$out/control-00-before-super.png" || true

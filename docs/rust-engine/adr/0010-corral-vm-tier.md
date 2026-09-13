@@ -1016,6 +1016,49 @@ would lose a free regression check — the day injection works, that frame chang
 and says so — while leaving it unlabelled is worse than either, because it reads
 as a test of the launcher's input handling and is not one.
 
+### Keys reach the kernel. Nobody acts on them.
+
+The evdev capture answered its question on the first run:
+
+```
+capturing from /dev/input/event1
+captured 288 bytes of input events while the key was injected
+VERDICT: the scancode REACHED the guest kernel — the loss is above it
+```
+
+288 bytes is 12 `input_event` structs — exactly the two press/release pairs
+that `meta_l` and `esc` produce. QEMU delivers, the kernel receives.
+
+**So corral is exonerated**, and the third upstream bug report this tier looked
+like it was heading for is not warranted. That is the whole reason the check
+was written before the report: two corral bugs are already filed from here, and
+a third that turned out to be a GNOME quirk would spend goodwill that the first
+two earned.
+
+Two more facts, both already in hand:
+
+- **The session is properly active.** `loginctl` reports `Type=wayland`,
+  `Active=yes`, `State=active`, on `seat0`/`tty2`. This is not an inactive
+  session having its devices revoked.
+- **A focused application does not receive keys either.** The launcher's own
+  window is on screen with a focused text input, and the job types into it: the
+  before and after frames are **byte-identical**. So this is not only GNOME's
+  Super binding — nothing downstream of the kernel sees the key.
+
+Keys arriving at the kernel and being acted on by nobody points at one thing
+worth checking before any theory, and `checks.sh compositor-input` checks it:
+whether `gnome-shell` holds any `/dev/input/*` file descriptor at all. libinput
+reads evdev nodes directly, so a compositor with no input fd is not reading the
+keyboard, and everything above that is moot. It also prints `loginctl
+seat-status seat0`, since logind hands devices to the active session through
+`TakeDevice` and the seat's own view is the next place to look.
+
+That is a fact rather than an inference, and it costs one readlink loop. Given
+this bug's record — four hypotheses of mine refuted by measurement so far
+(wgpu could not find an adapter, GNOME's own binding ate the chord, the
+sctk-adwaita portal timeout, corral adds no input device) — a fifth theory is
+worth less than a fifth fact.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through

@@ -235,6 +235,48 @@ PY
       || { echo 'the spike produced no valid JSON report' >&2; exit 1; }
     ;;
 
+  # Does the compositor have the keyboard open?
+  #
+  # The evdev capture settled that scancodes reach the kernel — 288 bytes, 12
+  # input_event structs, exactly two press/release pairs. And they reach
+  # neither GNOME's Super binding nor a focused application: typing into the
+  # launcher's own text input left the frame byte-identical.
+  #
+  # Keys arriving at the kernel and being acted on by nobody points at one
+  # thing worth checking before any theory: whether gnome-shell has the device
+  # open at all. libinput reads evdev nodes directly, so if the compositor's
+  # process holds no /dev/input fd, it is not reading the keyboard and nothing
+  # above that matters.
+  #
+  # This is a fact, not an inference, and it costs one readlink loop.
+  compositor-input)
+    shell_pid="$(pgrep -u "$SESSION_USER" -x gnome-shell | head -1 || true)"
+    if [ -z "$shell_pid" ]; then
+      echo "no gnome-shell process for $SESSION_USER" >&2
+      exit 1
+    fi
+    echo "gnome-shell pid $shell_pid"
+
+    echo '--- input devices gnome-shell holds open ---'
+    found=0
+    for fd in "/proc/$shell_pid/fd"/*; do
+      [ -e "$fd" ] || continue
+      target="$(readlink "$fd" 2>/dev/null || true)"
+      case "$target" in
+        /dev/input/*) printf '  %s -> %s\n' "$(basename "$fd")" "$target"; found=1 ;;
+      esac
+    done
+    if [ "$found" = 0 ]; then
+      echo '  NONE — the compositor is not reading any input device.'
+      echo '  That is the answer: keys reach the kernel and nobody is listening.'
+    fi
+
+    # logind hands input devices to the active session through TakeDevice, so
+    # if the compositor has none, its view of the seat is where to look next.
+    echo '--- what logind thinks the seat has ---'
+    loginctl seat-status seat0 2>/dev/null | sed -n '1,25p' || echo '(seat-status unavailable)'
+    ;;
+
   # Does an injected scancode reach the guest KERNEL?
   #
   # This splits the one question left about Spike A. Pressing Super alone

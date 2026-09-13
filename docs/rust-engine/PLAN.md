@@ -943,7 +943,7 @@ turned out to be a fact about the harness rather than about GNOME:
 |---|---|
 | Is the portal there? | **Yes**, interface v1. The premise of `compass-portals` holds on the target. |
 | Is binding permitted unattended? | **Not by default** — but the consent can be pre-seeded, and now is. |
-| Does a keypress reach us? | **Not by this route** — QMP key injection never reaches the session. |
+| Does a keypress reach us? | **No — but the kernel gets it.** The loss is above the kernel, not in corral. |
 
 That third row was "unknown" for as long as there was no binding for `meta_l spc` to trigger. With
 the consent pre-seeded there is one, so the question was finally asked — and the answer is that the
