@@ -29,6 +29,27 @@
     inherit (nixpkgs) lib;
     forEachPkgs = f: lib.genAttrs (import systems) (system: f nixpkgs.legacyPackages.${system});
     numenFor = pkgs: numen.packages.${pkgs.stdenv.hostPlatform.system}.numen.override {withRepl = false;};
+
+    # Crane-based Rust build
+    rustBuild = pkgs: let
+      crane = pkgs.craneLib;
+    in {
+      rust-vicinae = crane.buildPackage {
+        pname = "rust-vicinae";
+        version = "0.1.0";
+        src = ../.;
+        cargoBuildFlags = [ "--workspace" "--all-targets" "--release" ];
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = with pkgs; [ dbus libxkbcommon wayland mesa fontconfig freetype harfbuzz ];
+        doCheck = false;
+        meta = {
+          description = "Vicinae Rust engine";
+          homepage = "https://github.com/tuna-os/compass";
+          license = lib.licenses.gpl3Plus;
+          platforms = with lib.platforms; linux;
+        };
+      };
+    };
   in {
     packages = forEachPkgs (pkgs: let
       vicinae = pkgs.callPackage ./nix/vicinae.nix {
@@ -54,6 +75,7 @@
       }
       // {
         default = vicinae;
+        rust-vicinae = rustBuild pkgs rust-vicinae;
         nix-update-script = pkgs.writeShellScriptBin "nix-update-script" ''
           OLD_API_DEPS_HASH=$(${pkgs.lib.getExe pkgs.nix} eval --raw .#packages.x86_64-linux.default.apiDeps.hash)
           OLD_EXT_MAN_DEPS_HASH=$(${pkgs.lib.getExe pkgs.nix} eval --raw .#packages.x86_64-linux.default.extensionManagerDeps.hash)
