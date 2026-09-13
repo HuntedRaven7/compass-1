@@ -33,8 +33,8 @@
     # Crane-based Rust build
     rustBuild = pkgs: let
       crane = pkgs.craneLib;
-    in {
-      rust-vicinae = crane.buildPackage {
+    in
+      crane.buildPackage {
         pname = "rust-vicinae";
         version = "0.1.0";
         src = ../.;
@@ -49,7 +49,6 @@
           platforms = with lib.platforms; linux;
         };
       };
-    };
   in {
     packages = forEachPkgs (pkgs: let
       vicinae = pkgs.callPackage ./nix/vicinae.nix {
@@ -75,7 +74,7 @@
       }
       // {
         default = vicinae;
-        rust-vicinae = rustBuild pkgs rust-vicinae;
+        rust-vicinae = rustBuild pkgs;
         nix-update-script = pkgs.writeShellScriptBin "nix-update-script" ''
           OLD_API_DEPS_HASH=$(${pkgs.lib.getExe pkgs.nix} eval --raw .#packages.x86_64-linux.default.apiDeps.hash)
           OLD_EXT_MAN_DEPS_HASH=$(${pkgs.lib.getExe pkgs.nix} eval --raw .#packages.x86_64-linux.default.extensionManagerDeps.hash)
