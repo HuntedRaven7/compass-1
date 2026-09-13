@@ -1,0 +1,27 @@
+[package]
+name = "compass-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+iced = { version = "0.14", features = ["wayland"] }
+iced_winit = { version = "0.14", features = ["wayland"] }
+winit = { version = "0.30", features = ["wayland"] }
+compass-core.workspace = true
+compass-search.workspace = true
+compass-xdg.workspace = true
+compass-portals.workspace = true
+compass-wayland.workspace = true
+compass-platform.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

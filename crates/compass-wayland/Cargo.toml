@@ -1,0 +1,24 @@
+[package]
+name = "compass-wayland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+ashpd.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+wayland-client = { version = "0.30", features = ["calloop"] }
+wayland-protocols = { version = "0.30", features = ["client", "staging"] }
+iced = { version = "0.14", features = ["wayland"] }
+iced_winit = { version = "0.14", features = ["wayland"] }
+winit = { version = "0.30", features = ["wayland"] }
+
+[dev-dependencies]
+tempfile.workspace = true
