@@ -17,6 +17,9 @@ APP=com.vicinae.Vicinae
 INSTALLATION=compass
 SESSION_USER=compass
 REPORT=/tmp/compass-doctor.json
+SPIKE_OUT=/tmp/compass-spike-a.json
+SPIKE_ERR=/tmp/compass-spike-a.err
+SPIKE_DONE=/tmp/compass-spike-a.done
 
 # uid of the autologin user. Everything about a session is addressed by it.
 uid() { id -u "$SESSION_USER"; }
@@ -120,6 +123,83 @@ if bad:
     sys.exit('not ok in a real GNOME session: ' + ', '.join(bad))
 print('\nall gated checks ok:', ', '.join(required))
 PY
+    ;;
+
+  # ── Spike A ────────────────────────────────────────────────────────────────
+  #
+  # Two halves, because a host-side keypress has to happen between them. corral
+  # runs every --check over its own SSH connection and cannot interleave a host
+  # command, so Spike A is driven by scripts/vmtest/spike-a.sh after vmtest
+  # returns, against a VM left running.
+
+  # Start the spike detached and return once it says it is listening. Returning
+  # earlier would race: binding is a portal round trip and, on a first run, a
+  # permission dialog, and a key sent before the bind lands proves nothing.
+  spike-a-start)
+    u="$(uid)"
+    # Created empty rather than removed: the waiter greps the stderr file, and
+    # a file that does not exist yet makes grep print "No such file or
+    # directory" into a log where it reads like the failure rather than like
+    # the first poll of a loop that then succeeded.
+    : > "$SPIKE_OUT"
+    : > "$SPIKE_ERR"
+    rm -f "$SPIKE_DONE"
+
+    # setsid and all three fds redirected: without that, ssh waits for the
+    # channel to close and this check never returns.
+    #
+    # The wrapper exists to write $SPIKE_DONE when the spike exits. The obvious
+    # alternative — having the collector poll `pgrep -f "spike global-shortcut"`
+    # — cannot work, and failed exactly this way: pgrep matches full command
+    # lines, so the shell running the pgrep contains the pattern and matches
+    # itself. The predicate is then never true and the wait always times out.
+    # A sentinel file has no such reflexivity, and it carries the exit status.
+    #
+    # Arguments are passed positionally rather than interpolated, so nothing
+    # here depends on quoting surviving two levels of shell.
+    setsid bash -c '
+      runuser -u "$1" -- env \
+        XDG_RUNTIME_DIR="/run/user/$2" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$2/bus" \
+        WAYLAND_DISPLAY="$3" \
+        XDG_SESSION_TYPE=wayland \
+        flatpak run --installation="$4" "$5" \
+          spike global-shortcut --trigger "$6" --wait 120 --json \
+        > "$7" 2> "$8"
+      echo "$?" > "${9}"
+    ' _ "$SESSION_USER" "$u" "$(wayland_display)" "$INSTALLATION" "$APP" \
+      "${2:-SUPER+space}" "$SPIKE_OUT" "$SPIKE_ERR" "$SPIKE_DONE" \
+      < /dev/null >> "$SPIKE_ERR" 2>&1 &
+
+    # Wait for the marker OR the spike exiting, not the marker alone. A spike
+    # that cannot reach the portal writes its report and exits, and waiting only
+    # for the marker means sitting out the full timeout and then discarding an
+    # answer that already existed. (The spike now announces readiness on every
+    # path, so this is belt and braces — but the belt is what turns a hang into
+    # a report, and it costs one `-f` test.)
+    wait_for "the spike to bind and start listening, or exit" 150 \
+      bash -c 'grep -q SPIKE-A-READY "$1" || [ -f "$2" ]' _ "$SPIKE_ERR" "$SPIKE_DONE"
+
+    if ! grep -q SPIKE-A-READY "$SPIKE_ERR"; then
+      echo "the spike exited before announcing readiness; its report follows in the next step"
+    fi
+    cat "$SPIKE_ERR"
+    ;;
+
+  # Wait for the spike to finish — it exits on the first activation, or at its
+  # own deadline — and print the report. Deliberately does NOT assert that the
+  # shortcut fired: "GNOME refused to bind without a click nobody can give" is
+  # an answer to the question, not a broken run, and a gate here would turn the
+  # finding into a red X with no information in it.
+  spike-a-collect)
+    wait_for "the spike to finish" 180 test -f "$SPIKE_DONE"
+    echo "the spike exited $(cat "$SPIKE_DONE")"
+    echo '--- stderr ---'
+    cat "$SPIKE_ERR" 2>/dev/null || echo '(none)'
+    echo '--- report ---'
+    cat "$SPIKE_OUT"
+    python3 -c "import json,sys; json.load(open('$SPIKE_OUT'))" \
+      || { echo 'the spike produced no valid JSON report' >&2; exit 1; }
     ;;
 
   *)

@@ -16,6 +16,7 @@ pub mod doctor;
 pub mod engine;
 pub mod ipc;
 pub mod serve;
+pub mod spike;
 
 use std::process::ExitCode;
 
@@ -23,7 +24,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 use compass_ipc::{Request, Response};
 
-pub use cli::{Cli, Command, ExtCommand};
+pub use cli::{Cli, Command, ExtCommand, Spike};
 pub use engine::Engine;
 
 /// Exit code when the command did what it was asked.
@@ -138,6 +139,35 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                     );
                 }
             }
+            Ok(ExitCode::from(EXIT_OK))
+        }
+
+        Command::Spike(Spike::GlobalShortcut {
+            trigger,
+            id,
+            wait,
+            json,
+        }) => {
+            // Deliberately not gated on `require_servable_engine`: the spike
+            // asks the *desktop* a question and never touches our engine, so
+            // refusing to run it under --engine cpp would only make the answer
+            // harder to get.
+            let report = spike::global_shortcut(&spike::ShortcutSpike {
+                id,
+                description: "compass (spike): toggle the launcher".to_owned(),
+                preferred_trigger: trigger,
+                wait: std::time::Duration::from_secs(wait),
+            })
+            .await;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render_human());
+            }
+            // Always zero. The report is the deliverable and every outcome in
+            // it is a finding; a non-zero exit would make the harness treat
+            // "GNOME said no" as a broken run.
             Ok(ExitCode::from(EXIT_OK))
         }
 

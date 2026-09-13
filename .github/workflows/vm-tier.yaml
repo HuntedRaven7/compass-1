@@ -36,6 +36,9 @@ on:
       - packaging/vmtest/**
       - packaging/flatpak/**
       - scripts/vmtest/**
+      # The spike itself. Narrower than crates/**, because a change anywhere in
+      # the workspace does not need three VMs to answer for it.
+      - crates/vicinae/src/spike.rs
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -186,6 +189,129 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vmtest-compass
+          path: vmtest-out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Spike A (#3, #18). Not a gate — an experiment whose output is knowledge.
+  #
+  # It is a separate job from boot-compass for one structural reason: the
+  # keypress has to come from OUTSIDE the guest, and corral runs every --check
+  # over its own SSH connection with no way to interleave a host command. So
+  # this run leaves the VM up (no --rm), and scripts/vmtest/spike-a.sh drives
+  # guest, host, guest afterwards.
+  #
+  # It runs on a PR under the same paths rule as the jobs above, and for the
+  # same reason: a job introduced without ever running is a job discovered
+  # broken at 3am. Once its question has an answer recorded in ADR-0010, this
+  # can drop back to nightly.
+  spike-a:
+    name: "Spike A: does the portal give us Super+Space?"
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the Flatpak bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: packaging/vmtest
+
+      - uses: ./.github/actions/vm-host
+
+      - name: Build the test image
+        run: |
+          sudo podman build \
+            -t localhost/bluefin-compass:ci \
+            -f packaging/vmtest/Containerfile.compass \
+            packaging/vmtest
+
+      - name: Boot it, and leave it running
+        env:
+          HOME: /mnt/corral
+          TMPDIR: /mnt/corral
+        run: |
+          mkdir -p /mnt/corral
+          # No --rm and no --check: the VM has to outlive vmtest so a key can be
+          # pressed at it from here.
+          sudo -E "$(which corral)" vmtest spike-a \
+            --bootc localhost/bluefin-compass:ci \
+            --ready-marker 'COMPASS-VMTEST: graphical session up' \
+            --require-paint \
+            --cpu 4 --mem 8G --disk 30G \
+            --timeout 30m \
+            --artifacts "$GITHUB_WORKSPACE/vmtest-out"
+
+      - name: Bind the shortcut, press the key, read the answer
+        env:
+          HOME: /mnt/corral
+          TMPDIR: /mnt/corral
+        # Teed to a file so the driver's own output survives report.sh's serial
+        # dump and can be reprinted last. pipefail so the step's status is the
+        # driver's and not tee's.
+        #
+        # The chown is not optional and its position is the point: corral runs
+        # under sudo and creates vmtest-out as root, and the shell opens tee's
+        # file BEFORE the driver runs — so the driver chowning the directory
+        # itself, as it does, is too late. Without this the run works perfectly,
+        # prints everything, and then fails on `tee: Permission denied`, which
+        # is a spectacular way to lose an answer you already have.
+        run: |
+          set -o pipefail
+          sudo chown -R "$(id -un)" vmtest-out
+          scripts/vmtest/spike-a.sh vmtest-out spike-a 2>&1 \
+            | tee vmtest-out/spike-a-driver.log
+
+      - name: What the boot reported
+        if: always()
+        run: scripts/vmtest/report.sh vmtest-out
+
+      # report.sh dumps an ANSI-expanded serial console, which is hundreds of
+      # log lines and buries whatever came before it — the same burial that
+      # already cost this tier three unreadable diagnostics. The answer this job
+      # exists to produce therefore prints again, last.
+      - name: Spike A, last so it survives the serial dump
+        if: always()
+        run: |
+          echo '=============================================================='
+          # `sed` on a file that exists but lacks the marker exits 0 and prints
+          # nothing, so an `||` fallback stays silent — which is what happened:
+          # two delimiters with nothing between them, and the actual failure
+          # still buried. Test for the marker, and fall back to the whole file.
+          if [ -f vmtest-out/spike-a.txt ] && grep -q '^--- report ---$' vmtest-out/spike-a.txt; then
+            sed -n '/^--- report ---$/,$p' vmtest-out/spike-a.txt
+            # And the driver's own trace, always. A report can be produced by a
+            # run that still failed somewhere — that is exactly what happened —
+            # and finding out where has cost this job several deep log reads.
+            echo '--- and how the driver got there ---'
+            cat vmtest-out/spike-a-driver.log 2>/dev/null || echo '(no driver log)'
+          elif [ -f vmtest-out/spike-a-driver.log ]; then
+            # No report, so the interesting thing is how the driver died. This
+            # is here because four separate diagnoses of this job have had to
+            # page hundreds of lines back past an ANSI-expanded serial console
+            # to find one line of output.
+            echo 'no report; the driver said:'
+            cat vmtest-out/spike-a-driver.log
+          else
+            echo 'no report and no driver log — the step never ran'
+          fi
+          echo '=============================================================='
+
+      # The runner is thrown away either way, but a 30 GB disk image left behind
+      # can starve the artifact upload of space.
+      - name: Delete the VM
+        if: always()
+        env:
+          HOME: /mnt/corral
+        run: sudo -E "$(which corral)" delete spike-a --force || true
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-a
           path: vmtest-out/
           retention-days: 14
           if-no-files-found: warn

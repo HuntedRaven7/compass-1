@@ -118,6 +118,14 @@ pub enum Command {
     #[command(subcommand)]
     Ext(ExtCommand),
 
+    /// One-off experiments that answer a question the code cannot.
+    ///
+    /// Hidden: these are addressed to whoever is answering the question — CI,
+    /// or a person on a real machine — not to users, and each should be deleted
+    /// or folded into a real subsystem once its question has an answer.
+    #[command(hide = true, subcommand)]
+    Spike(Spike),
+
     /// Report what works on this machine and what does not.
     #[command(after_help = EXIT_CODE_HELP, after_long_help = EXIT_CODE_HELP)]
     Doctor {
@@ -137,6 +145,35 @@ pub enum ExtCommand {
     /// List available extensions and their status.
     List {
         /// Emit the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// The spikes. See [`crate::spike`] for what each one is for.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum Spike {
+    /// Spike A: bind a global shortcut through the portal and wait for it.
+    ///
+    /// Reports whether binding is permitted, whether the trigger granted is the
+    /// one requested, and whether pressing the key reaches us. The third
+    /// question is why this exists: it can only be answered by a real desktop
+    /// with a real keypress, which is what the VM tier provides.
+    GlobalShortcut {
+        /// Preferred trigger, e.g. `SUPER+space`. Omit to express no
+        /// preference, which is a different and also interesting answer.
+        #[arg(long)]
+        trigger: Option<String>,
+
+        /// Shortcut id, echoed back on activation.
+        #[arg(long, default_value = "compass.spike.toggle")]
+        id: String,
+
+        /// Seconds to wait for an activation after binding.
+        #[arg(long, default_value_t = 60)]
+        wait: u64,
+
+        /// Emit the report as JSON, for CI.
         #[arg(long)]
         json: bool,
     },
@@ -163,6 +200,38 @@ mod tests {
         assert_eq!(parse(&["vicinae", "show"]).command, Command::Show);
         assert_eq!(parse(&["vicinae", "hide"]).command, Command::Hide);
         assert_eq!(parse(&["vicinae", "ping"]).command, Command::Ping);
+    }
+
+    #[test]
+    fn the_spike_parses_with_its_defaults() {
+        // The defaults matter: the VM job passes only --trigger and --json, so
+        // a changed default id here silently changes what the harness asserts.
+        let Command::Spike(Spike::GlobalShortcut {
+            trigger,
+            id,
+            wait,
+            json,
+        }) = parse(&["vicinae", "spike", "global-shortcut", "--json"]).command
+        else {
+            panic!("expected the global-shortcut spike");
+        };
+        assert_eq!(trigger, None);
+        assert_eq!(id, "compass.spike.toggle");
+        assert_eq!(wait, 60);
+        assert!(json);
+    }
+
+    #[test]
+    fn the_spike_is_hidden_but_reachable() {
+        // Hidden from --help, yet it must still parse: a spike nobody can run
+        // is worse than no spike, and `hide` is easy to confuse with disabling.
+        let spike = Cli::command()
+            .get_subcommands()
+            .find(|c| c.get_name() == "spike")
+            .expect("the spike subcommand exists")
+            .clone();
+        assert!(spike.is_hide_set(), "the spike should not appear in --help");
+        assert!(Cli::try_parse_from(["vicinae", "spike", "global-shortcut"]).is_ok());
     }
 
     #[test]

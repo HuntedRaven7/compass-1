@@ -4020,6 +4020,7 @@ dependencies = [
  "clap",
  "compass-core",
  "compass-ipc",
+ "compass-portals",
  "compass-testkit",
  "serde",
  "serde_json",

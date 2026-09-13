@@ -274,6 +274,115 @@ and gates nothing.
 Not done, and not pretended to be: the GNOME Shell extension #18 also lists does
 not exist in this repository, so there is nothing to install.
 
+## Spike A is wired, and its answer is whatever GNOME says
+
+`vicinae spike global-shortcut` binds a shortcut through the GlobalShortcuts
+portal and waits; `scripts/vmtest/spike-a.sh` starts it in the guest, presses
+`meta_l spc` at QEMU's emulated keyboard from the host, and reads the report
+back. The job leaves the VM up (no `--rm`) because that host-side keypress
+cannot happen inside a corral `--check`, and a hotkey synthesised inside the
+session under test would prove nothing.
+
+**Nothing about the outcome is gated.** The job fails only if the spike produces
+no report. Every result it can record is an answer to the question #3 asks,
+including the one that is easiest to mistake for a broken run: GNOME may refuse
+to bind without a permission dialog that no CI can click. That would be a real
+finding about shipping a launcher on GNOME 50/51 — it belongs in the report, not
+behind a red X with no information in it.
+
+One judgement worth stating because it is a heuristic and not a fact:
+`trigger_matches_request` compares the wire syntax we send (`SUPER+space`) with
+the *display* text GNOME returns (`Super+Space`). Nothing in the specification
+requires those to be relatable, so the comparison normalises case, separators
+and the usual synonyms and can be fooled. Both strings are in the report
+verbatim so a reader never has to trust it.
+
+### The ready marker has to mean "as ready as I will ever be"
+
+The spike printed `SPIKE-A-READY` only on the path where binding succeeded. So a
+spike that could not reach the portal wrote its report, exited, and left the
+harness waiting out its full 150-second timeout for a line that was never
+coming — and then throwing away the answer it already had.
+
+That is the failure mode a spike can least afford, because "the portal was not
+reachable" is *itself* one of the answers Spike A exists to record. The marker
+now goes out on every path, and the harness waits for the marker **or** the
+spike exiting. Either alone is enough to turn a hang into a report.
+
+### A note on `pgrep` in a waiter
+
+Spike A's collector originally waited for `! pgrep -f "spike global-shortcut"`.
+That predicate can never become true: `pgrep -f` matches full command lines, and
+the shell evaluating it has the pattern in its own. The wait timed out every
+time, 180 seconds after a spike that had already finished.
+
+It is written down because the shape recurs — any "wait until my process is
+gone" check written with `pgrep -f` and a distinctive-looking string has this
+bug, and it presents as a timeout rather than as a mistake. The collector now
+waits on a sentinel file the launcher writes, which also carries the exit
+status.
+
+### The paint margin is thin, and that is worth watching
+
+The compass image passes `--require-paint`, but not by much: the ready frame in
+the Spike A run measured **0.0254** against corral's 0.02 blank threshold, with
+the boot frames spanning 0.0227–0.0487. A GNOME session under llvmpipe is mostly
+flat dark pixels, so there is far less margin here than the 0.36 an earlier note
+in this ADR cited — and that figure has already been shown to have been luck
+rather than measurement.
+
+No action yet, and deliberately not a threshold tweak: the blank check is
+corral's and lowering it would defeat the one pixel assertion the tier has. But
+if `--require-paint` starts flapping on the compass image, this is why, and the
+fix is to give the session something to draw rather than to move the line.
+
+## Spike A's first answer
+
+Measured on Bluefin 44 under QEMU, in a real GNOME Wayland session with the
+compass Flatpak installed:
+
+```json
+{
+  "portal": "available (interface v1)",
+  "requested_trigger": "LOGO+space",
+  "bind_outcome": "error: the portal did not answer `BindShortcuts` within 30s",
+  "bound": [],
+  "activated": false,
+  "waited_seconds": 120.0
+}
+```
+
+**Two of the three questions are answered, and the third is not.**
+
+1. **Is the GlobalShortcuts portal there?** Yes — `org.freedesktop.portal.Desktop`
+   exposes GlobalShortcuts at interface version 1. The premise of
+   `compass-portals` holds on the target.
+2. **Is binding permitted unattended?** No. `BindShortcuts` did not return
+   within 30 seconds.
+3. **Does a keypress reach us?** **Unknown, and this run says nothing about
+   it.** `activated: false` is not evidence about the keyboard: there was no
+   binding for `meta_l spc` to trigger. Spike A did not get far enough to ask
+   its own headline question.
+
+The obvious explanation for (2) is `xdg-desktop-portal-gnome` showing a consent
+dialog that no CI can click, leaving the D-Bus call outstanding. That is the
+likely answer and it is **not yet proven** — a portal backend simply failing to
+respond in a software-rendered session would look identical from the client
+side. The next run captures the framebuffer at the moment of the keypress,
+which is the one observation that separates "waiting for a human" from "broken":
+if a dialog is on screen, it is in that frame.
+
+If the dialog is confirmed, the question becomes whether the permission can be
+pre-seeded in the image so the bind completes unattended — and that, not the
+keypress, is what actually blocks Spike A. Whether Super+Space is *granted as
+requested* also remains unanswered, because nothing was granted at all.
+
+One incidental finding worth keeping: the trigger went out as `LOGO+space`, not
+`SUPER+space`. `Trigger` renders the Super key with the XDG spec's modifier name
+`LOGO`, which is correct — and it is why `triggers_look_equivalent` normalises
+`logo`, `super`, `meta` and `win` onto one another. Had it not, a successful
+bind would have been reported as a mismatch.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through
