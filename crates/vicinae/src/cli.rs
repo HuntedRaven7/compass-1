@@ -114,6 +114,10 @@ pub enum Command {
         json: bool,
     },
 
+    /// Extension management.
+    #[command(subcommand)]
+    Ext(ExtCommand),
+
     /// Report what works on this machine and what does not.
     #[command(after_help = EXIT_CODE_HELP, after_long_help = EXIT_CODE_HELP)]
     Doctor {
@@ -122,6 +126,17 @@ pub enum Command {
         check_only: bool,
 
         /// Emit the report as JSON, for CI.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Extension management subcommands.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum ExtCommand {
+    /// List available extensions and their status.
+    List {
+        /// Emit the list as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -253,5 +268,14 @@ mod tests {
             .render_long_help()
             .to_string();
         assert!(doctor_help.contains("Exit codes:"));
+    }
+
+    #[test]
+    fn ext_list_parses() {
+        let cli = parse(&["vicinae", "ext", "list"]);
+        assert_eq!(cli.command, Command::Ext(ExtCommand::List { json: false }));
+
+        let cli = parse(&["vicinae", "ext", "list", "--json"]);
+        assert_eq!(cli.command, Command::Ext(ExtCommand::List { json: true }));
     }
 }
