@@ -79,10 +79,17 @@ echo "=== 2. the screen with the launcher open ==="
 sudo -E "$corral_bin" screenshot "$vm" -o "$out/launcher-01-open.png" --require-paint
 
 echo
-echo "=== 3. type a query at it ==="
-# At QEMU's emulated keyboard, not synthesised inside the session: a keystroke
-# the guest sends itself would prove only that our own event loop can talk to
-# itself. This is the same mechanism Spike A uses to press Super+Space.
+echo "=== 3. type a query at it (EXPECTED TO DO NOTHING — see below) ==="
+# Kept, and labelled, rather than deleted. Spike A established that QMP key
+# injection does not reach this session at all: pressing Super alone, which
+# opens the Activities overview, left the framebuffer byte-identical. So this
+# step cannot currently type anything, and its screenshot is evidence about key
+# injection rather than about the launcher.
+#
+# Deleting it would lose the regression check for free — the day injection
+# starts working, this frame changes and says so. Leaving it unlabelled would
+# be worse than either, because it reads as a test of the launcher's input
+# handling, which it is not.
 sudo -E "$corral_bin" type "$vm" "$query"
 shot "launcher-02-typed.png"
 
@@ -103,6 +110,28 @@ echo "=== 3c. can ANY client draw in this session? (the control) ==="
 # its own furniture, not a client surface.
 guest "$checks" control-app-start || true
 shot "launcher-03-control-app.png"
+
+echo
+echo "=== 3d. did a launcher window actually appear? (the gate) ==="
+# The first assertion in this tier derived from a measurement rather than from
+# an assumption, and the reason it exists is that its absence let a wrong
+# conclusion stand for three runs.
+#
+# corral's luminance deviation cannot answer "did a window appear": five frames
+# across two jobs all read 0.1564 to four decimal places while showing visibly
+# different things, one of them containing a 640x480 launcher. Pixels can, and
+# framediff.py counts them.
+#
+# The numbers are taken from two consecutive runs that agreed to the pixel:
+# 84150 changed (8.22%) in a box at x 335..942, y 152..796, against a window
+# configured 640x480 centred, i.e. x 320..960, y 160..640. The gate is set well
+# below and around that — 3% rather than 8.22%, and a box with room on every
+# side — because the point is to catch "nothing was drawn", not to pin the
+# exact pixels of a theme. A tighter bound would break on the first font change
+# and teach everyone to ignore it.
+python3 scripts/vmtest/framediff.py \
+  "$out/launcher-00-before.png" "$out/launcher-01-open.png" \
+  --min-percent 3 --expect-box 300 140 980 800
 
 echo
 echo "=== 4. is it still running? ==="

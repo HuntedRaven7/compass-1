@@ -957,6 +957,45 @@ did not build one for "is anything on screen" until three runs in — and the
 moment it existed it overturned the conclusion. A measurement with no control is
 a guess with a number attached, and it took a stock file manager to say so.
 
+### The first gate in this tier taken from a measurement
+
+Every earlier section refused to gate on the framebuffer, and was right to: a
+threshold invented before anyone had seen a number is how a tier starts flaking,
+and the deviation gate that was nearly added would have passed on the exact
+failure it was meant to catch.
+
+There is now a number, and it is reproducible. Two consecutive runs agreed **to
+the pixel**: 84150 changed (8.22%) in a box at x 335–942, y 152–796, against a
+window configured 640 × 480 centred — x 320–960, y 160–640.
+
+So `scripts/vmtest/framediff.py` decodes both PNGs and counts, and the job
+asserts that opening the launcher changes **at least 3%** of the screen **inside
+x 300–980, y 140–800**. Both bounds are deliberately loose around the
+measurement: the gate exists to catch "nothing was drawn", not to pin the exact
+pixels of a theme. A tight bound would break on the first font change and teach
+everyone to ignore the job — which is the same failure mode as a permanently red
+X, reached by the opposite route.
+
+`framediff.py` decodes PNG with `zlib` and an unfilter loop rather than Pillow,
+which is not on the runner and is not worth a dependency here. It reports by
+default and only asserts when asked, so it stays usable for the next question
+before there is a number to gate on. It was tested against the real artifacts in
+all five shapes before shipping: report-only, an assertion that must pass, a
+threshold that must fail, a box that must fail, and identical frames.
+
+It is also now covered by tier 1. `shell.yaml` compiled *embedded* Python out of
+the shell scripts and nothing else, so a standalone `.py` would have had its
+first syntax check thirty minutes into a VM run — the precise thing that
+workflow exists to prevent. It compiles both now.
+
+### The typing step is labelled, not deleted
+
+`corral type` cannot currently reach this session, since QMP key injection does
+not arrive at all. The step stays, with that stated in the script: deleting it
+would lose a free regression check — the day injection works, that frame changes
+and says so — while leaving it unlabelled is worse than either, because it reads
+as a test of the launcher's input handling and is not one.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through

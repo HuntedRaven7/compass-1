@@ -95,3 +95,20 @@ jobs:
               print(f'::error::{f}')
           sys.exit(1 if failed else 0)
           PY
+
+      # Standalone Python, which the step above does not see: it extracts
+      # heredocs from the shell scripts and nothing else. scripts/vmtest gained
+      # framediff.py, and a syntax error in it would otherwise surface thirty
+      # minutes into a VM run rather than here in ten seconds — which is the
+      # entire premise of this workflow.
+      - name: Compile the standalone Python
+        run: |
+          mapfile -t files < <(find packaging/vmtest scripts/vmtest scripts/flatpak \
+            -name '*.py' -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no standalone Python found — the paths have moved"
+            exit 1
+          fi
+          printf '  %s\n' "${files[@]}"
+          python3 -m py_compile "${files[@]}"
+          echo "${#files[@]} file(s) compiled"
