@@ -255,6 +255,20 @@ PY
     as_session dconf read \
       /org/gnome/settings-daemon/global-shortcuts/applications || true
 
+    # Is there a keyboard at all? Measured after the first run where an
+    # injected key changed nothing: corral builds its QEMU command line with
+    # `-vga virtio -display none` and adds virtio net and rng devices, but no
+    # input device. On x86 the default machine still provides a PS/2 controller,
+    # so a keyboard *should* be here — "should" being exactly the word that
+    # earned this check. If /proc/bus/input/devices lists no keyboard, the
+    # scancodes have nowhere to arrive and no amount of portal work matters.
+    echo '--- input devices the kernel knows about ---'
+    grep -iE '^[NHB]: (Name|Handlers|EV)' /proc/bus/input/devices 2>/dev/null \
+      || echo '(no /proc/bus/input/devices — no input subsystem at all)'
+    echo '--- and what libinput sees, if it is installed ---'
+    as_session libinput list-devices 2>/dev/null | grep -iE 'Device:|Capabilities:' \
+      || echo '(libinput not available in the session; the kernel list above is the evidence)'
+
     echo '--- who else wants Super+Space ---'
     # Not exhaustive and not meant to be: these are the two schemas whose
     # defaults actually collide on this combination. Anything else that claims
@@ -285,12 +299,23 @@ PY
     : > "$UI_ERR"
     rm -f "$UI_DONE"
 
+    # RUST_LOG and the wgpu/winit knobs are set because the first run of this
+    # job produced a launcher that started, stayed alive, exited nothing, and
+    # printed *not one line* — while never putting a window on screen. A silent
+    # failure is the worst kind to debug from a 25-minute VM job, so the next
+    # run is made to talk.
+    #
+    # WGPU_BACKEND is deliberately not pinned to a value: naming one would
+    # decide the answer instead of measuring it. What is wanted is wgpu's own
+    # account of which adapters it found under llvmpipe, which `info` gives.
     setsid bash -c '
       runuser -u "$1" -- env \
         XDG_RUNTIME_DIR="/run/user/$2" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$2/bus" \
         WAYLAND_DISPLAY="$3" \
         XDG_SESSION_TYPE=wayland \
+        RUST_LOG="info,wgpu=debug,wgpu_hal=debug,iced_wgpu=debug,winit=debug" \
+        RUST_BACKTRACE=1 \
         flatpak run --installation="$4" "$5" ui \
         > "$6" 2>&1
       echo "$?" > "$7"

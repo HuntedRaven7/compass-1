@@ -637,6 +637,90 @@ and that margin is thin enough to flap. A launcher on screen is the honest way
 to widen it. The dishonest way is to move the line, which this ADR has already
 ruled out.
 
+## Two answers from the first run of the launcher job, and neither is comfortable
+
+The launcher job and Spike A's Super-alone control ran together for the first
+time. Both produced clear results, and both are things the tier existed to
+find. Neither was visible from any other tier.
+
+### 1. QMP key injection does not reach this GNOME session
+
+The control pressed **Super alone**, which on GNOME opens the Activities
+overview — an enormous, unmissable change. The two frames either side are
+**byte-identical**. Not "similar", not "the deviation was unchanged": the same
+bytes.
+
+That is conclusive, and it is conclusive *because the capture is demonstrably
+live*. In the launcher job on the same commit, three frames from the same
+mechanism differ from one another at the pixel level. So the screenshots are
+real and current, and the overview genuinely did not open.
+
+This ADR's "what would change our mind" already contained the line:
+
+> If corral's QMP key injection cannot produce Super+Space in practice —
+> `meta_l` is passed through to QEMU unvalidated, so this is expected to work
+> but has **not been run yet** — the hotkey half of Spike A needs another
+> mechanism.
+
+It has now been run. **It does not work, and the hotkey half of Spike A needs
+another mechanism.** Spike A's `activated: false` is explained: the key never
+arrived. Not the portal, not the compositor's routing, not our event loop —
+which the `Changed` signal arriving through that same broadcast channel during
+the wait had already made unlikely.
+
+A first hypothesis, and it is only that: corral builds its command line with
+`-vga virtio -display none`, `virtio-net-pci` and `virtio-rng-pci`, and adds
+**no input device**. x86's default machine type still provides a PS/2
+controller, so a keyboard should be present — "should" being the word that
+earns a measurement. `checks.sh spike-a-evidence` now dumps
+`/proc/bus/input/devices` and, where available, libinput's view, so the next
+run says whether there is a keyboard for the scancodes to arrive on at all.
+
+### 2. The launcher starts, stays alive, says nothing, and draws nothing
+
+`vicinae ui` reached a running process in 2 s and was still running at the end.
+It printed **not one line**. And its window never appeared.
+
+That last part took real measurement rather than a glance, and the glance would
+have been wrong twice over. All five screenshots across both jobs reported a
+luminance deviation of **0.1564**, identical to four decimal places, which
+looks exactly like a frozen framebuffer. It is not: the PNGs have different
+checksums. Decoding them and counting pixels gives the real picture —
+before→open differs by 1.60%, in a single box **258 × 81 at x 498–755,
+y 716–796**.
+
+The launcher's window is configured 640 × 480, centred, which on this 1280 × 800
+display is x 320–960, y 160–640. The region that changed is the wrong size and
+in the wrong place — bottom-centre, where GNOME draws OSDs and notifications.
+**Whatever appeared, it was not our window.**
+
+Two lessons, one about the product and one about this tier:
+
+- A global luminance deviation is far too coarse to answer "did a window
+  appear". Three visibly different frames shared it to 4 dp. Anything this tier
+  wants to claim about *what* is on screen has to come from pixels, not from the
+  summary statistic — and the artifacts are uploaded precisely so that can be
+  done after the fact, which is how this was.
+- **This vindicates not gating on the deviation.** The temptation, written down
+  and resisted one section ago, was to assert that opening a launcher raises it.
+  Had that gate existed it would have been *green* here — 0.1564 is comfortably
+  above the 0.02 blank threshold and unchanged — while the launcher drew
+  nothing at all. A gate that passes on the exact failure it was meant to catch
+  is worse than no gate, because it is also a claim.
+
+The next run is instrumented rather than guessed at: `RUST_LOG` now carries
+`wgpu`, `wgpu_hal`, `iced_wgpu` and `winit` at debug, with `RUST_BACKTRACE=1`.
+`WGPU_BACKEND` is deliberately *not* pinned — naming a backend would decide the
+answer instead of measuring it, and what is wanted is wgpu's own account of
+which adapters exist under llvmpipe. The most likely story is that Iced cannot
+get a rendering surface in a VM with no GPU, but that is a hypothesis with a
+silent process behind it, which is the least trustworthy kind.
+
+Neither finding is gated, and neither should be yet. A red X saying "the
+launcher does not draw" every run, before anyone knows why, trains people to
+ignore the tier. Both are recorded, both are instrumented, and the gate follows
+the diagnosis rather than preceding it.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through

@@ -936,17 +936,19 @@ keyboard injection for the hotkey. What they found is §11.1.
 
 ### 11.1 What the spikes measured
 
-**Spike A — the GlobalShortcuts portal.** Two of its three questions are answered, and the third is
-now askable rather than answered:
+**Spike A — the GlobalShortcuts portal.** All three questions now have answers, though the third
+turned out to be a fact about the harness rather than about GNOME:
 
 | Question | Answer |
 |---|---|
 | Is the portal there? | **Yes**, interface v1. The premise of `compass-portals` holds on the target. |
 | Is binding permitted unattended? | **Not by default** — but the consent can be pre-seeded, and now is. |
-| Does a keypress reach us? | **Still unknown**, and the next run is the first that can say. |
+| Does a keypress reach us? | **Not by this route** — QMP key injection never reaches the session. |
 
-That third row is easy to misread. `activated: false` was never evidence about the keyboard: there
-was no binding for `meta_l spc` to trigger. Nothing measured so far says the hotkey does not work.
+That third row was "unknown" for as long as there was no binding for `meta_l spc` to trigger. With
+the consent pre-seeded there is one, so the question was finally asked — and the answer is that the
+key never arrives. **Nothing here says the hotkey does not work on real hardware**; it says this
+harness cannot press it.
 
 The second row was "No" and is now qualified, because the cause has been traced through all three
 components rather than inferred from the symptom (ADR-0010). The portal frontend checks no
@@ -955,6 +957,15 @@ D-Bus timeout is `G_MAXINT`, so no timeout ever fires and "no answer in 30 s" is
 behaviour when nobody answers; and gnome-control-center skips its dialog entirely when every
 requested shortcut *id* is already stored, which is GSettings on a relocatable schema — dconf, and
 therefore image content. `packaging/vmtest/compass-shortcuts.dconf` seeds it.
+
+The third row now has an answer too, and it is about the harness rather than about GNOME. The
+control run pressed **Super alone** — which opens the Activities overview, an unmissable change —
+and the frames either side are **byte-identical**, while frames from the same mechanism in the
+launcher job on the same commit differ at the pixel level. So the capture is live and the key
+genuinely did not arrive. Spike A's `activated: false` is a fact about corral's QMP injection, not
+about the portal: **the hotkey half of Spike A needs another mechanism**, exactly as ADR-0010's
+"what would change our mind" anticipated. Whether the guest has a keyboard device at all is the
+next measurement; corral adds none to its QEMU command line.
 
 The consequence for the plan has changed accordingly. It previously read "either the permission is
 pre-seeded into the test image, or Phase 1's gate is verified by a human on a real machine". The
@@ -1004,6 +1015,15 @@ the portal and sandbox questions rather than the launcher. This is issue #4 and 
 that matters.
 
 Ordered by what unblocks the most:
+
+0. **The launcher does not draw a window on the target.** Found by the VM tier's first run against
+   it: `vicinae ui` starts in 2 s, stays alive, prints nothing, and its 640×480 centred window
+   never appears — the only region of the screen that changes is a 258×81 box at bottom-centre,
+   which is GNOME's own furniture, not ours. This outranks everything below it, because every other
+   item assumes a launcher that renders. The next run is instrumented (`wgpu`, `wgpu_hal`,
+   `iced_wgpu`, `winit` at debug) rather than guessed at; the likely story is Iced failing to get a
+   surface in a VM with no GPU, but a silent process is the least trustworthy kind of evidence and
+   it has not been measured yet.
 
 1. **Wire the UI into the binary** (#4). A window that opens, a list that moves, and a selection
    that actually launches via `compass-platform`. Everything in Phase 1's gate is downstream.
