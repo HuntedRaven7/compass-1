@@ -330,8 +330,40 @@ PY
     wait_for "the keyboard capture to finish" 40 test -f "$KBD_CAP_DONE"
     bytes=$(wc -c < "$KBD_CAP" 2>/dev/null || echo 0)
     echo "captured $bytes bytes of input events while the key was injected"
-    # struct input_event is 24 bytes on 64-bit; any whole number of them means
-    # the kernel genuinely saw input.
+
+    # Decode them rather than trusting the byte count. 288 bytes is exactly
+    # what two press/release pairs should produce, which is suggestive and is
+    # not proof: autorepeat, a stray mouse event or a jittering power button
+    # would also make bytes. Printing the keycodes says what actually arrived.
+    #
+    # struct input_event on 64-bit is two __kernel_ulong_t of timeval, then
+    # __u16 type, __u16 code, __s32 value — 24 bytes, "qqHHi".
+    python3 - "$KBD_CAP" <<'PY' || echo '(decode failed; the byte count above stands)' 
+import struct, sys
+
+SIZE = struct.calcsize("qqHHi")
+EV_KEY = 0x01
+NAMES = {1: "ESC", 57: "SPACE", 125: "LEFTMETA", 126: "RIGHTMETA"}
+ACTION = {0: "release", 1: "press", 2: "autorepeat"}
+
+data = open(sys.argv[1], "rb").read()
+if len(data) % SIZE:
+    print(f"  warning: {len(data)} bytes is not a whole number of {SIZE}-byte events")
+
+keys = []
+for off in range(0, len(data) - SIZE + 1, SIZE):
+    _sec, _usec, etype, code, value = struct.unpack("qqHHi", data[off : off + SIZE])
+    if etype == EV_KEY:
+        keys.append((code, value))
+        print(f"  EV_KEY code={code} ({NAMES.get(code, 'other')}) "
+              f"value={value} ({ACTION.get(value, '?')})")
+
+print(f"  {len(data) // SIZE} events total, {len(keys)} of them key events")
+if not keys:
+    print("  NOTE: bytes arrived but none were key events — the count alone "
+          "would have been misleading")
+PY
+
     if [ "$bytes" -gt 0 ]; then
       echo "VERDICT: the scancode REACHED the guest kernel — the loss is above it"
     else

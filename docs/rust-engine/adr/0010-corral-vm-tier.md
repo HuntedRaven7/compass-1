@@ -1059,6 +1059,57 @@ this bug's record — four hypotheses of mine refuted by measurement so far
 sctk-adwaita portal timeout, corral adds no input device) — a fifth theory is
 worth less than a fifth fact.
 
+### The compositor has the keyboard open, and still nothing happens
+
+`checks.sh compositor-input` answered immediately:
+
+```
+gnome-shell pid 1828
+--- input devices gnome-shell holds open ---
+  25 -> /dev/input/event0
+  26 -> /dev/input/event1
+  27 -> /dev/input/event3
+  28 -> /dev/input/event2
+--- what logind thinks the seat has ---
+seat0   Sessions: *1
+  [MASTER] drm:card0
+  input:input1 "AT Translated Set 2 keyboard"
+```
+
+So every link in the chain checks out individually:
+
+| link | state |
+|---|---|
+| QEMU delivers the scancode | **yes** — 288 bytes captured |
+| the kernel receives it | **yes** — on `/dev/input/event1` |
+| gnome-shell has that device open | **yes** — fd 26 |
+| logind assigns the keyboard to seat0 | **yes** |
+| the session is active and DRM master | **yes** — `Active=yes`, `[MASTER] drm:card0` |
+| anything acts on the key | **no** |
+
+Neither GNOME's Super binding nor a focused application responds. That is now a
+question about mutter's event handling rather than about the harness, and it is
+where this investigation stops being ours: nothing in compass, corral, the
+image or the session is misconfigured by any check we can make.
+
+### Counting bytes is not reading them
+
+The capture reported 288 bytes and the verdict rested on that number. 288 is
+exactly what two press/release pairs produce — `EV_MSC`, `EV_KEY`, `EV_SYN` for
+each of four transitions, at 24 bytes per `input_event`. Reconstructing that
+synthetically gives 288 bytes to the byte, which is good corroboration.
+
+It is still not a decode, and the difference matters: autorepeat, a stray mouse
+event, or a power button that jitters would all produce bytes on some device and
+the count alone would have read as success. `keyboard-capture-report` now
+unpacks the structs and prints the keycodes, and says explicitly when bytes
+arrived that were *not* key events — the case where the old check would have
+been confidently wrong.
+
+The decoder was extracted from the script and run against a synthetic capture
+before shipping, which is also how the 288-byte reconstruction above was
+checked.
+
 ## What would change our mind
 
 - If corral's QMP key injection cannot produce Super+Space in practice — `meta_l` is passed through
