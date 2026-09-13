@@ -50,6 +50,7 @@ proptest = "1"
 walkdir = "2"
 tempfile = "3"
 parking_lot = "0.12"
+criterion = { version = "0.5", features = ["async"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

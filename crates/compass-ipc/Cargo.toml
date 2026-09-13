@@ -9,6 +9,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[[bench]]
+name = "ipc_bench"
+harness = false
+
 [dependencies]
 serde.workspace = true
 postcard.workspace = true
@@ -21,3 +25,5 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 proptest.workspace = true
+criterion = { version = "0.5", features = ["async"] }
+tempfile.workspace = true

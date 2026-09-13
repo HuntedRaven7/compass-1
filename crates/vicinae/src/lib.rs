@@ -23,7 +23,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 use compass_ipc::{Request, Response};
 
-pub use cli::{Cli, Command};
+pub use cli::{Cli, Command, ExtCommand};
 pub use engine::Engine;
 
 /// Exit code when the command did what it was asked.
@@ -115,6 +115,28 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&hits)?);
             } else {
                 print!("{}", render_hits(&hits));
+            }
+            Ok(ExitCode::from(EXIT_OK))
+        }
+
+        Command::Ext(ExtCommand::List { json }) => {
+            // Extension listing is a local operation; it doesn't need a running engine.
+            // In the future this will query the engine for dynamically loaded extensions.
+            let extensions = vec![serde_json::json!({
+                "name": "gnome-shell",
+                "status": "not_installed",
+                "description": "GNOME Shell extension for window switching and clipboard"
+            })];
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&extensions)?);
+            } else {
+                for ext in &extensions {
+                    println!(
+                        "{} - {} [{}]",
+                        ext["name"], ext["description"], ext["status"]
+                    );
+                }
             }
             Ok(ExitCode::from(EXIT_OK))
         }
