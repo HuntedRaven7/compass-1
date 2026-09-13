@@ -14,3 +14,10 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 walkdir.workspace = true
+compass-xdg.workspace = true
+compass-search.workspace = true
+compass-core.workspace = true
+
+[[bin]]
+name = "parity"
+path = "src/parity.rs"
