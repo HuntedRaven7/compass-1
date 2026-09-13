@@ -15,8 +15,8 @@
   };
 
   nixConfig = {
-    extra-substituters = ["https://vicinae.cachix.org"];
-    extra-trusted-public-keys = ["vicinae.cachix.org-1:1kDrfienkGHPYbkpNj1mWTr7Fm1+zcenzgTizIcI3oc="];
+    extra-substituters = [ "https://vicinae.cachix.org" ];
+    extra-trusted-public-keys = [ "vicinae.cachix.org-1:1kDrfienkGHPYbkpNj1mWTr7Fm1+zcenzgTizIcI3oc=" ];
   };
 
   outputs = {
@@ -28,7 +28,7 @@
   }: let
     inherit (nixpkgs) lib;
     forEachPkgs = f: lib.genAttrs (import systems) (system: f nixpkgs.legacyPackages.${system});
-    numenFor = pkgs: numen.packages.${pkgs.stdenv.hostPlatform.system}.numen.override {withRepl = false;};
+    numenFor = pkgs: numen.packages.${pkgs.stdenv.hostPlatform.system}.numen.override { withRepl = false; };
 
     # Crane-based Rust build
     rustBuild = pkgs: let
@@ -60,8 +60,8 @@
       lib.optionalAttrs (soulver != null) {
         with-soulver = pkgs.symlinkJoin {
           name = "${vicinae.name}-with-soulver";
-          paths = [vicinae];
-          nativeBuildInputs = [pkgs.makeWrapper];
+          paths = [ vicinae ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
           postBuild = ''
             for bin in $out/bin/*; do
               wrapProgram "$bin" \
@@ -85,9 +85,9 @@
           NEW_EXT_MAN_DEPS_HASH=$(${pkgs.lib.getExe pkgs.prefetch-npm-deps} package-lock.json)
           cd ..
 
-          [[ "$OLD_API_DEPS_HASH" == "$NEW_API_DEPS_HASH" ]] || { echo -e "\e[31mHash mismatch for API npm deps, please replace the value in vicinae.nix with '$NEW_API_DEPS_HASH'.\e[0m" >&2; exit 1;}
+          [[ "$OLD_API_DEPS_HASH" == "$NEW_API_DEPS_HASH" ]] || { echo -e "\e[31mHash mismatch for API npm deps, please replace the value in vicinae.nix with '$NEW_API_DEPS_HASH'.\e[0m" >&2; exit 1; }
 
-          [[ "$OLD_EXT_MAN_DEPS_HASH" == "$NEW_EXT_MAN_DEPS_HASH" ]] || { echo -e "\e[31mHash mismatch for extension-manager npm deps, please replace the value in vicinae.nix with '$NEW_EXT_MAN_DEPS_HASH'.\e[0m" >&2; exit 1;}
+          [[ "$OLD_EXT_MAN_DEPS_HASH" == "$NEW_EXT_MAN_DEPS_HASH" ]] || { echo -e "\e[31mHash mismatch for extension-manager npm deps, please replace the value in vicinae.nix with '$NEW_EXT_MAN_DEPS_HASH'.\e[0m" >&2; exit 1; }
         '';
       });
     lib = forEachPkgs (pkgs: {
@@ -98,20 +98,19 @@
       pkgs: let
         inherit (pkgs.stdenv.hostPlatform) isLinux;
         qtEnv = pkgs.qt6.env "qt-custom-${pkgs.qt6.qtbase.version}" ([
-            pkgs.qt6.qtdeclarative
-            pkgs.qt6.qtsvg
-            pkgs.qt6.qtimageformats
-            pkgs.qt6.qttools
-          ]
-          ++ pkgs.lib.optionals isLinux [
-            pkgs.qt6.qtwayland
-            pkgs.kdePackages.layer-shell-qt
-          ]);
+          pkgs.qt6.qtdeclarative
+          pkgs.qt6.qtsvg
+          pkgs.qt6.qtimageformats
+          pkgs.qt6.qttools
+        ] ++ pkgs.lib.optionals isLinux [
+          pkgs.qt6.qtwayland
+          pkgs.kdePackages.layer-shell-qt
+        ]);
         package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       in {
-        default = pkgs.mkShell.override {stdenv = package.stdenv;} {
+        default = pkgs.mkShell.override { stdenv = package.stdenv; } {
           # automatically pulls nativeBuildInputs + buildInputs
-          inputsFrom = [package];
+          inputsFrom = [ package ];
 
           packages = with pkgs; [
             ccache
@@ -133,7 +132,7 @@
       }
     );
     overlays.default = final: prev: {
-      vicinae = final.callPackage ./nix/vicinae.nix {numen = numenFor final;};
+      vicinae = final.callPackage ./nix/vicinae.nix { numen = numenFor final; };
       mkVicinaeExtension = prev.callPackage ./nix/mkVicinaeExtension.nix {};
       mkRayCastExtension = prev.callPackage ./nix/mkRayCastExtension.nix {};
     };
