@@ -136,6 +136,6 @@
 
       homeManagerModules.default = import ./nix/home-manager-module.nix self;
       nixosModules.default = import ./nix/nixos-module.nix self;
-    };
-  };
+    }
+  }
 }
