@@ -20,31 +20,31 @@
   };
 
   outputs = { self, nixpkgs, systems, soulver-cpp, numen }: let
-      inherit (nixpkgs) lib;
-      forEachPkgs = f: lib.genAttrs (import systems) (system: f nixpkgs.legacyPackages.${system});
-      numenFor = pkgs: numen.packages.${pkgs.stdenv.hostPlatform.system}.numen.override { withRepl = false; };
+    inherit (nixpkgs) lib;
+    forEachPkgs = f: lib.genAttrs (import systems) (system: f nixpkgs.legacyPackages.${system});
+    numenFor = pkgs: numen.packages.${pkgs.stdenv.hostPlatform.system}.numen.override { withRepl = false; };
 
-      # Crane-based Rust build
-      rustBuild = pkgs:
-        let
-          crane = pkgs.craneLib;
-        in
-          crane.buildPackage {
-            pname = "rust-vicinae";
-            version = "0.1.0";
-            src = ../.;
-            cargoBuildFlags = [ "--workspace" "--all-targets" "--release" ];
-            nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = with pkgs; [ dbus libxkbcommon wayland mesa fontconfig freetype harfbuzz ];
-            doCheck = false;
-            meta = {
-              description = "Vicinae Rust engine";
-              homepage = "https://github.com/tuna-os/compass";
-              license = lib.licenses.gpl3Plus;
-              platforms = with lib.platforms; linux;
-            };
+    # Crane-based Rust build
+    rustBuild = pkgs:
+      let
+        crane = pkgs.craneLib;
+      in
+        crane.buildPackage {
+          pname = "rust-vicinae";
+          version = "0.1.0";
+          src = ../.;
+          cargoBuildFlags = [ "--workspace" "--all-targets" "--release" ];
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = with pkgs; [ dbus libxkbcommon wayland mesa fontconfig freetype harfbuzz ];
+          doCheck = false;
+          meta = {
+            description = "Vicinae Rust engine";
+            homepage = "https://github.com/tuna-os/compass";
+            license = lib.licenses.gpl3Plus;
+            platforms = with lib.platforms; linux;
           };
-    in
+        };
+  in
     {
       packages = forEachPkgs (pkgs:
         let
@@ -87,55 +87,55 @@
               [[ "$OLD_EXT_MAN_DEPS_HASH" == "$NEW_EXT_MAN_DEPS_HASH" ]] || { echo -e "\e[31mHash mismatch for extension-manager npm deps, please replace the value in vicinae.nix with '$NEW_EXT_MAN_DEPS_HASH'.\e[0m" >&2; exit 1; }
             '';
           });
-      lib = forEachPkgs (pkgs: {
-        mkVicinaeExtension = pkgs.callPackage ./nix/mkVicinaeExtension.nix {};
-        mkRayCastExtension = pkgs.callPackage ./nix/mkRayCastExtension.nix {};
-      });
-      devShells = forEachPkgs (pkgs:
-        let
-          inherit (pkgs.stdenv.hostPlatform) isLinux;
-          qtEnv = pkgs.qt6.env "qt-custom-${pkgs.qt6.qtbase.version}" ([
-            pkgs.qt6.qtdeclarative
-            pkgs.qt6.qtsvg
-            pkgs.qt6.qtimageformats
-            pkgs.qt6.qttools
-          ] ++ pkgs.lib.optionals isLinux [
-            pkgs.qt6.qtwayland
-            pkgs.kdePackages.layer-shell-qt
-          ]);
-          package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-        in
-          {
-            default = pkgs.mkShell.override { stdenv = package.stdenv; } {
-              # automatically pulls nativeBuildInputs + buildInputs
-              inputsFrom = [ package ];
+        lib = forEachPkgs (pkgs: {
+          mkVicinaeExtension = pkgs.callPackage ./nix/mkVicinaeExtension.nix {};
+          mkRayCastExtension = pkgs.callPackage ./nix/mkRayCastExtension.nix {};
+        });
+        devShells = forEachPkgs (pkgs:
+          let
+            inherit (pkgs.stdenv.hostPlatform) isLinux;
+            qtEnv = pkgs.qt6.env "qt-custom-${pkgs.qt6.qtbase.version}" ([
+              pkgs.qt6.qtdeclarative
+              pkgs.qt6.qtsvg
+              pkgs.qt6.qtimageformats
+              pkgs.qt6.qttools
+            ] ++ pkgs.lib.optionals isLinux [
+              pkgs.qt6.qtwayland
+              pkgs.kdePackages.layer-shell-qt
+            ]);
+            package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          in
+            {
+              default = pkgs.mkShell.override { stdenv = package.stdenv; } {
+                # automatically pulls nativeBuildInputs + buildInputs
+                inputsFrom = [ package ];
 
-              packages = with pkgs; [
-                ccache
-                catch2_3
-                qtEnv
-                clang-tools
-              ];
+                packages = with pkgs; [
+                  ccache
+                  catch2_3
+                  qtEnv
+                  clang-tools
+                ];
 
-              shellHook = pkgs.lib.optionalString isLinux ''
-                export CC=${pkgs.gcc15}/bin/gcc
-                export CXX=${pkgs.gcc15}/bin/g++
-                export CMAKE_C_COMPILER=$CC
-                export CMAKE_CXX_COMPILER=$CXX
+                shellHook = pkgs.lib.optionalString isLinux ''
+                  export CC=${pkgs.gcc15}/bin/gcc
+                  export CXX=${pkgs.gcc15}/bin/g++
+                  export CMAKE_C_COMPILER=$CC
+                  export CMAKE_CXX_COMPILER=$CXX
 
-                export QML2_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml
-                export QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml
-              '';
-            };
-          }
-      );
-      overlays.default = final: prev: {
-        vicinae = final.callPackage ./nix/vicinae.nix { numen = numenFor final; };
-        mkVicinaeExtension = prev.callPackage ./nix/mkVicinaeExtension.nix {};
-        mkRayCastExtension = prev.callPackage ./nix/mkRayCastExtension.nix {};
+                  export QML2_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml
+                  export QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml
+                '';
+              };
+            }
+        );
+        overlays.default = final: prev: {
+          vicinae = final.callPackage ./nix/vicinae.nix { numen = numenFor final; };
+          mkVicinaeExtension = prev.callPackage ./nix/mkVicinaeExtension.nix {};
+          mkRayCastExtension = prev.callPackage ./nix/mkRayCastExtension.nix {};
+        };
+
+        homeManagerModules.default = import ./nix/home-manager-module.nix self;
+        nixosModules.default = import ./nix/nixos-module.nix self;
       };
-
-      homeManagerModules.default = import ./nix/home-manager-module.nix self;
-      nixosModules.default = import ./nix/nixos-module.nix self;
-    };
-}
+    }
