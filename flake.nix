@@ -19,13 +19,7 @@
     extra-trusted-public-keys = [ "vicinae.cachix.org-1:1kDrfienkGHPYbkpNj1mWTr7Fm1+zcenzgTizIcI3oc=" ];
   };
 
-  outputs =
-    { self,
-      nixpkgs,
-      systems,
-      soulver-cpp,
-      numen
-    }: let
+  outputs = { self, nixpkgs, systems, soulver-cpp, numen }: let
       inherit (nixpkgs) lib;
       forEachPkgs = f: lib.genAttrs (import systems) (system: f nixpkgs.legacyPackages.${system});
       numenFor = pkgs: numen.packages.${pkgs.stdenv.hostPlatform.system}.numen.override { withRepl = false; };
