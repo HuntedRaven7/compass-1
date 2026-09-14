@@ -136,6 +136,7 @@
         mkVicinaeExtension = prev.callPackage ./nix/mkVicinaeExtension.nix {};
         mkRayCastExtension = prev.callPackage ./nix/mkRayCastExtension.nix {};
       };
+
       homeManagerModules.default = import ./nix/home-manager-module.nix self;
       nixosModules.default = import ./nix/nixos-module.nix self;
     };
