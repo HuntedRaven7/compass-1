@@ -43,6 +43,8 @@ jobs:
         pushFilter: "(swift-bin|swift-.*-RELEASE.*\\.tar\\.gz)"
     - name: Build Flake
       run: nix build -L --no-update-lock-file
+    - name: Build Rust engine
+      run: nix build -L --no-update-lock-file .#rust-vicinae
     - name: Build Soulver backend
       if: matrix.os == 'ubuntu-24.04'
       run: nix build -L --no-update-lock-file .#with-soulver
