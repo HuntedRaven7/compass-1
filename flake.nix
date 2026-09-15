@@ -63,7 +63,7 @@
           description = "Vicinae Rust engine";
           homepage = "https://github.com/tuna-os/compass";
           license = lib.licenses.gpl3Plus;
-            platforms = with lib.platforms; linux ++ darwin;
+          platforms = with lib.platforms; linux ++ darwin;
         };
       };
   in {
