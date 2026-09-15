@@ -42,11 +42,11 @@ jobs:
         authToken: ${{ github.ref == 'refs/heads/main' && secrets.CACHIX_AUTH_TOKEN || '' }}
         pushFilter: "(swift-bin|swift-.*-RELEASE.*\\.tar\\.gz)"
     - name: Build Flake
-      run: nix build -L --no-update-lock-file
+      run: nix build -L
     - name: Build Rust engine
-      run: nix build -L --no-update-lock-file .#rust-vicinae
+      run: nix build -L .#rust-vicinae
     - name: Build Soulver backend
       if: matrix.os == 'ubuntu-24.04'
-      run: nix build -L --no-update-lock-file .#with-soulver
+      run: nix build -L .#with-soulver
     - name: Run Test Shell
       run: nix develop --command echo OK
