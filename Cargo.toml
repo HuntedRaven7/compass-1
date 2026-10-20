@@ -139,7 +139,7 @@ ureq = { version = "3.4", default-features = false, features = ["native-tls", "g
 # Extension store bundles (the Vicinae and Raycast stores serve zips). Only
 # deflate, through the flate2/zlib-rs backend the tree already builds; the
 # stores use nothing else, and an archive that does is refused.
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # dev: the fake store the engine's end-to-end tests install from.
 tiny_http = "0.12"
 
