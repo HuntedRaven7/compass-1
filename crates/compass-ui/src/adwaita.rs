@@ -413,7 +413,9 @@ mod tests {
             CONTROL_RADIUS.into()
         );
         assert_eq!(
-            form_dropdown(&theme, pick_list::Status::Active).border.radius,
+            form_dropdown(&theme, pick_list::Status::Active)
+                .border
+                .radius,
             CONTROL_RADIUS.into()
         );
     }
