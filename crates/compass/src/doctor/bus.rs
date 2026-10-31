@@ -16,6 +16,18 @@
 
 use std::fmt;
 use std::future::Future;
+use std::time::Duration;
+
+/// How long one query on the real bus may take.
+///
+/// Reading a property of a bus-activatable service starts it, and the call is
+/// answered only once the service has taken its name. A service that never
+/// finishes starting — an `xdg-desktop-portal` waiting on a backend that
+/// cannot come up — leaves the call unanswered until the bus gives up on the
+/// activation, which under systemd is the unit's start timeout, 90 seconds by
+/// default, and the doctor asks the portal more than once. A portal that does
+/// start answers well inside this.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A bus interaction that could not be completed.
 ///
@@ -255,21 +267,37 @@ fn is_absence(err: &zbus::fdo::Error) -> bool {
     )
 }
 
+/// Runs `query`, or fails it as unanswered once `timeout` has passed: "we
+/// could not ask", which is what an unanswered call is.
+async fn bounded<T>(timeout: Duration, query: impl Future<Output = BusResult<T>>) -> BusResult<T> {
+    tokio::time::timeout(timeout, query)
+        .await
+        .unwrap_or_else(|_| {
+            Err(BusError::new(format!(
+                "no answer within {}s",
+                timeout.as_secs_f32()
+            )))
+        })
+}
+
 impl BusProbe for ZbusProbe {
     async fn connect(&self) -> BusResult<()> {
         self.connection().await.map(|_| ())
     }
 
     async fn name_has_owner(&self, name: &str) -> BusResult<bool> {
-        let connection = self.connection().await?;
-        let dbus = zbus::fdo::DBusProxy::new(connection)
-            .await
-            .map_err(|e| BusError::new(e.to_string()))?;
-        let name = zbus::names::BusName::try_from(name.to_string())
-            .map_err(|e| BusError::new(format!("invalid bus name: {e}")))?;
-        dbus.name_has_owner(name)
-            .await
-            .map_err(|e| BusError::new(e.to_string()))
+        bounded(QUERY_TIMEOUT, async {
+            let connection = self.connection().await?;
+            let dbus = zbus::fdo::DBusProxy::new(connection)
+                .await
+                .map_err(|e| BusError::new(e.to_string()))?;
+            let name = zbus::names::BusName::try_from(name.to_string())
+                .map_err(|e| BusError::new(format!("invalid bus name: {e}")))?;
+            dbus.name_has_owner(name)
+                .await
+                .map_err(|e| BusError::new(e.to_string()))
+        })
+        .await
     }
 
     async fn property(
@@ -279,28 +307,31 @@ impl BusProbe for ZbusProbe {
         interface: &str,
         property: &str,
     ) -> BusResult<Option<String>> {
-        let connection = self.connection().await?;
-        let destination = zbus::names::BusName::try_from(destination.to_string())
-            .map_err(|e| BusError::new(format!("invalid destination: {e}")))?;
-        let path = zbus::zvariant::ObjectPath::try_from(path.to_string())
-            .map_err(|e| BusError::new(format!("invalid object path: {e}")))?;
-        let interface = zbus::names::InterfaceName::try_from(interface.to_string())
-            .map_err(|e| BusError::new(format!("invalid interface name: {e}")))?;
+        bounded(QUERY_TIMEOUT, async {
+            let connection = self.connection().await?;
+            let destination = zbus::names::BusName::try_from(destination.to_string())
+                .map_err(|e| BusError::new(format!("invalid destination: {e}")))?;
+            let path = zbus::zvariant::ObjectPath::try_from(path.to_string())
+                .map_err(|e| BusError::new(format!("invalid object path: {e}")))?;
+            let interface = zbus::names::InterfaceName::try_from(interface.to_string())
+                .map_err(|e| BusError::new(format!("invalid interface name: {e}")))?;
 
-        let proxy = zbus::fdo::PropertiesProxy::builder(connection)
-            .destination(destination)
-            .map_err(|e| BusError::new(e.to_string()))?
-            .path(path)
-            .map_err(|e| BusError::new(e.to_string()))?
-            .build()
-            .await
-            .map_err(|e| BusError::new(e.to_string()))?;
+            let proxy = zbus::fdo::PropertiesProxy::builder(connection)
+                .destination(destination)
+                .map_err(|e| BusError::new(e.to_string()))?
+                .path(path)
+                .map_err(|e| BusError::new(e.to_string()))?
+                .build()
+                .await
+                .map_err(|e| BusError::new(e.to_string()))?;
 
-        match proxy.get(interface, property).await {
-            Ok(value) => Ok(Some(render(&value))),
-            Err(err) if is_absence(&err) => Ok(None),
-            Err(err) => Err(BusError::new(err.to_string())),
-        }
+            match proxy.get(interface, property).await {
+                Ok(value) => Ok(Some(render(&value))),
+                Err(err) if is_absence(&err) => Ok(None),
+                Err(err) => Err(BusError::new(err.to_string())),
+            }
+        })
+        .await
     }
 }
 
@@ -329,6 +360,17 @@ mod tests {
         let bus = FakeBus::failing_queries("Connection reset");
         assert_eq!(bus.connect().await, Ok(()));
         assert!(bus.name_has_owner("org.example.Thing").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_query_fails_as_could_not_ask_instead_of_waiting() {
+        let timeout = Duration::from_millis(20);
+        let never: BusResult<Option<String>> = bounded(timeout, std::future::pending()).await;
+        assert_eq!(never, Err(BusError::new("no answer within 0.02s")));
+        assert_eq!(
+            bounded(timeout, async { Ok(Some("2".to_owned())) }).await,
+            Ok(Some("2".to_owned()))
+        );
     }
 
     #[tokio::test]

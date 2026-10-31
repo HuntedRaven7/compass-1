@@ -3,7 +3,8 @@
 //! Three strategies, tried in order, unchanged from when this code lived in
 //! `compass-platform`:
 //!
-//! 1. `flatpak-spawn --host`, when running inside a Flatpak
+//! 1. on the host, when running inside a Flatpak: the session helper's
+//!    `HostCommand`, the call `flatpak-spawn --host` makes
 //! 2. the XDG `OpenURI` portal
 //! 3. a direct spawn
 //!
@@ -14,8 +15,11 @@
 //! Desktop links instead use `xdg-open` with their URL, on the host when
 //! sandboxed. They have no application Exec to expand or fall back to.
 
+use std::collections::HashMap;
+use std::fs::File;
 use std::path::Path;
 
+use ashpd::flatpak::Development;
 use compass_platform::{AppLauncher, LaunchError, LaunchFuture, LaunchMethod};
 use compass_portals::OpenOutcome;
 use compass_xdg::DesktopEntry;
@@ -103,9 +107,9 @@ async fn launch_app_with_uris(
         // Resolve file: links on the host too: the sandbox may not contain
         // the target file even though its desktop entry is visible here.
         return if is_flatpak() {
-            launch_via_flatpak_spawn(&exec)
+            launch_on_host(&exec)
                 .await
-                .map(|()| LaunchMethod::FlatpakSpawn)
+                .map(|()| LaunchMethod::FlatpakHost)
         } else {
             launch_direct(&exec).await.map(|()| LaunchMethod::Direct)
         };
@@ -135,11 +139,11 @@ async fn launch_exec(exec: Vec<String>) -> Result<LaunchMethod, LaunchError> {
 
     info!(?exec, "Launching application");
 
-    // Try flatpak-spawn --host first if we're in a Flatpak
+    // Inside a Flatpak, start it on the host first
     if is_flatpak() {
-        match launch_via_flatpak_spawn(&exec).await {
-            Ok(()) => return Ok(LaunchMethod::FlatpakSpawn),
-            Err(e) => warn!(%e, "flatpak-spawn failed, trying OpenURI"),
+        match launch_on_host(&exec).await {
+            Ok(()) => return Ok(LaunchMethod::FlatpakHost),
+            Err(e) => warn!(%e, "starting it on the host failed, trying OpenURI"),
         }
     }
 
@@ -153,7 +157,7 @@ async fn launch_exec(exec: Vec<String>) -> Result<LaunchMethod, LaunchError> {
     launch_direct(&exec).await.map(|()| LaunchMethod::Direct)
 }
 
-/// Runs a command line on the host: through `flatpak-spawn --host` inside a
+/// Runs a command line on the host: through the Flatpak session helper inside a
 /// Flatpak, directly outside one. For an argv that is not an application
 /// launch (a terminal running an extension's command), so the portal step
 /// [`LinuxLauncher`] tries for applications does not apply.
@@ -167,8 +171,8 @@ pub async fn run_command(argv: &[String]) -> Result<LaunchMethod, LaunchError> {
     }
     info!(?argv, "Running a command on the host");
     if is_flatpak() {
-        launch_via_flatpak_spawn(argv).await?;
-        return Ok(LaunchMethod::FlatpakSpawn);
+        launch_on_host(argv).await?;
+        return Ok(LaunchMethod::FlatpakHost);
     }
     launch_direct(argv).await.map(|()| LaunchMethod::Direct)
 }
@@ -192,32 +196,37 @@ fn is_flatpak() -> bool {
     Path::new("/.flatpak-info").exists()
 }
 
-/// Launch via `flatpak-spawn --host`.
-async fn launch_via_flatpak_spawn(exec: &[String]) -> Result<(), LaunchError> {
-    let mut cmd = TokioCommand::new("flatpak-spawn");
-    cmd.arg("--host");
-    cmd.args(exec);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-
-    debug!(?cmd, "Running flatpak-spawn");
-
-    let status = cmd
-        .spawn()
-        .map_err(|e| LaunchError::FlatpakSpawnFailed(e.to_string()))?
-        .wait()
+/// Starts `exec` on the host and returns once it is running.
+///
+/// This makes the call `flatpak-spawn --host` makes, `HostCommand` on the
+/// Flatpak session helper, directly, because its answer is what a launch
+/// needs: the helper replies with the pid once the process has started, or
+/// with an error when it could not start it. `flatpak-spawn` would instead
+/// stay attached until the process exits, which for an application is when
+/// the user quits it, so the launch would not complete until then and an
+/// application's non-zero exit would read as a failed launch. A direct spawn
+/// already means "started"; this gives the Flatpak path the same meaning.
+///
+/// As with `flatpak-spawn` and no `--watch-bus`, the process outlives
+/// Compass, starts in Compass's working directory with the session helper's
+/// environment, and has `/dev/null` for its standard streams.
+async fn launch_on_host(exec: &[String]) -> Result<(), LaunchError> {
+    let failed = |error: &dyn std::fmt::Display| LaunchError::FlatpakHostFailed(error.to_string());
+    let cwd = std::env::current_dir().map_err(|e| failed(&e))?;
+    let null = File::options()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+        .map_err(|e| failed(&e))?;
+    let fds: HashMap<u32, &File> = (0..3).map(|fd| (fd, &null)).collect();
+    let pid = Development::new()
         .await
-        .map_err(|e| LaunchError::FlatpakSpawnFailed(e.to_string()))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(LaunchError::FlatpakSpawnFailed(format!(
-            "exit code: {:?}",
-            status.code()
-        )))
-    }
+        .map_err(|e| failed(&e))?
+        .host_command(&cwd, exec, fds, HashMap::new(), Default::default())
+        .await
+        .map_err(|e| failed(&e))?;
+    debug!(pid, ?exec, "started on the host");
+    Ok(())
 }
 
 /// Launch via the OpenURI portal.

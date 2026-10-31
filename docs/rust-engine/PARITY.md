@@ -2368,8 +2368,8 @@ real-daemon UI test also verifies history ordering when reopening with no query.
 Desktop `Type=Link` entries now enter the application index without an Exec,
 including the harvested Singular manual fixture. Missing or empty URLs are
 reported, and link entries do not expose application-only desktop actions.
-Linux dispatches the URL as a single `xdg-open` argument, using
-`flatpak-spawn --host` inside Flatpak so host file links are resolved on the host.
+Linux dispatches the URL as a single `xdg-open` argument, started on the host inside
+Flatpak (the session helper's `HostCommand`) so host file links are resolved on the host.
 Invalid schemes, option-like paths and control characters are rejected; Exec is
 never substituted for the URL. Index, UI and real daemon tests cover visibility,
 and argument tests cover URI dispatch. Opening the target in another application
@@ -3669,7 +3669,7 @@ What differs:
 | 1 | The command takes an optional `command` argument in root search and runs it without opening the view. | The view always opens. | — |
 | 2 | Browse Apps, Set Default Browser and Set Default Terminal are also in the system extension. | So they are here ("Gaps closed after the truth pass"). | `browse_apps_lists_filters_opens_and_copies`, `a_default_picker_lists_the_engines_candidates_and_sets_the_chosen_one` |
 | 3 | Programs are scanned once per view in the background, with a loading state. | Scanned by the engine on each opening (a blocking task), the view showing "Looking for programs…" until then. | `run_terminal_program_lists_path_and_runs_directly_or_refuses` |
-| 4 | Inside the Flatpak, `PATH` is the host's through the portal's environment. | The engine's own `PATH` (the sandbox's inside the Flatpak); runs go through `flatpak-spawn --host`. | — |
+| 4 | Inside the Flatpak, `PATH` is the host's through the portal's environment. | The engine's own `PATH` (the sandbox's inside the Flatpak); runs start on the host through the session helper's `HostCommand`, the call `flatpak-spawn --host` makes, and count as started once the process is running. | — |
 
 ### dmenu — what the port does not have yet
 

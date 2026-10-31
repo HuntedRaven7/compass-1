@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+ashpd = { workspace = true, features = ["flatpak"] }
 compass-core.workspace = true
 compass-platform.workspace = true
 compass-portals.workspace = true

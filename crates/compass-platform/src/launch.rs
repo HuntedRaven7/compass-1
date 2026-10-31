@@ -33,8 +33,9 @@ use compass_xdg::DesktopEntry;
 /// being guessed at now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchMethod {
-    /// Launched via `flatpak-spawn --host`.
-    FlatpakSpawn,
+    /// Launched on the host from inside a Flatpak, through the session
+    /// helper's `HostCommand` (the call `flatpak-spawn --host` makes).
+    FlatpakHost,
     /// Launched via the OpenURI portal.
     OpenUri,
     /// Launched directly (not sandboxed).
@@ -56,12 +57,9 @@ pub enum LaunchError {
     /// No Exec key in desktop entry.
     #[error("no Exec key in desktop entry")]
     NoExec,
-    /// flatpak-spawn not found.
-    #[error("flatpak-spawn not found")]
-    FlatpakSpawnNotFound,
-    /// flatpak-spawn failed.
-    #[error("flatpak-spawn failed: {0}")]
-    FlatpakSpawnFailed(String),
+    /// The Flatpak session helper did not start the process on the host.
+    #[error("could not start it on the host: {0}")]
+    FlatpakHostFailed(String),
     /// OpenURI portal unavailable.
     #[error("OpenURI portal unavailable: {0}")]
     OpenUriUnavailable(String),

@@ -1117,6 +1117,7 @@ dependencies = [
 name = "compass-platform-linux"
 version = "0.28.3"
 dependencies = [
+ "ashpd 0.13.13",
  "compass-core",
  "compass-platform",
  "compass-portals",
