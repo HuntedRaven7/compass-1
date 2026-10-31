@@ -36,6 +36,15 @@ ignore = [
   # smartstring: through rhai 1.26.1 (latest), for compass-script.
   # https://rustsec.org/advisories/RUSTSEC-2026-0249
   { id = "RUSTSEC-2026-0249", reason = "unmaintained smartstring via rhai 1.26.1 (latest), compass-script's engine" },
+  # zvariant, zvariant_derive and zbus_names: folded into zbus 6. zbus 5 is the
+  # workspace's D-Bus stack and what ashpd, ksni, mundy, notify-rust, oo7 and
+  # system-tray all build on, so these go when that set moves to zbus 6.
+  # https://rustsec.org/advisories/RUSTSEC-2026-0370
+  # https://rustsec.org/advisories/RUSTSEC-2026-0371
+  # https://rustsec.org/advisories/RUSTSEC-2026-0372
+  { id = "RUSTSEC-2026-0370", reason = "unmaintained zvariant 5, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray" },
+  { id = "RUSTSEC-2026-0371", reason = "unmaintained zbus_names 4, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray" },
+  { id = "RUSTSEC-2026-0372", reason = "unmaintained zvariant_derive 5, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray" },
 ]
 
 [bans]
