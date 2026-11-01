@@ -1,5 +1,5 @@
-//! Adwaita-style controls for the Settings page (#252) and the first-run
-//! flow.
+//! Adwaita-style controls for Settings (#252), first-run, and launcher
+//! forms.
 //!
 //! Iced's built-in styles are its own: square, bordered buttons filled with
 //! the primary colour, a switch with a dark knob, inputs with a hairline frame.
@@ -13,7 +13,7 @@
 //! theme still apply: `selection` is Adwaita's `accent_bg_color` (fills) and
 //! `selection_text` its `accent_fg_color`, while `accent` is `accent_color`,
 //! the one for focus rings. The launcher's own rows keep their styles in
-//! [`crate::design`]; nothing here is used outside Settings and onboarding.
+//! [`crate::design`].
 
 use iced::widget::button as btn;
 use iced::widget::{container, pick_list, rule, text_input, toggler};
@@ -193,6 +193,15 @@ pub fn switch(palette: Palette, status: toggler::Status) -> toggler::Style {
     }
 }
 
+/// A launcher form entry with the shared control radius and Iced's existing
+/// colours, border, and interaction states.
+#[must_use]
+pub fn form_entry(theme: &iced::Theme, status: text_input::Status) -> text_input::Style {
+    let mut style = text_input::default(theme, status);
+    style.border.radius = CONTROL_RADIUS.into();
+    style
+}
+
 /// An entry: the neutral fill, a 1 px frame in the control colour so the
 /// field can be found without it (WCAG 1.4.11), and a 2 px accent ring while
 /// it has the focus.
@@ -240,6 +249,15 @@ pub fn dropdown(palette: Palette, status: pick_list::Status) -> pick_list::Style
             ..Border::default()
         },
     }
+}
+
+/// A launcher form dropdown with the shared control radius and Iced's
+/// existing colours, border, and interaction states.
+#[must_use]
+pub fn form_dropdown(theme: &iced::Theme, status: pick_list::Status) -> pick_list::Style {
+    let mut style = pick_list::default(theme, status);
+    style.border.radius = CONTROL_RADIUS.into();
+    style
 }
 
 /// The focus ring (`outline: 2px solid accent`, offset outward): a 2 px
@@ -385,5 +403,20 @@ mod tests {
         let focused = entry(DARK, text_input::Status::Focused { is_hovered: false });
         assert!((focused.border.width - FOCUS_RING_WIDTH).abs() < f32::EPSILON);
         assert_eq!(focused.border.color, DARK.accent.to_iced());
+    }
+
+    #[test]
+    fn launcher_form_controls_share_the_adwaita_radius() {
+        let theme = iced::Theme::Dark;
+        assert_eq!(
+            form_entry(&theme, text_input::Status::Active).border.radius,
+            CONTROL_RADIUS.into()
+        );
+        assert_eq!(
+            form_dropdown(&theme, pick_list::Status::Active)
+                .border
+                .radius,
+            CONTROL_RADIUS.into()
+        );
     }
 }

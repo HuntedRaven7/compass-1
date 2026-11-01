@@ -136,6 +136,7 @@ pub fn date_field<'a>(
     let name = name.to_owned();
     text_input(date_format(precision), &shown)
         .font(font)
+        .style(crate::adwaita::form_entry)
         .on_input(move |typed| Message::ExtensionDateEdited(name.clone(), typed))
         .padding(8)
         .into()

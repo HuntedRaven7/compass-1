@@ -6137,6 +6137,7 @@ impl LauncherApp {
                     .id(crate::preferences_page::field_id(index))
                     .secure(matches!(field.kind, PreferenceInputKind::Password))
                     .font(self.font())
+                    .style(crate::adwaita::form_entry)
                     .on_input(move |text| Message::PreferenceEdited(index, FieldValue::Text(text)))
                     // No `on_submit`: the key handler submits the form on
                     // Enter, and `listen_with` delivers it whether or not the
@@ -6180,7 +6181,7 @@ impl LauncherApp {
                         move |_: &Theme| crate::design::dropdown_menu(palette)
                     })
                     .style(move |theme: &Theme, status| {
-                        let mut style = iced::widget::pick_list::default(theme, status);
+                        let mut style = crate::adwaita::form_dropdown(theme, status);
                         if let Some(accent) = ring {
                             style.border.color = accent;
                             style.border.width = 2.0;
@@ -6286,6 +6287,7 @@ impl LauncherApp {
                     text_input(placeholder.as_deref().unwrap_or_default(), text_value)
                         .secure(matches!(field.kind, FieldKind::Password { .. }))
                         .font(self.font())
+                        .style(crate::adwaita::form_entry)
                         .on_input(move |text| {
                             Message::ExtensionFieldEdited(name.clone(), text.into())
                         })
@@ -6321,6 +6323,7 @@ impl LauncherApp {
                         Message::ExtensionFieldEdited(name.clone(), chosen.into())
                     })
                     .font(self.font())
+                    .style(crate::adwaita::form_dropdown)
                     .menu_style({
                         let palette = self.palette();
                         move |_: &Theme| crate::design::dropdown_menu(palette)
