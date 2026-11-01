@@ -183,7 +183,10 @@ pub fn unpack(
         let entry = zip
             .by_index_raw(index)
             .map_err(|err| BundleError::Unreadable(err.to_string()))?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|err| BundleError::Unreadable(err.to_string()))?
+            .into_owned();
         // `enclosed_name` quietly makes an absolute name relative; an archive
         // that names one is refused instead, since no store bundle does.
         if name.starts_with(['/', '\\']) || name.get(1..2) == Some(":") {
@@ -210,7 +213,10 @@ pub fn unpack(
         let mut entry = zip
             .by_index(index)
             .map_err(|err| BundleError::Unreadable(err.to_string()))?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|err| BundleError::Unreadable(err.to_string()))?
+            .into_owned();
         let enclosed = entry
             .enclosed_name()
             .ok_or_else(|| BundleError::UnsafePath(name.clone()))?;
