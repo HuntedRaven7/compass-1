@@ -1,6 +1,6 @@
 # ADR-0008: Browser control is an extension, not part of the port
 
-**Status:** Accepted · **Date:** 2026-09-12 · Relates to: PLAN.md §6 Phase 5, PARITY.md
+**Status:** Accepted; the transport is chosen by [ADR-0022](./0022-the-november-calls-decided.md) (a launcher-shipped native messaging host) · **Date:** 2026-09-12 · Relates to: PLAN.md §6 Phase 5, PARITY.md
 
 ## Context
 

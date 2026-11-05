@@ -1,0 +1,18 @@
+# Rust files under crates/ known to be over module-size.py's 1500-line limit.
+#
+# One entry per line: `<path> #<issue> <rationale>`. The issue is the one that
+# tracks splitting the file; #330 is the baseline for files with no issue of
+# their own. Remove an entry once its file is under the limit -- the check
+# prints a notice for entries that are stale.
+
+crates/compass-ui/src/app.rs #258 LauncherApp couples lifecycle, search, UI state, windows, persistence and extensions
+crates/compass-ui/src/app/settings_view.rs #258 settings view carved out of LauncherApp, still one module
+crates/compass/src/serve.rs #292 EngineState owns 20+ engine services and their lifecycles
+crates/compass/src/ui_backend.rs #292 UI backend connection, one of EngineState's services
+crates/compass/src/extension_runner.rs #292 extension runner, one of EngineState's services
+crates/compass-ipc/src/protocol.rs #294 every request/response domain in one protocol module
+crates/compass-ipc/tests/framing.rs #294 protocol framing tests, grow with protocol.rs
+crates/compass-core/src/config.rs #261 compass-core modules over 1k LOC
+crates/compass-ui/src/extension_page.rs #330 baseline, no split issue yet
+crates/compass-testkit/src/parity.rs #330 baseline, no split issue yet
+crates/compass/tests/engine_end_to_end.rs #330 baseline, no split issue yet

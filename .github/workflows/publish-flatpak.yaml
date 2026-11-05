@@ -165,7 +165,7 @@ jobs:
       # publish lands first. Once per architecture, as the reusable workflow
       # does: the index keeps one image per architecture under a repo name.
       - name: Update the remote's index (tuna-os/docs), x86_64
-        uses: tuna-os/.github/.github/actions/publish-flatpak-index@main
+        uses: tuna-os/.github/.github/actions/publish-flatpak-index@7d966c7bb537dec12db463ef4d7122fbe6749cfd # main
         with:
           oci-dir: oci-x86_64
           repo-name: tuna-os/compass
@@ -173,7 +173,7 @@ jobs:
           token: ${{ secrets.FLATPAK_INDEX_TOKEN }}
 
       - name: Update the remote's index (tuna-os/docs), aarch64
-        uses: tuna-os/.github/.github/actions/publish-flatpak-index@main
+        uses: tuna-os/.github/.github/actions/publish-flatpak-index@7d966c7bb537dec12db463ef4d7122fbe6749cfd # main
         with:
           oci-dir: oci-aarch64
           repo-name: tuna-os/compass

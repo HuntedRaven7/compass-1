@@ -2613,6 +2613,33 @@ suggestion lists differ; the ported quality suite (`compass-db/tests/query_quali
 Because the schema differs (v2), Compass's index lives in `compass-file-index.db` rather than
 `file-indexer.db`, in the same directory. It is a cache: the first scan fills it, nothing migrates.
 
+### `compass-core::file_walk`, `compass-db::incremental_scanner` — less junk in the index (#320)
+
+**An improvement, kept on purpose.** The shipped exclusion lists are upstream's, unchanged
+(`entry-filter.cpp`): package caches and toolchains under the home directory, and names such as
+`.git`, `.cache`, `node_modules`, `__pycache__` and `.venv` anywhere. Three rules are added:
+
+- **Build output beside its manifest.** A `target` directory next to a `Cargo.toml` or `pom.xml`,
+  and a `build` directory next to `build.gradle` or `build.gradle.kts`, is never walked
+  (`entry_filter::BUILD_OUTPUT_DIRECTORIES`). The name alone is not enough, because `target` and
+  `build` are ordinary words; upstream relies on Cargo's `CACHEDIR.TAG`, which Maven and Gradle do
+  not write.
+- **The incremental scanner honours `CACHEDIR.TAG`.** Upstream checks the tag only in the full
+  walk, so a cache created after the last full scan (a fresh `cargo build`, say) was indexed file by
+  file by the next incremental scan. Here a tagged directory diffs as empty, deleting anything indexed
+  inside it, and an incremental scan whose entrypoint lies inside one deletes that entrypoint's rows
+  instead of reading it.
+- **An excluded directory is not reported because it holds a tag.** The walk now applies the policy
+  before the tag check, as upstream only lists directories that passed `shouldVisit`; a tagged
+  `node_modules` is no longer indexed as a row of its own.
+
+The defaults cannot be switched off, as upstream: the indexer's configuration is the wire
+`IndexerConfig` (`paths`, `excludedPaths`) and has no place for it. Pinned by
+`compass-db/tests/default_exclusions.rs` (a full scan and two incremental scans over a real index),
+`build_output_beside_its_manifest_is_not_walked` and
+`an_excluded_cache_directory_is_not_reported_either` (`file_walk.rs`), and
+`build_output_is_excluded_only_beside_its_manifest` (`entry_filter.rs`).
+
 ### `compass-core::root_items` — one slip no longer makes an app vanish (#204)
 
 **An improvement, kept on purpose (ADR-0017).** Both engines match root items as an ordered

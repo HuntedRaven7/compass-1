@@ -32,6 +32,10 @@ jobs:
   check:
     name: Build, lint and test
     runs-on: ubuntu-24.04
+    # A hung build or test fails here instead of holding a runner for the
+    # six-hour default (#329). Well above the §8.8 budget, so a cold cache
+    # still finishes.
+    timeout-minutes: 45
 
     # §8.8 gives this job an 8 minute budget and names `sccache` +
     # `cargo-nextest` as what keeps it honest. sccache caches compilation
@@ -45,6 +49,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # #330: Rust files over 1500 lines that are not in
+      # scripts/architecture/allowlist.txt get a warning annotation. Advisory
+      # until the god-object splits (#258, #292, #294) land, so warnings exit 0
+      # and the step cannot fail the job; the selftest runs first so a checker
+      # that stopped seeing oversized files is not mistaken for a clean tree.
+      - name: Module size report (advisory)
+        continue-on-error: true
+        run: |
+          python3 scripts/architecture/module-size.py --selftest
+          python3 scripts/architecture/module-size.py
 
       # `iced_layershell` (the wlroots launcher surface) builds
       # smithay-client-toolkit with xkbcommon, found through pkg-config.

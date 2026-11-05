@@ -99,6 +99,18 @@ pub const EXCLUDED_FILENAMES: &[&str] = &[
     ".snapshots",
 ];
 
+/// Build output directories, each with the manifests whose tool writes it.
+///
+/// `target` and `build` are ordinary words, so a directory with either name is
+/// excluded only beside one of its manifests: a project's `target/` goes, a
+/// folder of shooting-range scores called `target` stays. Cargo also tags its
+/// `target/` with a `CACHEDIR.TAG`; the manifest rule still catches Maven,
+/// Gradle, and a Cargo directory whose tag was removed.
+pub const BUILD_OUTPUT_DIRECTORIES: &[(&str, &[&str])] = &[
+    ("target", &["Cargo.toml", "pom.xml"]),
+    ("build", &["build.gradle", "build.gradle.kts"]),
+];
+
 /// The suffix that marks a directory as a cache, by convention.
 pub const CACHEDIR_TAG_SUFFIX: &str = "/CACHEDIR.TAG";
 
@@ -188,6 +200,25 @@ pub fn is_machine_trash_directory(path: &Path) -> bool {
         }
         _ => path_contains_after(path, ".var", "cache"),
     }
+}
+
+/// Whether `path` is a build tool's output directory: named in
+/// [`BUILD_OUTPUT_DIRECTORIES`] and sitting beside one of its manifests.
+///
+/// Touches the disk only for a path with one of those names.
+#[must_use]
+pub fn is_build_output_directory(path: &Path) -> bool {
+    let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
+        return false;
+    };
+    BUILD_OUTPUT_DIRECTORIES
+        .iter()
+        .filter(|(directory, _)| name == *directory)
+        .any(|(_, manifests)| {
+            manifests
+                .iter()
+                .any(|manifest| parent.join(manifest).is_file())
+        })
 }
 
 /// Whether `contents` begins with the CACHEDIR.TAG signature.

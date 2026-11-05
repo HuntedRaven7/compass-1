@@ -1,0 +1,22 @@
+---
+source: crates/compass-ui/tests/insta_snapshots.rs
+expression: layout(&app)
+---
+on screen, in layout order:
+  Search…
+  Title
+  Crash on paste
+  Shown in the issue list
+  Urgent
+  Page someone
+  Enter: Create Issue    Esc: back
+not rendered:
+  Application 00
+  Application 01
+  Application 02
+  No results
+  Open
+  Copy name
+  COPY
+  Release notes
+  Now with paste.

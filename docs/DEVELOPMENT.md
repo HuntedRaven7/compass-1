@@ -193,6 +193,11 @@ This runs:
 2. Linting (`cargo clippy --workspace --all-targets -- -D warnings`)
 3. Tests (`cargo test --workspace --all-targets` and `cargo test --workspace --doc`)
 
+The Rust CI job also runs an advisory module-size report, which `make check-rust` does not:
+`python3 scripts/architecture/module-size.py` warns about any Rust file under `crates/` over
+1500 lines that is not in `scripts/architecture/allowlist.txt` (#330). It never fails the build.
+Split a new oversized file, or allowlist it with the issue that tracks the split.
+
 ## Formatting and Linting
 
 Always run these before submitting a PR:

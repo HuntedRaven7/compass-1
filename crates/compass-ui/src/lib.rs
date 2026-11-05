@@ -37,6 +37,7 @@ pub mod fonts_page;
 pub mod grants_page;
 pub mod hud;
 pub mod icons;
+mod labelled;
 mod material;
 pub mod media_page;
 pub mod message;

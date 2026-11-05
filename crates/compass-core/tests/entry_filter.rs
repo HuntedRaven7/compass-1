@@ -8,9 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use compass_core::entry_filter::{
-    CACHEDIR_TAG_SIGNATURE, EXCLUDED_ABSOLUTE_PATHS, EXCLUDED_FILENAMES, NOINDEX_SUFFIX, basename,
-    excluded_paths, has_cachedir_tag_signature, is_cachedir_tag, is_hidden_path,
-    is_machine_trash_directory,
+    BUILD_OUTPUT_DIRECTORIES, CACHEDIR_TAG_SIGNATURE, EXCLUDED_ABSOLUTE_PATHS, EXCLUDED_FILENAMES,
+    NOINDEX_SUFFIX, basename, excluded_paths, has_cachedir_tag_signature,
+    is_build_output_directory, is_cachedir_tag, is_hidden_path, is_machine_trash_directory,
 };
 use compass_core::file_walk::IndexWalk;
 
@@ -279,4 +279,32 @@ fn a_name_exclusion_holds_with_ignore_files_configured() {
     configured.set_ignore_files(vec![".gitignore".to_owned()]);
     assert_eq!(configured.ignore_files().len(), 1);
     assert!(!visit(&configured, "/home/ada/project/node_modules", true));
+}
+
+#[test]
+fn build_output_is_excluded_only_beside_its_manifest() {
+    // `target` is an ordinary word: the folder goes only when a Cargo.toml or
+    // pom.xml says a build tool wrote it.
+    let tree = tempfile::tempdir().expect("temporary tree");
+    for (directory, manifests) in BUILD_OUTPUT_DIRECTORIES {
+        for manifest in *manifests {
+            let project = tree.path().join(format!("{directory}-{manifest}"));
+            std::fs::create_dir_all(project.join(directory)).expect("output dir");
+            std::fs::write(project.join(manifest), "").expect("manifest");
+            let output = project.join(directory);
+            assert!(is_build_output_directory(&output), "{}", output.display());
+            assert!(!walk().should_visit(&output, false, true));
+        }
+    }
+
+    let plain = tree.path().join("archery/target");
+    std::fs::create_dir_all(&plain).expect("plain dir");
+    assert!(!is_build_output_directory(&plain));
+    assert!(walk().should_visit(&plain, false, true));
+
+    // A manifest for another tool does not make the name build output.
+    let mismatched = tree.path().join("mixed");
+    std::fs::create_dir_all(mismatched.join("build")).expect("build dir");
+    std::fs::write(mismatched.join("Cargo.toml"), "").expect("manifest");
+    assert!(!is_build_output_directory(&mismatched.join("build")));
 }

@@ -18,7 +18,8 @@ use crate::store_page::{self, Confirm, Status, StoreDetailPage, StorePage, actio
 const NEEDS_ENGINE: &str = "The extension stores need the Compass engine";
 
 /// The detail page's Markdown drawn with its images: those fetched are drawn,
-/// the rest keep the renderer's placeholder.
+/// the rest keep the renderer's placeholder. Headings and paragraphs carry
+/// their words for a find by text, which Iced's `rich_text` does not.
 pub(super) struct StoreMarkdown<'b> {
     pub(super) images: &'b std::collections::HashMap<String, crate::extension_page::RowIcon>,
 }
@@ -56,6 +57,41 @@ impl<'a> iced::widget::markdown::Viewer<'a, Message> for StoreMarkdown<'a> {
             }
         }
     }
+
+    fn heading(
+        &self,
+        settings: iced::widget::markdown::Settings,
+        level: &'a iced::widget::markdown::HeadingLevel,
+        text: &'a iced::widget::markdown::Text,
+        index: usize,
+    ) -> Element<'a, Message> {
+        crate::labelled::labelled(
+            iced::widget::markdown::heading(settings, level, text, index, Self::on_link_click),
+            plain(text, settings),
+        )
+    }
+
+    fn paragraph(
+        &self,
+        settings: iced::widget::markdown::Settings,
+        text: &iced::widget::markdown::Text,
+    ) -> Element<'a, Message> {
+        crate::labelled::labelled(
+            iced::widget::markdown::paragraph(settings, text, Self::on_link_click),
+            plain(text, settings),
+        )
+    }
+}
+
+/// What a piece of Markdown says, without its styling.
+fn plain(
+    text: &iced::widget::markdown::Text,
+    settings: iced::widget::markdown::Settings,
+) -> String {
+    text.spans(settings.style)
+        .iter()
+        .map(|span| span.text.as_ref())
+        .collect()
 }
 
 impl LauncherApp {

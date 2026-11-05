@@ -17,12 +17,17 @@
 //! an `EntryCallback` while diffing. A callback borrowing the reader cannot
 //! cross a `&mut self` scan method, so the diff returns the entries with
 //! their new flags and the caller queues from those instead.
+//!
+//! One behavioural delta: a directory holding a `CACHEDIR.TAG` is diffed as
+//! empty, and an entrypoint inside one is forgotten rather than read. The C++
+//! checks the tag only in its full walk, so a cache created after the last
+//! full scan was indexed file by file here.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use compass_core::file_walk::{IndexWalk, WalkEntry};
+use compass_core::file_walk::{IndexWalk, WalkEntry, is_cache_directory};
 use compass_core::io_pacer::IoPacer;
 
 use crate::db_writer::{DbWriter, IndexDatabase};
@@ -84,7 +89,8 @@ impl<D: IndexDatabase, R: IndexReader> IncrementalScanner<D, R> {
     }
 
     /// Diffs the direct contents of `root` against the index, returning each
-    /// visited entry with whether it is new to the index.
+    /// visited entry with whether it is new to the index. A cache directory
+    /// lists as empty, so whatever was indexed inside it is deleted.
     fn process_directory(&mut self, root: &Path) -> Vec<(WalkEntry, bool)> {
         self.pacer.checkpoint();
         let indexed = self.reader.list_indexed_directory_files(root);
@@ -95,7 +101,10 @@ impl<D: IndexDatabase, R: IndexReader> IncrementalScanner<D, R> {
         self.current_entries.clear();
         self.current_entries.insert(root.to_path_buf());
 
-        if let Ok(listing) = std::fs::read_dir(root) {
+        let listing = (!is_cache_directory(root))
+            .then(|| std::fs::read_dir(root))
+            .and_then(Result::ok);
+        if let Some(listing) = listing {
             for entry in listing {
                 let Ok(entry) = entry else {
                     continue;
@@ -236,8 +245,14 @@ impl<D: IndexDatabase, R: IndexReader> IncrementalScanner<D, R> {
         }
     }
 
-    /// Reads what changed under `root`, exhaustively or pruned.
+    /// Reads what changed under `root`, exhaustively or pruned. An
+    /// entrypoint inside a cache directory has nothing to read: what the
+    /// index holds of it is deleted instead.
     fn scan(&mut self, root: &Path, scan: &IncrementalScan) {
+        if root.ancestors().skip(1).any(is_cache_directory) {
+            self.core.delete_indexed_files(vec![root.to_path_buf()]);
+            return;
+        }
         self.filter.set_excluded_paths(scan.excluded_paths.clone());
         self.filter
             .set_excluded_filenames(scan.excluded_filenames.clone());

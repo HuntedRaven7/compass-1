@@ -1826,6 +1826,12 @@ packaging; the wlroots compositor matrix from Phase 5; perf and RSS trends.
 
 `sccache` + `cargo-nextest` keep the per-PR budget honest.
 
+**Runner class (#309).** Every tier, the performance gates included, runs on GitHub-hosted runners;
+Depot is declined. Benchmark and RSS baselines (Suite 4, #306, #307, #310) are keyed on the runner
+label they were measured on — `ubuntu-24.04` x86_64 — and a change of label starts a new baseline
+series rather than comparing across machines. Hosted-runner variance is handled by deriving the
+tolerance from repeated runs, not by buying quieter hardware.
+
 ### 8.9 The VM tier: a real Bluefin VM, driven by corral
 
 Tiers 1 and 2 never boot the operating system we ship on. A launcher is a system-integration product

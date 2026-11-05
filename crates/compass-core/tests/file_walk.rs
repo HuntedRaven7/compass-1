@@ -218,6 +218,44 @@ fn a_builtin_excluded_filename_needs_no_configuration() {
 }
 
 #[test]
+fn build_output_beside_its_manifest_is_not_walked() {
+    let dir = fixture();
+    write(dir.path(), "crate/Cargo.toml", "[package]");
+    write(dir.path(), "crate/src/main.rs", "fn main() {}");
+    write(dir.path(), "crate/target/debug/app", "binary");
+    write(dir.path(), "archery/target/scores.txt", "notes");
+
+    assert_eq!(
+        rel(dir.path(), &walk().collect(dir.path())),
+        [
+            "archery",
+            "archery/target",
+            "archery/target/scores.txt",
+            "crate",
+            "crate/Cargo.toml",
+            "crate/src",
+            "crate/src/main.rs"
+        ]
+    );
+}
+
+#[test]
+fn an_excluded_cache_directory_is_not_reported_either() {
+    // The policy decides before the tag does, as the C++ only lists
+    // directories that passed `shouldVisit`.
+    let dir = fixture();
+    write(
+        dir.path(),
+        "node_modules/CACHEDIR.TAG",
+        CACHEDIR_TAG_SIGNATURE,
+    );
+    write(dir.path(), "node_modules/dep.js", "vendored");
+    write(dir.path(), "a.txt", "notes");
+
+    assert_eq!(rel(dir.path(), &walk().collect(dir.path())), ["a.txt"]);
+}
+
+#[test]
 fn hidden_paths_are_visited_until_hidden_paths_are_ignored() {
     let dir = fixture();
     write(dir.path(), ".bashrc", "aliases");

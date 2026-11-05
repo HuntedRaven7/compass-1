@@ -17,6 +17,9 @@
 //!   change here; everything else an ignore file did still holds.
 //! * Custom ignore filenames ride the crate's custom-ignore support, with the
 //!   crate's precedence (custom names outrank `.gitignore`/`.ignore`).
+//! * Build output beside its manifest (`target` next to `Cargo.toml`, …) is
+//!   never walked, and an excluded directory is not reported merely because
+//!   it holds a `CACHEDIR.TAG` (#320).
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -31,7 +34,7 @@ use ignore::{DirEntry, WalkBuilder, gitignore::GitignoreBuilder};
 
 use crate::entry_filter::{
     CACHEDIR_TAG_SIGNATURE, EXCLUDED_FILENAMES, NOINDEX_SUFFIX, basename, excluded_paths,
-    is_cachedir_tag, is_hidden_path, is_machine_trash_directory,
+    is_build_output_directory, is_cachedir_tag, is_hidden_path, is_machine_trash_directory,
 };
 
 /// One entry as the walk sees it.
@@ -195,8 +198,9 @@ impl IndexWalk {
     /// The breadth-first watch enumeration walks directories itself, so it
     /// asks here instead of running the whole walker. This is the C++'s
     /// `shouldVisit`: hidden paths, the exclusion lists, trash directories,
-    /// ignore files — and, like the C++, no `CACHEDIR.TAG` check, which lives
-    /// in the walker's listing loop rather than the filter.
+    /// ignore files — plus build output beside its manifest — and, like the
+    /// C++, no `CACHEDIR.TAG` check, which lives in the walker's listing loop
+    /// rather than the filter.
     ///
     /// Ignore files are matched with the crate's engine, nearest ignore file
     /// first — a nearer whitelist overrules a farther ignore, the way git
@@ -212,7 +216,8 @@ impl IndexWalk {
     /// The policy that needs no ignore files, in the C++'s order: the cheap
     /// string checks first, the ones that touch the disk last.
     ///
-    /// Pure: it never touches the disk. Hidden paths are not checked here —
+    /// Only the build-output rule touches the disk, and only for a directory
+    /// named like build output. Hidden paths are not checked here —
     /// in the walker the crate prunes those before this runs (by entry name,
     /// so a hidden-named root still walks), and `should_visit` checks them
     /// itself for its own enumeration — and neither is `CACHEDIR.TAG`, which
@@ -246,6 +251,9 @@ impl IndexWalk {
             return false;
         }
         if self.is_excluded_path(path) {
+            return false;
+        }
+        if is_directory && is_build_output_directory(path) {
             return false;
         }
 
@@ -307,17 +315,12 @@ impl IndexWalk {
     /// The crate cannot yield-without-descending through this hook, so the
     /// directory is recorded when met and everything beneath it refused —
     /// which prunes the whole subtree whatever order the entries list in.
+    /// The policy runs first, as the C++ only lists directories that passed
+    /// `shouldVisit`: an excluded cache directory is not reported either.
     fn filter_entry(&self, entry: &DirEntry) -> bool {
         let file_type = entry.file_type();
         let path = entry.path();
         let is_directory = file_type.is_some_and(|kind| kind.is_dir());
-        if is_directory && dir_is_cache(path) {
-            self.cache_dirs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(path.to_path_buf());
-            return true;
-        }
         if self
             .cache_dirs
             .lock()
@@ -327,11 +330,20 @@ impl IndexWalk {
         {
             return false;
         }
-        self.policy(
+        if !self.policy(
             path,
             file_type.is_some_and(|kind| kind.is_symlink()),
             is_directory,
-        )
+        ) {
+            return false;
+        }
+        if is_directory && is_cache_directory(path) {
+            self.cache_dirs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(path.to_path_buf());
+        }
+        true
     }
 
     /// Stops a walk in progress: the loop breaks at the next entry, the way
@@ -418,8 +430,10 @@ impl IndexWalk {
 ///
 /// A directory holding one is abandoned *whole*, whatever order its entries
 /// list in: the check runs on the directory before anything inside it is
-/// reported, so unlike the C++ there is no listing to throw away.
-fn dir_is_cache(dir: &Path) -> bool {
+/// reported, so unlike the C++ there is no listing to throw away. Public for
+/// the incremental scanner, which lists directories itself.
+#[must_use]
+pub fn is_cache_directory(dir: &Path) -> bool {
     let tag = dir.join("CACHEDIR.TAG");
     let Ok(mut file) = File::open(&tag) else {
         return false;
