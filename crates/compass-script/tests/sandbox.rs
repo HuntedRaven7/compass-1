@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use common::{load, runtime, try_load};
 use compass_extension_api::{Capability, DenialReason};
-use compass_script::{LimitKind, Limits, ScriptError};
+use compass_script::{HostCall, LimitKind, Limits, ProcessOutcome, ScriptError};
 
 /// Runs `search` expecting failure. The wall clock is pushed far out so that
 /// a test about the budget or a size limit cannot pass or fail on the speed of
@@ -373,6 +373,7 @@ fn nothing_reaches_the_filesystem_the_environment_processes_or_the_scheduler() {
         "exit()",
         "timestamp()",
         r#"http_get("https://example.invalid")"#,
+        r#"process::run("id", [], 100)"#,
     ] {
         let source = format!("fn search(q) {{ {call}; [] }}");
         let error = match try_load(&source, &[], &[], Limits::default()) {
@@ -464,6 +465,82 @@ fn an_action_needing_an_ungranted_capability_is_refused_with_its_name() {
     assert_eq!(denial.capability, Capability::CLIPBOARD_WRITE);
     assert_eq!(denial.reason, DenialReason::NotDeclared);
     assert!(fixture.host.calls().is_empty());
+}
+
+#[test]
+fn a_programs_timeout_never_outlasts_the_call_it_is_run_from() {
+    let fixture = try_load(
+        r#"fn search(q) { process::run("slow", [q], 60000); [] }"#,
+        &["process.execute"],
+        &["process.execute"],
+        Limits {
+            timeout: Duration::from_millis(300),
+            ..Limits::default()
+        },
+    )
+    .expect("compiles");
+    runtime().block_on(fixture.instance.search("x")).unwrap();
+    let calls = fixture.host.calls();
+    let [HostCall::Run { argv, timeout }] = &calls[..] else {
+        panic!("{calls:?}");
+    };
+    assert_eq!(argv, &["slow", "x"]);
+    assert!(*timeout <= Duration::from_millis(300), "{timeout:?}");
+}
+
+#[test]
+fn a_program_reads_as_missing_timed_out_or_exited() {
+    let fixture = load(
+        r#"
+        fn search(q) {
+            let missing = process::run("nope", [], 100);
+            let slow = process::run("slow", [], 100);
+            let done = process::run("done", ["a b"], 100);
+            [
+                #{ title: type_of(missing) },
+                #{ title: slow.timed_out, subtitle: type_of(slow.code) },
+                #{ title: done.code, subtitle: `${done.stdout}|${done.stderr}|${done.timed_out}` },
+            ]
+        }
+        "#,
+        &["process.execute"],
+    );
+    fixture
+        .host
+        .set_program(&["slow"], ProcessOutcome::TimedOut);
+    fixture.host.set_program(
+        &["done", "a b"],
+        ProcessOutcome::Exited {
+            code: Some(3),
+            stdout: "out".to_owned(),
+            stderr: "err".to_owned(),
+        },
+    );
+    let tree = runtime().block_on(fixture.instance.search("")).unwrap();
+    assert_eq!(common::titles(&tree), ["()", "true", "3"]);
+    let compass_extension_api::View::List(list) = tree.root() else {
+        panic!("not a list");
+    };
+    let subtitles: Vec<_> = list.sections[0]
+        .items
+        .iter()
+        .map(|i| i.subtitle.as_deref())
+        .collect();
+    assert_eq!(subtitles, [None, Some("()"), Some("out|err|false")]);
+}
+
+#[test]
+fn a_program_needs_text_arguments_and_a_positive_timeout() {
+    for (call, says) in [
+        (r#"process::run("x", [1], 100)"#, "array of text"),
+        (r#"process::run("x", [], 0)"#, "at least 1 millisecond"),
+    ] {
+        let source = format!("fn search(q) {{ {call}; [] }}");
+        let fixture = load(&source, &["process.execute"]);
+        let error = runtime().block_on(fixture.instance.search("")).unwrap_err();
+        assert!(error.to_string().contains(says), "{call}: {error}");
+        assert!(fixture.host.calls().is_empty(), "{call}");
+    }
 }
 
 #[test]

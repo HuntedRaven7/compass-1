@@ -17,7 +17,7 @@ Compass adds and expects.
 
 ## Start by copying an example
 
-Five first-party scripts live in [`extensions/rhai-examples/`](../../extensions/rhai-examples/).
+Six first-party scripts live in [`extensions/rhai-examples/`](../../extensions/rhai-examples/).
 Each opens with a comment saying what it demonstrates; pick the closest one and copy the folder.
 
 | Example | Shows | Capabilities |
@@ -27,6 +27,7 @@ Each opens with a comment saying what it demonstrates; pick the closest one and 
 | [`epoch-converter`](../../extensions/rhai-examples/epoch-converter/main.rhai) | the `time::` helpers, a detail pane with metadata, `try`/`catch` | `clipboard.write` |
 | [`generators`](../../extensions/rhai-examples/generators/main.rhai) | `random::`, sub-commands parsed from the query, `paste` actions | `clipboard.write`, `clipboard.paste` |
 | [`quick-notes`](../../extensions/rhai-examples/quick-notes/main.rhai) | persistent state with `storage::`, actions that run script functions, returning effects | `storage.read`, `storage.write`, `clipboard.write` |
+| [`system-health`](../../extensions/rhai-examples/system-health/main.rhai) | `process::run` with timeouts and a budget, "unsupported" stated plainly, `filtering: true` so programs run on open and refresh only, a list-wide action | `process.execute`, `clipboard.write` |
 
 ```sh
 mkdir -p ~/.local/share/compass/scripts
@@ -43,7 +44,7 @@ are ignored.
 Each script is a command in root search, found by its title, description and keywords. Enter opens
 it: the launcher shows what `search` returns and calls it again as you type. Compass watches the
 script directories, so saving a file is enough: an open script re-renders with the new code, a new
-folder appears in root search, and a script that no longer compiles says why when opened. The five
+folder appears in root search, and a script that no longer compiles says why when opened. The
 examples are installed with Compass (`share/compass/scripts`), so they are in root search from the
 start.
 
@@ -239,6 +240,7 @@ and catch, and nothing to probe.
 | `storage.read` | `storage::get(key)` → value or `()`, `storage::keys()` → array |
 | `storage.write` | `storage::set(key, value)`, `storage::remove(key)` |
 | `notification.send` | `notification::send(title, body)` |
+| `process.execute` | `process::run(program, args, timeout_ms)` → `#{ code, stdout, stderr, timed_out }`, or `()` when the program is not installed |
 
 Each capability brings only its own functions: `clipboard.write` gives `clipboard::copy` but not
 `clipboard::read`. Storage values are anything JSON can hold (strings, numbers, booleans, arrays,
@@ -248,8 +250,19 @@ extension's does. The clipboard is the one extensions use (the GNOME Shell exten
 data-control on wlroots, where `paste` copies and you paste). A host function that fails (the
 clipboard is unavailable, say) raises an error the script can `catch`.
 
-Other capabilities in `compass-extension-api` (network, processes, windows, OAuth…) have no Rhai
-functions yet. Declaring one is allowed and does nothing.
+`process::run` starts `program` with `args` (an array of text) directly, with no shell, standard
+input closed and the launcher's environment; inside the Flatpak it runs on the host, through
+`flatpak-spawn --host`. It waits at most `timeout_ms` milliseconds, and never longer than what is
+left of the call's own [time limit](#limits): a program still running then is killed and the map
+says `timed_out: true`. `code` is `()` when a signal ended the program, and `stdout` and `stderr`
+keep the first 256 KiB of each. A program that is not installed returns `()` rather than raising
+an error, so a script can probe for a tool — except inside the Flatpak, where it is
+`flatpak-spawn` that runs and fails, with a non-zero `code`. A program is run only when the script
+calls it, so a script that runs one from `search` and does not set `filtering: true` runs it on
+every keystroke; see `system-health`.
+
+Other capabilities in `compass-extension-api` (network, windows, OAuth…) have no Rhai functions
+yet. Declaring one is allowed and does nothing.
 
 ## Always available
 

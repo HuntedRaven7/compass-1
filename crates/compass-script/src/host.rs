@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use compass_extension_api::{CapabilityGrant, ExtensionId};
 
@@ -28,6 +29,22 @@ impl HostError {
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
+}
+
+/// What became of a program a script ran with `process.execute`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessOutcome {
+    /// It finished on its own.
+    Exited {
+        /// The exit code; `None` when a signal ended it.
+        code: Option<i32>,
+        /// Standard output, as text, cut off at the host's limit.
+        stdout: String,
+        /// Standard error, as text, cut off at the host's limit.
+        stderr: String,
+    },
+    /// It was still running when its time ran out, and was killed.
+    TimedOut,
 }
 
 /// The services a script can be granted, one method per capability-backed
@@ -95,6 +112,22 @@ pub trait ScriptHost: Send + Sync + std::fmt::Debug {
     ///
     /// When the notification cannot be posted.
     fn notify(&self, grant: CapabilityGrant, title: &str, body: &str) -> Result<(), HostError>;
+
+    /// `process.execute`: run `program` with `args`, without a shell and with
+    /// standard input closed, and kill it if it has not finished within
+    /// `timeout`. `Ok(None)` when there is no such program, so a script can
+    /// tell "not installed" from "failed".
+    ///
+    /// # Errors
+    ///
+    /// When the program exists but cannot be started.
+    fn run(
+        &self,
+        grant: CapabilityGrant,
+        program: &str,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<Option<ProcessOutcome>, HostError>;
 }
 
 /// One thing a [`MemoryHost`] was asked to do.
@@ -113,6 +146,13 @@ pub enum HostCall {
         /// Body.
         body: String,
     },
+    /// `run`.
+    Run {
+        /// The program, then its arguments.
+        argv: Vec<String>,
+        /// How long the program was given.
+        timeout: Duration,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -120,6 +160,7 @@ struct MemoryState {
     clipboard: Option<String>,
     storage: BTreeMap<ExtensionId, BTreeMap<String, String>>,
     calls: Vec<HostCall>,
+    programs: BTreeMap<Vec<String>, ProcessOutcome>,
 }
 
 /// A host that keeps everything in memory and records what it was asked to
@@ -167,6 +208,14 @@ impl MemoryHost {
     #[must_use]
     pub fn storage(&self, extension: &ExtensionId) -> BTreeMap<String, String> {
         self.with(|s| s.storage.get(extension).cloned().unwrap_or_default())
+    }
+
+    /// Makes `argv` (the program, then its arguments) answer with `outcome`.
+    /// Any command line not set this way runs a program that is not
+    /// installed.
+    pub fn set_program(&self, argv: &[&str], outcome: ProcessOutcome) {
+        let argv = argv.iter().map(|&arg| arg.to_owned()).collect();
+        self.with(|s| s.programs.insert(argv, outcome));
     }
 }
 
@@ -237,5 +286,24 @@ impl ScriptHost for MemoryHost {
             });
         });
         Ok(())
+    }
+
+    fn run(
+        &self,
+        _grant: CapabilityGrant,
+        program: &str,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<Option<ProcessOutcome>, HostError> {
+        let argv: Vec<String> = std::iter::once(program.to_owned())
+            .chain(args.iter().cloned())
+            .collect();
+        Ok(self.with(|s| {
+            s.calls.push(HostCall::Run {
+                argv: argv.clone(),
+                timeout,
+            });
+            s.programs.get(&argv).cloned()
+        }))
     }
 }

@@ -648,6 +648,7 @@ fn describe(capability: &Capability) -> String {
         "storage.read" => "read its saved data".to_owned(),
         "storage.write" => "save data".to_owned(),
         "notification.send" => "show notifications".to_owned(),
+        "process.execute" => "run programs on your computer".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -998,6 +999,15 @@ impl ScriptHost for RefusingHost {
         _: &str,
         _: &str,
     ) -> Result<(), compass_script::HostError> {
+        Err(refused())
+    }
+    fn run(
+        &self,
+        _: compass_extension_api::CapabilityGrant,
+        _: &str,
+        _: &[String],
+        _: std::time::Duration,
+    ) -> Result<Option<compass_script::ProcessOutcome>, compass_script::HostError> {
         Err(refused())
     }
 }

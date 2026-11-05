@@ -1,0 +1,5 @@
+title = "System Health"
+description = "Failed systemd units and the update tools this system has"
+icon = "heartbeat"
+keywords = ["systemd", "failed", "units", "services", "updates", "bootc", "rpm-ostree", "flatpak", "status"]
+capabilities = ["process.execute", "clipboard.write"]

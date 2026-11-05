@@ -30,7 +30,7 @@ use rhai::{
 };
 
 use crate::error::{TERMINATE_BUDGET, TERMINATE_TIMEOUT};
-use crate::host::ScriptHost;
+use crate::host::{ProcessOutcome, ScriptHost};
 use crate::limits::Limits;
 
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
@@ -47,6 +47,7 @@ pub(crate) const BOUND: &[Capability] = &[
     Capability::STORAGE_READ,
     Capability::STORAGE_WRITE,
     Capability::NOTIFICATION_SEND,
+    Capability::PROCESS_EXECUTE,
 ];
 
 /// The wall-clock deadline of the call currently running, shared with
@@ -81,6 +82,12 @@ impl Deadline {
     fn passed(&self) -> bool {
         let at = self.at.load(Ordering::Acquire);
         at != 0 && self.origin.elapsed().as_nanos() >= u128::from(at)
+    }
+
+    /// How long the running call has left; `None` when no call is running.
+    fn remaining(&self) -> Option<Duration> {
+        let at = self.at.load(Ordering::Acquire);
+        (at != 0).then(|| Duration::from_nanos(at).saturating_sub(self.origin.elapsed()))
     }
 }
 
@@ -153,11 +160,12 @@ pub(crate) fn build(
     engine.set_max_variables(limits.max_variables);
 
     let budget = limits.max_operations;
+    let progress = deadline.clone();
     engine.on_progress(move |ops| {
         if ops > budget {
             return Some(TERMINATE_BUDGET.into());
         }
-        if ops % CLOCK_CHECK_INTERVAL == 0 && deadline.passed() {
+        if ops % CLOCK_CHECK_INTERVAL == 0 && progress.passed() {
             return Some(TERMINATE_TIMEOUT.into());
         }
         None
@@ -167,7 +175,7 @@ pub(crate) fn build(
     engine.on_debug(|text, _, pos| tracing::debug!(target: "compass_script", %pos, "{text}"));
 
     register_pure(&mut engine);
-    register_capabilities(&mut engine, grants, host);
+    register_capabilities(&mut engine, grants, host, &deadline);
     engine
 }
 
@@ -285,7 +293,12 @@ fn host_error(error: crate::host::HostError) -> Box<EvalAltResult> {
 
 /// Registers one module per capability area, holding only the functions whose
 /// capability is granted. An area with nothing granted gets no module at all.
-fn register_capabilities(engine: &mut Engine, grants: &Grants, host: &Arc<dyn ScriptHost>) {
+fn register_capabilities(
+    engine: &mut Engine,
+    grants: &Grants,
+    host: &Arc<dyn ScriptHost>,
+    deadline: &Arc<Deadline>,
+) {
     let mut clipboard = Module::new();
     if let Some(grant) = grants.held(&Capability::CLIPBOARD_WRITE) {
         let host = host.clone();
@@ -382,6 +395,72 @@ fn register_capabilities(engine: &mut Engine, grants: &Grants, host: &Arc<dyn Sc
         );
     }
     register_if_any(engine, "notification", notification);
+
+    let mut process = Module::new();
+    if let Some(grant) = grants.held(&Capability::PROCESS_EXECUTE) {
+        let host = host.clone();
+        let deadline = deadline.clone();
+        volatile("run").set_into_module(
+            &mut process,
+            move |program: ImmutableString, args: rhai::Array, timeout_ms: INT| {
+                run_process(&*host, &grant, &deadline, &program, args, timeout_ms)
+            },
+        );
+    }
+    register_if_any(engine, "process", process);
+}
+
+/// `process::run(program, args, timeout_ms)`: `()` when the program is not
+/// installed, otherwise `#{ code, stdout, stderr, timed_out }`.
+///
+/// The timeout is the script's to choose but never outlasts the call it is
+/// made from: `on_progress` cannot interrupt a host function, so a program
+/// allowed to run past the call's deadline would hold the script's thread
+/// past it too.
+fn run_process(
+    host: &dyn ScriptHost,
+    grant: &CapabilityGrant,
+    deadline: &Deadline,
+    program: &str,
+    args: rhai::Array,
+    timeout_ms: INT,
+) -> RhaiResult<Dynamic> {
+    let args = args
+        .into_iter()
+        .map(|arg| arg.into_immutable_string().map(|arg| arg.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .or_else(|_| fail("process::run takes its arguments as an array of text"))?;
+    let Some(asked) = u64::try_from(timeout_ms).ok().filter(|&ms| ms > 0) else {
+        return fail("process::run needs a timeout of at least 1 millisecond");
+    };
+    let asked = Duration::from_millis(asked);
+    let timeout = deadline.remaining().map_or(asked, |left| asked.min(left));
+    let outcome = if timeout.is_zero() {
+        Some(ProcessOutcome::TimedOut)
+    } else {
+        host.run(grant.clone(), program, &args, timeout)
+            .map_err(host_error)?
+    };
+    let Some(outcome) = outcome else {
+        return Ok(Dynamic::UNIT);
+    };
+    let mut map = rhai::Map::new();
+    let (code, stdout, stderr, timed_out) = match outcome {
+        ProcessOutcome::Exited {
+            code,
+            stdout,
+            stderr,
+        } => (code, stdout, stderr, false),
+        ProcessOutcome::TimedOut => (None, String::new(), String::new(), true),
+    };
+    map.insert(
+        "code".into(),
+        code.map_or(Dynamic::UNIT, |code| Dynamic::from(INT::from(code))),
+    );
+    map.insert("stdout".into(), stdout.into());
+    map.insert("stderr".into(), stderr.into());
+    map.insert("timed_out".into(), timed_out.into());
+    Ok(map.into())
 }
 
 fn register_if_any(engine: &mut Engine, name: &str, module: Module) {

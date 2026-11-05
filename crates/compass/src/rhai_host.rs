@@ -11,19 +11,25 @@
 //! - storage: Compass's encrypted extension database, in a namespace of the
 //!   script's own ([`storage_namespace`]); the same keyring key the extensions'
 //!   storage opens with, fetched on first use;
-//! - notifications, over `notify-rust`.
+//! - notifications, over `notify-rust`;
+//! - programs, on the host (through `flatpak-spawn --host` inside a Flatpak,
+//!   [`compass_platform_linux::host_command`]), killed at the script's
+//!   timeout, with their output read up to [`OUTPUT_LIMIT`] bytes.
 //!
 //! Every method is called on the script's blocking thread, so blocking into
 //! the runtime is allowed here.
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
+use std::time::Duration;
 
 use compass_extension_api::CapabilityGrant;
-use compass_script::{HostError, ScriptHost};
+use compass_script::{HostError, ProcessOutcome, ScriptHost};
 use compass_sqlcipher_sys::rusqlite::Connection;
 use compass_worker_host::application_service::Apps as _;
 use compass_worker_host::clipboard_service::{Clipboard as _, Content, CopyOptions};
+use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::extension_runner::{ShellClipboard, Storage};
 
@@ -37,6 +43,11 @@ pub type ShellSlot = Arc<RwLock<Option<Arc<compass_shell::ShellClient>>>>;
 pub fn storage_namespace(script: &str) -> String {
     format!("compass.rhai:{script}")
 }
+
+/// How much of each of a program's output streams a script receives. Kept
+/// well under the script's own string limit; the rest is read and dropped so
+/// a chatty program still finishes rather than blocking on a full pipe.
+pub const OUTPUT_LIMIT: u64 = 256 * 1024;
 
 /// The engine's [`ScriptHost`].
 pub struct EngineHost {
@@ -212,6 +223,90 @@ impl ScriptHost for EngineHost {
                 HostError::new("The notification could not be shown")
             })
     }
+
+    fn run(
+        &self,
+        grant: CapabilityGrant,
+        program: &str,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<Option<ProcessOutcome>, HostError> {
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| HostError::new("Compass cannot run programs from here"))?;
+        tracing::debug!(script = %grant.extension(), program, ?args, ?timeout, "running a program for a script");
+        let mut command =
+            tokio::process::Command::from(compass_platform_linux::host_command(program));
+        command.args(args);
+        handle.block_on(run_bounded(command, timeout))
+    }
+}
+
+/// Runs `command` to completion or until `timeout`, whichever is first.
+/// `None` when the program does not exist.
+///
+/// Inside a Flatpak the program is `flatpak-spawn`, which exists, so a
+/// missing host program shows as a failed run rather than as `None`; and
+/// killing `flatpak-spawn` does not reach the host process, which is left to
+/// finish on its own while the script carries on.
+async fn run_bounded(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<Option<ProcessOutcome>, HostError> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(HostError::new(format!(
+                "The program could not be started: {err}"
+            )));
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let finished = tokio::time::timeout(timeout, async {
+        tokio::join!(capture(stdout), capture(stderr), child.wait())
+    })
+    .await;
+    match finished {
+        Ok((stdout, stderr, status)) => {
+            let status = status.map_err(|err| {
+                HostError::new(format!("The program could not be waited for: {err}"))
+            })?;
+            Ok(Some(ProcessOutcome::Exited {
+                code: status.code(),
+                stdout,
+                stderr,
+            }))
+        }
+        Err(_) => {
+            // Reaped here rather than left to `kill_on_drop`, so no zombie
+            // outlives the call.
+            if let Err(err) = child.kill().await {
+                tracing::debug!(%err, "a timed-out program could not be killed");
+            }
+            Ok(Some(ProcessOutcome::TimedOut))
+        }
+    }
+}
+
+/// The first [`OUTPUT_LIMIT`] bytes of `pipe`, as text; the rest is drained.
+async fn capture(pipe: Option<impl AsyncRead + Unpin>) -> String {
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    let mut bytes = Vec::new();
+    // A read error leaves what was read so far, which is all a script could
+    // use anyway.
+    let _ = (&mut pipe).take(OUTPUT_LIMIT).read_to_end(&mut bytes).await;
+    let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(test)]
@@ -227,6 +322,92 @@ mod tests {
         registry.declare(id, [cap.clone()]);
         registry.grant(id, cap).unwrap();
         registry.check(id, cap).unwrap()
+    }
+
+    /// A host with a runtime to block into, called from outside it as the
+    /// script's blocking thread is.
+    fn process_host() -> (tokio::runtime::Runtime, EngineHost, CapabilityGrant) {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = {
+            let _entered = runtime.enter();
+            EngineHost::new(ShellSlot::default(), None, None)
+        };
+        let mut registry = CapabilityRegistry::new();
+        let id = ExtensionId::new("script.health");
+        let grant = grant(&mut registry, &id, &Capability::PROCESS_EXECUTE);
+        (runtime, host, grant)
+    }
+
+    fn args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|&arg| arg.to_owned()).collect()
+    }
+
+    #[test]
+    fn a_programs_exit_code_and_output_come_back() {
+        let (_runtime, host, grant) = process_host();
+        let outcome = host
+            .run(
+                grant,
+                "sh",
+                &args(&["-c", "printf out; printf err >&2; exit 3"]),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            Some(ProcessOutcome::Exited {
+                code: Some(3),
+                stdout: "out".to_owned(),
+                stderr: "err".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_program_that_is_not_installed_is_absent_rather_than_an_error() {
+        let (_runtime, host, grant) = process_host();
+        let outcome = host
+            .run(
+                grant,
+                "compass-test-no-such-program",
+                &[],
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(outcome, None);
+    }
+
+    #[test]
+    fn a_program_still_running_at_its_timeout_is_killed_and_says_so() {
+        let (_runtime, host, grant) = process_host();
+        let started = std::time::Instant::now();
+        let outcome = host
+            .run(grant, "sleep", &args(&["30"]), Duration::from_millis(200))
+            .unwrap();
+        assert_eq!(outcome, Some(ProcessOutcome::TimedOut));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn output_past_the_limit_is_dropped_and_the_program_still_finishes() {
+        let (_runtime, host, grant) = process_host();
+        let outcome = host
+            .run(
+                grant,
+                "sh",
+                &args(&["-c", "head -c 1000000 /dev/zero | tr '\\0' x"]),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+        let Some(ProcessOutcome::Exited { code, stdout, .. }) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(code, Some(0));
+        assert_eq!(u64::try_from(stdout.len()).unwrap(), OUTPUT_LIMIT);
     }
 
     #[test]

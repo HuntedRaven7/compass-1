@@ -17,7 +17,7 @@ use compass::serve::{EngineState, handle};
 use compass_core::{AppIndex, JsonFrecencyStore, SystemClock};
 use compass_extension_api::View;
 use compass_ipc::{ErrorKind, Request, Response, SocketPath};
-use compass_script::{HostCall, MemoryHost};
+use compass_script::{HostCall, MemoryHost, ProcessOutcome};
 use tokio::sync::RwLock;
 
 const EXAMPLES: &str = concat!(
@@ -205,6 +205,7 @@ async fn a_packaged_script_is_in_root_search_and_its_view_searches_and_copies() 
             "epoch-converter",
             "generators",
             "quick-notes",
+            "system-health",
         ] {
             copy_example(example, packaged);
         }
@@ -221,6 +222,7 @@ async fn a_packaged_script_is_in_root_search_and_its_view_searches_and_copies() 
             "script.epoch-converter",
             "script.generators",
             "script.quick-notes",
+            "script.system-health",
             "script.unit-converter",
             "script.web-search",
         ]
@@ -686,4 +688,90 @@ async fn an_action_can_toast_rerender_and_leave() {
         Response::Ack
     );
     fx.wait(session, |s| s.ended && s.problem.is_none()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn system_health_probes_once_when_opened_and_copies_a_follow_up() {
+    let fx = fixture(|_, packaged| copy_example("system-health", packaged)).await;
+    let exited = |stdout: &str| ProcessOutcome::Exited {
+        code: Some(0),
+        stdout: stdout.to_owned(),
+        stderr: String::new(),
+    };
+    fx.host
+        .set_program(&["systemctl", "is-system-running"], exited("running\n"));
+    fx.host.set_program(
+        &[
+            "systemctl",
+            "list-units",
+            "--failed",
+            "--plain",
+            "--no-legend",
+            "--no-pager",
+        ],
+        exited("cups.service loaded failed failed CUPS Scheduler\n"),
+    );
+    let runs = |host: &MemoryHost| {
+        host.calls()
+            .iter()
+            .filter(|call| matches!(call, HostCall::Run { .. }))
+            .count()
+    };
+
+    // Root search lists it from its manifest alone: no program runs.
+    assert!(
+        fx.titles("system health")
+            .await
+            .contains(&"System Health".to_owned())
+    );
+    assert_eq!(runs(&fx.host), 0, "searching never probes the host");
+
+    let session = fx.open("script.system-health").await;
+    let shown = fx.wait(session, |s| !s.rows().is_empty()).await;
+    assert_eq!(shown.alert, None, "packaged, so granted what it declares");
+    let Some(View::List(list)) = &shown.view else {
+        panic!("not a list: {shown:?}");
+    };
+    assert_eq!(
+        list.search.on_change, None,
+        "the launcher filters, so typing never reaches the script"
+    );
+    let unit = shown.rows()[0].clone();
+    assert_eq!(unit.title, "cups.service");
+    assert_eq!(unit.subtitle.as_deref(), Some("CUPS Scheduler"));
+    let probes = runs(&fx.host);
+    assert_eq!(probes, 6, "{:?}", fx.host.calls());
+
+    let copy = unit.actions.as_ref().expect("actions").actions()[0].clone();
+    assert_eq!(copy.title, "Copy Status Command");
+    assert_eq!(
+        fx.event(session, &copy.handler.0, serde_json::json!([]))
+            .await,
+        Response::Ack
+    );
+    assert_eq!(
+        fx.host.calls().last(),
+        Some(&HostCall::Copy("systemctl status cups.service".to_owned()))
+    );
+    assert_eq!(runs(&fx.host), probes, "copying runs nothing");
+
+    // Only asking for it checks again.
+    let refresh = list.actions.as_ref().expect("list actions").actions()[0].clone();
+    assert_eq!(refresh.title, "Refresh");
+    assert_eq!(
+        fx.event(session, &refresh.handler.0, serde_json::json!([]))
+            .await,
+        Response::Ack
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while runs(&fx.host) < probes * 2 {
+        assert!(Instant::now() < deadline, "{:?}", fx.host.calls());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        runs(&fx.host),
+        probes * 2,
+        "one refresh, one round of probes"
+    );
 }

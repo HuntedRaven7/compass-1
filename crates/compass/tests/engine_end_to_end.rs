@@ -4765,6 +4765,59 @@ fn a_packaged_rhai_script_is_found_in_root_search_and_its_view_renders() {
     }
 }
 
+/// The packaged System Health script against this machine's own systemctl,
+/// bootc, rpm-ostree and flatpak, whatever they are: on a systemd host its
+/// first section lists failed units, anywhere else it says why not, and
+/// either way it answers within the script's own limit.
+#[test]
+fn the_system_health_script_answers_on_whatever_host_runs_it() {
+    use compass_extension_api::View;
+    use compass_ipc::{Request, Response};
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/rhai-examples");
+    let daemon = Daemon::start_prepared(&[("a.desktop", &entry("Alpha", ""))], "{}", |dir| {
+        let target = dir.join("data/compass/scripts/system-health");
+        std::fs::create_dir_all(&target).unwrap();
+        for file in ["script.toml", "main.rhai"] {
+            std::fs::copy(examples.join("system-health").join(file), target.join(file)).unwrap();
+        }
+        Vec::new()
+    });
+    let started = daemon.request(Request::RunExtensionCommand {
+        id: "rhai:script.system-health".into(),
+        arguments_json: None,
+    });
+    let Response::ExtensionStarted { session } = started else {
+        panic!("the script did not open: {started:?}");
+    };
+    let (view, _) = wait_for_view(&daemon, session, |view, _| matches!(view, View::List(_)));
+    let View::List(list) = view else {
+        unreachable!()
+    };
+    let sections: Vec<&str> = list
+        .sections
+        .iter()
+        .map(|s| s.title.as_deref().unwrap_or_default())
+        .collect();
+    assert!(
+        sections == ["Failed System Units", "Failed User Units", "Updates"]
+            || sections == ["systemd", "Updates"],
+        "{sections:?}"
+    );
+    let tools: Vec<&str> = list
+        .sections
+        .last()
+        .unwrap()
+        .items
+        .iter()
+        .map(|item| item.title.as_str())
+        .collect();
+    assert_eq!(tools, ["bootc", "rpm-ostree", "flatpak"]);
+    assert_eq!(
+        daemon.request(Request::CloseExtension { session }),
+        Response::Ack
+    );
+}
+
 // ---- The extension stores, against a local fake ----
 
 /// A local stand-in for `api.vicinae.com` (under `/v1`) and

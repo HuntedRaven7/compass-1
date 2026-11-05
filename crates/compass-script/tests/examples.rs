@@ -7,10 +7,11 @@ mod common;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::{Fixture, fire, runtime, titles};
-use compass_extension_api::{ActionEffect, ActionResponse, CapabilityRegistry, View};
-use compass_script::{HostCall, Limits, MemoryHost, ScriptInstance, discovery};
+use compass_extension_api::{ActionEffect, ActionResponse, CapabilityRegistry, View, ViewTree};
+use compass_script::{HostCall, Limits, MemoryHost, ProcessOutcome, ScriptInstance, discovery};
 
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../extensions/rhai-examples")
@@ -199,4 +200,263 @@ fn web_search_opens_an_encoded_url() {
     );
     let tree = rt.block_on(fixture.instance.search("")).unwrap();
     assert!(tree.actions().is_empty(), "nothing to open without a query");
+}
+
+/// The command lines `system-health` runs, as `MemoryHost` keys them.
+const IS_SYSTEM_RUNNING: &[&str] = &["systemctl", "is-system-running"];
+const FAILED_SYSTEM_UNITS: &[&str] = &[
+    "systemctl",
+    "list-units",
+    "--failed",
+    "--plain",
+    "--no-legend",
+    "--no-pager",
+];
+const FAILED_USER_UNITS: &[&str] = &[
+    "systemctl",
+    "--user",
+    "list-units",
+    "--failed",
+    "--plain",
+    "--no-legend",
+    "--no-pager",
+];
+
+fn exited(code: i32, stdout: &str) -> ProcessOutcome {
+    ProcessOutcome::Exited {
+        code: Some(code),
+        stdout: stdout.to_owned(),
+        stderr: String::new(),
+    }
+}
+
+/// Every row in a list tree as `(title, subtitle)`.
+fn rows(tree: &ViewTree) -> Vec<(String, Option<String>)> {
+    let View::List(list) = tree.root() else {
+        panic!("not a list: {:?}", tree.root());
+    };
+    list.sections
+        .iter()
+        .flat_map(|s| &s.items)
+        .map(|i| (i.title.clone(), i.subtitle.clone()))
+        .collect()
+}
+
+/// The command lines the host was asked to run, each with its timeout.
+fn runs(host: &MemoryHost) -> Vec<(Vec<String>, Duration)> {
+    host.calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            HostCall::Run { argv, timeout } => Some((argv, timeout)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn system_health_lists_failed_units_and_update_tools_and_copies_a_follow_up() {
+    let fixture = example("system-health");
+    let host = &fixture.host;
+    // `is-system-running` exits 1 for any state but "running".
+    host.set_program(IS_SYSTEM_RUNNING, exited(1, "degraded\n"));
+    host.set_program(
+        FAILED_SYSTEM_UNITS,
+        exited(
+            0,
+            "systemd-networkd-wait-online.service loaded failed failed Wait for Network to be Configured\n\
+             backup.timer                         loaded failed failed Nightly  backup\n",
+        ),
+    );
+    host.set_program(FAILED_USER_UNITS, exited(0, ""));
+    host.set_program(&["bootc", "--version"], exited(0, "bootc 1.1.4\n"));
+    host.set_program(
+        &["rpm-ostree", "--version"],
+        exited(0, "rpm-ostree:\n Version: '2024.7'\n Git: 7f8a\n"),
+    );
+    // flatpak is not installed: no answer set.
+
+    let rt = runtime();
+    let tree = rt.block_on(fixture.instance.search("")).unwrap();
+    let View::List(list) = tree.root() else {
+        panic!("not a list");
+    };
+    assert!(
+        list.search.host_filtering,
+        "the launcher filters, so typing never runs the probes again"
+    );
+    assert_eq!(
+        list.sections
+            .iter()
+            .map(|s| s.title.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["Failed System Units", "Failed User Units", "Updates"]
+    );
+    assert_eq!(
+        list.sections[0].subtitle.as_deref(),
+        Some("State: degraded")
+    );
+    let some = |text: &str| Some(text.to_owned());
+    assert_eq!(
+        rows(&tree),
+        [
+            (
+                "systemd-networkd-wait-online.service".to_owned(),
+                some("Wait for Network to be Configured")
+            ),
+            ("backup.timer".to_owned(), some("Nightly  backup")),
+            (
+                "No failed units".to_owned(),
+                some("Every user unit is running or stopped cleanly.")
+            ),
+            (
+                "bootc".to_owned(),
+                some("Updates the operating system image")
+            ),
+            (
+                "rpm-ostree".to_owned(),
+                some("Updates the operating system image")
+            ),
+            ("flatpak".to_owned(), some("Updates Flatpak applications")),
+        ]
+    );
+    let versions: Vec<Option<String>> = list.sections[2]
+        .items
+        .iter()
+        .map(|item| item.accessories.first().and_then(|a| a.text.clone()))
+        .collect();
+    assert_eq!(versions, [some("1.1.4"), some("2024.7"), None]);
+    let tags: Vec<Option<String>> = list.sections[2]
+        .items
+        .iter()
+        .map(|item| item.accessories.last().and_then(|a| a.tag.clone()))
+        .collect();
+    assert_eq!(
+        tags,
+        [some("Available"), some("Available"), some("Not installed")]
+    );
+
+    // Every program had a timeout, none longer than the script asked for.
+    let ran = runs(host);
+    assert_eq!(ran.len(), 6, "{ran:?}");
+    assert!(
+        ran.iter().all(|(_, t)| *t <= Duration::from_millis(500)),
+        "{ran:?}"
+    );
+
+    let response = rt.block_on(fire(&fixture, &tree, "Copy Status Command"));
+    assert_eq!(completed(&response), [ActionEffect::CloseWindow]);
+    assert_eq!(
+        fixture.host.clipboard().as_deref(),
+        Some("systemctl status systemd-networkd-wait-online.service")
+    );
+
+    let response = rt.block_on(fire(&fixture, &tree, "Refresh"));
+    assert!(completed(&response).contains(&ActionEffect::Rerender));
+}
+
+#[test]
+fn system_health_says_unsupported_without_systemd() {
+    let rt = runtime();
+
+    // No systemctl at all.
+    let fixture = example("system-health");
+    let tree = rt.block_on(fixture.instance.search("")).unwrap();
+    let all = rows(&tree);
+    assert_eq!(
+        all[0],
+        (
+            "systemd is unsupported here".to_owned(),
+            Some("systemctl is not installed, so this system does not use systemd.".to_owned())
+        )
+    );
+    assert_eq!(
+        titles(&tree)[1..],
+        ["bootc", "rpm-ostree", "flatpak"],
+        "the update tools are still checked"
+    );
+    assert!(
+        runs(&fixture.host)
+            .iter()
+            .all(|(argv, _)| argv[..] != *FAILED_SYSTEM_UNITS),
+        "no unit list is asked for"
+    );
+
+    // systemctl installed, but systemd is not what started the system.
+    let fixture = example("system-health");
+    fixture.host.set_program(
+        IS_SYSTEM_RUNNING,
+        ProcessOutcome::Exited {
+            code: Some(1),
+            stdout: "offline\n".to_owned(),
+            stderr:
+                "System has not been booted with systemd as init system (PID 1). Can't operate.\n"
+                    .to_owned(),
+        },
+    );
+    let tree = rt.block_on(fixture.instance.search("")).unwrap();
+    assert_eq!(
+        rows(&tree)[0],
+        (
+            "systemd is unsupported here".to_owned(),
+            Some("This system was not started by systemd, so it has no units to check.".to_owned())
+        )
+    );
+}
+
+#[test]
+fn system_health_reports_an_unresponsive_bus_and_stops_asking_it() {
+    let fixture = example("system-health");
+    fixture
+        .host
+        .set_program(IS_SYSTEM_RUNNING, ProcessOutcome::TimedOut);
+    fixture
+        .host
+        .set_program(&["flatpak", "--version"], exited(0, "Flatpak 1.14.6\n"));
+    // A tool that a signal ended has no exit code; it reads as unavailable.
+    fixture.host.set_program(
+        &["bootc", "--version"],
+        ProcessOutcome::Exited {
+            code: None,
+            stdout: String::new(),
+            stderr: "Killed\n".to_owned(),
+        },
+    );
+    fixture
+        .host
+        .set_program(&["rpm-ostree", "--version"], ProcessOutcome::TimedOut);
+    let rt = runtime();
+    let tree = rt.block_on(fixture.instance.search("")).unwrap();
+    assert_eq!(
+        rows(&tree)[0],
+        (
+            "systemd did not answer".to_owned(),
+            Some("It did not reply in time. Press Ctrl+R to try again.".to_owned())
+        )
+    );
+    let View::List(list) = tree.root() else {
+        panic!("not a list");
+    };
+    let tags: Vec<Option<&str>> = list.sections[1]
+        .items
+        .iter()
+        .map(|item| item.accessories.last().and_then(|a| a.tag.as_deref()))
+        .collect();
+    assert_eq!(
+        tags,
+        [Some("Unavailable"), Some("Timed out"), Some("Available")]
+    );
+    let asked: Vec<String> = runs(&fixture.host)
+        .into_iter()
+        .map(|(argv, _)| argv.join(" "))
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "systemctl is-system-running",
+            "bootc --version",
+            "rpm-ostree --version",
+            "flatpak --version"
+        ],
+        "a bus that did not answer once is not asked for the unit lists"
+    );
 }

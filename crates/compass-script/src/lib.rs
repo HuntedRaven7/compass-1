@@ -53,7 +53,7 @@ pub mod watch;
 
 pub use discovery::{DiscoveredScript, Scan};
 pub use error::{LimitKind, ManifestError, ScriptError};
-pub use host::{HostCall, HostError, MemoryHost, ScriptHost};
+pub use host::{HostCall, HostError, MemoryHost, ProcessOutcome, ScriptHost};
 pub use instance::{SEARCH_FN, ScriptInstance};
 pub use limits::Limits;
 pub use manifest::ScriptManifest;
