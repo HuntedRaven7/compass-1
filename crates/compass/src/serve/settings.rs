@@ -198,6 +198,7 @@ pub async fn apply_all(state: &Arc<RwLock<EngineState>>, config: &Config) {
         apply_live(state, config, key).await;
     }
     state.read().await.global_shortcuts().reload();
+    state.read().await.extension_sync.request();
     state
         .write()
         .await

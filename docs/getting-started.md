@@ -140,6 +140,33 @@ shows how well it works on Linux. Installed extensions show up in the launcher's
 Compass runs extensions written for Vicinae unchanged. To write your own, see
 [Writing extensions for Compass](extensions.md).
 
+### Installing extensions from the configuration file
+
+To give every machine, or every user of one, the same extensions, list them under
+`extensions.installed` in `compass.json` (or in the system-wide `/etc/xdg/compass/compass.json`):
+
+```json
+{
+  "extensions": {
+    "installed": ["raycast:raycast/github", "vicinae:zoe/clock"]
+  }
+}
+```
+
+Each entry is `raycast:<owner>/<name>` or `vicinae:<owner>/<name>`, where the owner and name are the
+ones in the extension's store address. The id an extension installs under, such as
+`store.raycast.github`, also works; Compass then looks the owner up in the store.
+
+Compass installs whatever is listed and missing when it starts and whenever the file changes, in the
+background. When the store cannot be reached, it tries again after one, five and fifteen minutes,
+then every hour. It never uninstalls anything: an extension you take out of the list stays
+installed, with its settings, until you uninstall it; one you uninstall while it is still listed
+comes back the next time Compass starts or the file changes.
+
+`compass ext sync` installs the missing ones now and says what happened to each entry, and
+`compass ext sync --dry-run` only says what it would install. `compass doctor` lists the entries
+that are not installed yet and the ones that cannot be.
+
 ### Signing in to a service
 
 Some extensions connect to an account, such as GitHub or Linear. The first time you use one, Compass
@@ -275,7 +302,11 @@ WAL and SHM file lengths in bytes, SQLite page size, page count and freelist
 pages, indexed rows (files and directories), and the two FTS indexes' page
 footprint when this SQLite build provides `dbstat`. Missing files and unavailable
 measurements have explicit statuses; they are never silently reported as zero.
-The report contains no indexed paths or clipboard data.
+The report contains no indexed paths or clipboard data. It also splits the pages
+into in-use bytes (rows, their indexes and the FTS indexes) and reclaimable bytes
+(free pages SQLite reuses before growing the file, which only compaction returns
+to the disk). `compass doctor` summarizes the same measurements in its
+`files.index` check.
 
 The database is `$XDG_CACHE_HOME/compass/file-indexer/compass-file-index.db`,
 falling back to `~/.cache/compass/file-indexer/compass-file-index.db`. The command

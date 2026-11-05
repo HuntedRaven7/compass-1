@@ -69,6 +69,34 @@ impl IndexStats {
             && !matches!(self.wal_bytes, Measurement::Unavailable(_))
             && !matches!(self.shm_bytes, Measurement::Unavailable(_))
     }
+
+    /// Bytes of the pages that hold data in the read snapshot: every page
+    /// but the free ones, so rows, their indexes and the FTS indexes
+    /// ([`Self::fts_bytes`] is part of it). `None` unless the page size,
+    /// page count and freelist were all measured.
+    #[must_use]
+    pub fn live_bytes(&self) -> Option<u64> {
+        let (size, count, free) = self.pages()?;
+        count.checked_sub(free)?.checked_mul(size)
+    }
+
+    /// Bytes of the free pages: space the file holds that SQLite reuses
+    /// before growing it, and that only a `VACUUM` gives back. `None` on the
+    /// terms of [`Self::live_bytes`].
+    #[must_use]
+    pub fn reclaimable_bytes(&self) -> Option<u64> {
+        let (size, _, free) = self.pages()?;
+        free.checked_mul(size)
+    }
+
+    fn pages(&self) -> Option<(u64, u64, u64)> {
+        match (&self.page_size, &self.page_count, &self.freelist_count) {
+            (Measurement::Value(size), Measurement::Value(count), Measurement::Value(free)) => {
+                Some((*size, *count, *free))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Measures only an existing file-index database. Missing or unreadable
@@ -433,6 +461,46 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         let value = number(&db, "SELECT 1", Instant::now());
         assert!(matches!(value, Measurement::Unavailable(reason) if reason.contains("time limit")));
+    }
+
+    #[test]
+    fn deleted_rows_show_as_reclaimable_not_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let db = fixture(&path, false);
+        db.execute_batch(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 2000) \
+             INSERT INTO indexed_file(path, skeleton_path) \
+             SELECT '/fixture/' || x || '/a-rather-long-file-name.txt', 'fixture ' || x FROM n",
+        )
+        .unwrap();
+        let before = inspect(&path);
+        assert_eq!(before.reclaimable_bytes(), Some(0), "{before:?}");
+        db.execute_batch("DELETE FROM indexed_file WHERE path LIKE '/fixture/%'")
+            .unwrap();
+        drop(db);
+        let stats = inspect(&path);
+        let (Measurement::Value(size), Measurement::Value(count), Measurement::Value(free)) =
+            (&stats.page_size, &stats.page_count, &stats.freelist_count)
+        else {
+            panic!("pages were not measured: {stats:?}");
+        };
+        assert!(*free > 0, "deleting rows frees pages");
+        assert_eq!(stats.reclaimable_bytes(), Some(free * size));
+        assert_eq!(
+            stats.live_bytes().unwrap() + stats.reclaimable_bytes().unwrap(),
+            count * size
+        );
+        assert!(stats.live_bytes() < before.live_bytes());
+        assert_eq!(stats.indexed_rows, Measurement::Value(2));
+    }
+
+    #[test]
+    fn no_breakdown_without_page_measurements() {
+        let dir = tempfile::tempdir().unwrap();
+        let stats = inspect(&dir.path().join("absent.db"));
+        assert_eq!(stats.live_bytes(), None);
+        assert_eq!(stats.reclaimable_bytes(), None);
     }
 
     #[test]

@@ -53,6 +53,7 @@ pub mod config_issues;
 pub mod config_migration;
 pub mod contrast;
 pub mod create_extension;
+pub mod declared_extensions;
 pub mod default_app;
 pub mod develop_link;
 pub mod emoji_grid;

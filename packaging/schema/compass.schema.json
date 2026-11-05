@@ -116,7 +116,7 @@
           ]
         },
         "installed": {
-          "description": "The ids of the installed extensions.",
+          "description": "Store extensions to install when they are missing: `raycast:<owner>/<name>`,\n`vicinae:<owner>/<name>`, or the id one installs under. Compass installs them when it\nstarts and whenever this file changes, and never uninstalls one that is left out.",
           "items": {
             "type": "string"
           },

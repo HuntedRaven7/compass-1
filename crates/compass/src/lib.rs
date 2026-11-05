@@ -30,6 +30,7 @@ pub mod extension_browser;
 pub mod extension_commands;
 pub mod extension_files;
 pub mod extension_runner;
+pub mod extension_sync;
 pub mod extension_wallpaper;
 pub mod extension_windows;
 pub mod file_manager;
@@ -642,6 +643,10 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                 }
             }
             Ok(ExitCode::from(EXIT_OK))
+        }
+
+        Command::Ext(ExtCommand::Sync { dry_run, json }) => {
+            extension_sync::sync_now(dry_run, json).await
         }
 
         Command::Spike(Spike::GlobalShortcut {

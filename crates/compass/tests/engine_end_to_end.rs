@@ -4986,9 +4986,13 @@ impl FakeStore {
     }
 
     fn start_engine(&self) -> Daemon {
+        self.start_engine_with_config("{}")
+    }
+
+    fn start_engine_with_config(&self, config: &str) -> Daemon {
         let vicinae = format!("{}/v1", self.base);
         let raycast = format!("{}/raycast", self.base);
-        Daemon::start_prepared(&[("a.desktop", &entry("Alpha", ""))], "{}", move |_| {
+        Daemon::start_prepared(&[("a.desktop", &entry("Alpha", ""))], config, move |_| {
             vec![
                 ("COMPASS_VICINAE_API_URL", vicinae.into()),
                 ("COMPASS_RAYCAST_API_URL", raycast.into()),
@@ -5205,6 +5209,75 @@ fn an_organisations_raycast_extension_opens_and_installs_by_its_owner() {
         panic!("the fake store must refuse the author, as the API does");
     };
     assert!(err.message.contains("github"), "{}", err.message);
+}
+
+/// `extensions.installed` (#321): the engine installs what the file declares
+/// and is missing, in either form, when it starts and when the file changes;
+/// it leaves an installed one alone, and removing an entry uninstalls
+/// nothing.
+#[test]
+fn the_engine_installs_the_extensions_compass_json_declares() {
+    use std::os::unix::fs::MetadataExt as _;
+    let store = FakeStore::start();
+    let daemon = store.start_engine_with_config(
+        r#"{"extensions": {"installed": [
+            "vicinae:zoe/clock", "store.raycast.github", "local.not-here", "brew:x/y"
+        ]}}"#,
+    );
+    let extensions = daemon._dirs.path().join("data-home/compass/extensions");
+    let config = daemon._dirs.path().join("config/compass/compass.json");
+    let wait_for = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} never happened");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    wait_for("the declared extensions installing", &|| {
+        extensions
+            .join("store.vicinae.clock/package.json")
+            .is_file()
+            && extensions
+                .join("store.raycast.github/package.json")
+                .is_file()
+    });
+    wait_for("the installed command reaching root search", &|| {
+        root_ids(&daemon, "show time now")
+            .iter()
+            .any(|id| id == "@zoe/store.vicinae.clock:show-time")
+    });
+    let clock = std::fs::metadata(extensions.join("store.vicinae.clock"))
+        .unwrap()
+        .ino();
+
+    // A new entry is installed when the file changes; the one already
+    // installed is not installed again.
+    std::fs::write(
+        &config,
+        r#"{"extensions": {"installed": ["vicinae:zoe/clock", "raycast:ray/hn"]}}"#,
+    )
+    .unwrap();
+    wait_for("the added extension installing", &|| {
+        extensions.join("store.raycast.hn/package.json").is_file()
+    });
+    assert_eq!(
+        std::fs::metadata(extensions.join("store.vicinae.clock"))
+            .unwrap()
+            .ino(),
+        clock,
+        "an installed extension is left alone"
+    );
+
+    // Taking everything out of the list uninstalls nothing.
+    std::fs::write(&config, r#"{"extensions": {"installed": []}}"#).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    for id in [
+        "store.vicinae.clock",
+        "store.raycast.github",
+        "store.raycast.hn",
+    ] {
+        assert!(extensions.join(id).join("package.json").is_file(), "{id}");
+    }
 }
 
 #[test]

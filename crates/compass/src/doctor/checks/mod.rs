@@ -27,6 +27,8 @@
 //! * [`wlroots`](mod@wlroots) — the wlroots protocols and compositor IPC this session has.
 //! * [`clipboard`] — clipboard history and the keyring its key is kept in.
 //! * [`config`](mod@config) — whether `compass.json` reads as its author meant.
+//! * [`extensions`] — whether the extensions `compass.json` declares are installed.
+//! * [`files`] — the file-search index's size, and what it is made of.
 //!
 //! Every check is re-exported here, so a caller says `checks::session_type`
 //! without knowing or caring which file it is in. `doctor::mod` assembles the
@@ -36,6 +38,8 @@ pub mod a11y;
 pub mod clipboard;
 pub mod config;
 pub mod desktop;
+pub mod extensions;
+pub mod files;
 pub mod input;
 pub mod portal;
 pub mod sandbox;
@@ -53,6 +57,8 @@ pub use desktop::{
     GNOME_SHELL_BUS_NAME, GNOME_SHELL_OBJECT_PATH, KWIN_BUS_NAME, LEGACY_WINDOWS_INTERFACE,
     desktop_environment, is_gnome, is_kde, kwin, shell_extension,
 };
+pub use extensions::declared_extensions;
+pub use files::file_index;
 pub use input::{InputServerFacts, input_server};
 pub use portal::{
     GLOBAL_SHORTCUTS_INTERFACE, PORTAL_BUS_NAME, PORTAL_OBJECT_PATH, desktop_portal,

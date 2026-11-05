@@ -16,7 +16,7 @@
 //!   },
 //!   "extensions": {
 //!     "auto_update": true,
-//!     "installed": ["com.example.clock"]
+//!     "installed": ["raycast:raycast/github", "vicinae:zoe/clock"]
 //!   }
 //! }
 //! ```
@@ -682,7 +682,9 @@ pub struct ExtensionsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("default" = DEFAULT_AUTO_UPDATE))]
     auto_update: Option<bool>,
-    /// The ids of the installed extensions.
+    /// Store extensions to install when they are missing: `raycast:<owner>/<name>`,
+    /// `vicinae:<owner>/<name>`, or the id one installs under. Compass installs them when it
+    /// starts and whenever this file changes, and never uninstalls one that is left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     installed: Option<Vec<String>>,
 
@@ -698,7 +700,8 @@ impl ExtensionsConfig {
         self.auto_update.unwrap_or(DEFAULT_AUTO_UPDATE)
     }
 
-    /// The installed extension ids. Defaults to empty.
+    /// The declared extensions, as written; see [`crate::declared_extensions`] for what an entry
+    /// means. Defaults to empty.
     #[must_use]
     pub fn installed(&self) -> &[String] {
         self.installed.as_deref().unwrap_or(&[])

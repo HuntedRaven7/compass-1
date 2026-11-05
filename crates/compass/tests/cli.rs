@@ -484,7 +484,7 @@ async fn doctor_check_only_json_still_emits_the_full_report() {
     .await;
     assert_eq!(output.status.code(), Some(1));
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
-    assert_eq!(value["checks"].as_array().expect("checks").len(), 18);
+    assert_eq!(value["checks"].as_array().expect("checks").len(), 20);
 }
 
 #[tokio::test]
@@ -550,4 +550,116 @@ async fn fs_stats_reads_existing_index_without_a_daemon_or_data_changes() {
     assert_eq!(report["database_bytes"]["value"], before.len() as u64);
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(!stdout(&output).contains("/private/report.txt"));
+    let pages = |key: &str| report[key]["value"].as_u64().unwrap();
+    assert_eq!(
+        pages("live_bytes") + pages("reclaimable_bytes"),
+        pages("page_count") * pages("page_size"),
+        "in-use and reclaimable bytes split the pages: {report}"
+    );
+
+    let output = run_cli(
+        dir.path(),
+        &dir.path().join("absent.sock"),
+        &["doctor", "--json"],
+    )
+    .await;
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
+    let check = value["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "files.index")
+        .expect("a files.index check");
+    assert_eq!(check["status"], "ok", "{check}");
+    assert!(
+        check["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("The file index holds 1 entry."),
+        "{check}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before, "doctor only reads");
+}
+
+/// `compass ext sync --dry-run` reads `extensions.installed` and says what
+/// would become of each entry, without the network or the engine.
+#[tokio::test]
+async fn ext_sync_dry_run_reports_each_declared_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join(".config/compass");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("compass.json"),
+        r#"{"extensions": {"installed": [
+            "vicinae:zoe/clock", "store.raycast.github", "local.notes", "brew:x/y"
+        ]}}"#,
+    )
+    .unwrap();
+    let extensions = dir.path().join("share/compass/extensions");
+    let notes = extensions.join("local.notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(
+        notes.join("package.json"),
+        r#"{"name": "notes", "title": "Notes", "author": "me",
+            "commands": [{"name": "show", "title": "Show Notes", "mode": "view"}]}"#,
+    )
+    .unwrap();
+
+    let output = run_cli(
+        dir.path(),
+        &dir.path().join("absent.sock"),
+        &["ext", "sync", "--dry-run", "--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1), "brew:x/y is a problem");
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let outcomes: Vec<(&str, &str)> = report
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["entry"].as_str().unwrap(),
+                item["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("vicinae:zoe/clock", "would_install"),
+            ("store.raycast.github", "would_install"),
+            ("local.notes", "present"),
+            ("brew:x/y", "unresolvable"),
+        ]
+    );
+    assert_eq!(report[0]["id"], "store.vicinae.clock");
+    let installed: Vec<_> = std::fs::read_dir(&extensions)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(installed, ["local.notes"], "a dry run installs nothing");
+
+    let output = run_cli(
+        dir.path(),
+        &dir.path().join("absent.sock"),
+        &["doctor", "--json"],
+    )
+    .await;
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
+    let check = value["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "extensions.declared")
+        .expect("an extensions.declared check");
+    assert_eq!(check["status"], "warn", "{check}");
+    let detail = check["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with(
+            "2 declared extensions are not installed yet: vicinae:zoe/clock, store.raycast.github."
+        ),
+        "{detail}"
+    );
+    assert!(detail.contains("brew:x/y cannot be installed"), "{detail}");
 }

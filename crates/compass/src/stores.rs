@@ -1,16 +1,19 @@
 //! The extension stores, engine side: fetching the listings, building the
-//! launcher's rows and detail pages, and installing and uninstalling.
+//! launcher's rows and detail pages, installing and uninstalling, and
+//! installing what `extensions.installed` declares ([`Stores::reconcile`]).
 //!
 //! Ports the HTTP halves of `VicinaeStoreService` and `RaycastStoreService`
 //! and the install and uninstall actions of the two store views. What the
 //! listings mean is `compass_core::{extension_store, raycast_store}`; how a
-//! bundle lands on disk is `compass_core::store_bundle`.
+//! bundle lands on disk is `compass_core::store_bundle`; what a declaration
+//! means is `compass_core::declared_extensions`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use compass_core::declared_extensions::{self, Step, StoreExtension};
 use compass_core::store_bundle::Marker;
 use compass_core::store_listing::{Listing, Store};
 use compass_core::{extension_store, raycast_store, raycast_store_view, store_bundle};
@@ -45,6 +48,13 @@ const fn store(kind: StoreKind) -> Store {
     match kind {
         StoreKind::Vicinae => Store::Vicinae,
         StoreKind::Raycast => Store::Raycast,
+    }
+}
+
+const fn kind(store: Store) -> StoreKind {
+    match store {
+        Store::Vicinae => StoreKind::Vicinae,
+        Store::Raycast => StoreKind::Raycast,
     }
 }
 
@@ -416,6 +426,135 @@ impl Stores {
         .map_err(|err| format!("Failed to extract extension archive: {err}"))?;
         tracing::info!(%id, "extension installed");
         Ok((id, listing.title))
+    }
+
+    /// Installs what `entries` (`extensions.installed`) declares and is not
+    /// installed, one store install at a time, and says what became of each
+    /// entry. Never uninstalls anything; see
+    /// [`compass_core::declared_extensions`] for why.
+    ///
+    /// A `dry_run` says what would be installed without asking the network.
+    pub async fn reconcile(&self, entries: &[String], dry_run: bool) -> Vec<Reconciled> {
+        let installed = installed().await;
+        let steps = declared_extensions::plan(
+            entries,
+            |id| installed.contains_key(id),
+            compass_core::raycast_overrides::Manifest::shipped(),
+        );
+        let mut reconciled = Vec::with_capacity(steps.len());
+        for step in steps {
+            let (entry, outcome) = match step {
+                Step::Present { entry, id } => (entry, Outcome::Present { id }),
+                Step::Unresolvable { entry, reason } => (entry, Outcome::Unresolvable(reason)),
+                Step::Install { entry, extension } if dry_run => {
+                    (entry, Outcome::WouldInstall { id: extension.id() })
+                }
+                Step::Install { entry, extension } => {
+                    let outcome = match self.install_declared(&extension).await {
+                        Ok((id, title)) => Outcome::Installed { id, title },
+                        Err(reason) => Outcome::Failed(reason),
+                    };
+                    (entry, outcome)
+                }
+            };
+            reconciled.push(Reconciled { entry, outcome });
+        }
+        reconciled
+    }
+
+    async fn install_declared(
+        &self,
+        extension: &StoreExtension,
+    ) -> Result<(String, String), String> {
+        let kind = kind(extension.store);
+        let owner = match &extension.owner {
+            Some(owner) => owner.clone(),
+            None => self.owner_of(extension.store, &extension.name).await?,
+        };
+        self.install(kind, &owner, &extension.name).await
+    }
+
+    /// The handle the store files the extension `name` under, for an entry
+    /// that gave only the id it installs under. Two owners with the same
+    /// name would install to the same id, so that is refused rather than
+    /// guessed.
+    async fn owner_of(&self, store: Store, name: &str) -> Result<String, String> {
+        let mut owners: Vec<String> = match store {
+            Store::Vicinae => self
+                .vicinae_all()
+                .await
+                .map_err(|err| format!("{}: {err}", compass_core::store_listing::FETCH_FAILED))?
+                .iter()
+                .filter(|extension| extension.name == name)
+                .map(|extension| extension.author.handle.clone())
+                .collect(),
+            Store::Raycast => self
+                .raycast_search(name)
+                .await
+                .map_err(|err| format!("{}: {err}", compass_core::store_listing::SEARCH_FAILED))?
+                .iter()
+                .filter(|extension| extension.name == name)
+                .map(|extension| extension.owner_handle().to_owned())
+                .collect(),
+        };
+        owners.sort_unstable();
+        owners.dedup();
+        let key = store.key();
+        let store = store.name();
+        match <[String; 1]>::try_from(owners) {
+            Ok([owner]) => Ok(owner),
+            Err(owners) if owners.is_empty() => {
+                Err(format!("The {store} store has no extension named {name}."))
+            }
+            Err(_) => Err(format!(
+                "The {store} store has more than one extension named {name}; write it as {key}:<owner>/{name}."
+            )),
+        }
+    }
+}
+
+/// What reconciling did with one entry of `extensions.installed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reconciled {
+    /// The entry as written.
+    pub entry: String,
+    /// What became of it.
+    pub outcome: Outcome,
+}
+
+/// What became of one declared extension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// It was installed already, under `id`.
+    Present {
+        /// The id it is installed under.
+        id: String,
+    },
+    /// It has just been installed.
+    Installed {
+        /// The id it was installed under.
+        id: String,
+        /// Its title.
+        title: String,
+    },
+    /// A dry run: it would be installed under `id`.
+    WouldInstall {
+        /// The id it would be installed under.
+        id: String,
+    },
+    /// Nothing can install it; trying again will not help until the entry
+    /// changes.
+    Unresolvable(String),
+    /// The install failed: the store could not be reached, did not have it,
+    /// or served a bundle that was refused. Worth trying again later.
+    Failed(String),
+}
+
+impl Outcome {
+    /// Whether this is a problem to report.
+    #[must_use]
+    pub const fn is_problem(&self) -> bool {
+        matches!(self, Self::Unresolvable(_) | Self::Failed(_))
     }
 }
 

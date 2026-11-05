@@ -131,6 +131,8 @@ pub struct EngineState {
     shell_slot: crate::rhai_host::ShellSlot,
     /// The extension stores.
     stores: Arc<crate::stores::Stores>,
+    /// Wakes the installer of the extensions `compass.json` declares.
+    extension_sync: Arc<crate::extension_sync::Trigger>,
     /// The update check.
     updates: Arc<crate::updates::Updates>,
     /// Snippet keyword expansion and its input server, once started.
@@ -278,6 +280,7 @@ impl EngineState {
             rhai,
             shell_slot,
             stores: Arc::default(),
+            extension_sync: Arc::default(),
             updates: Arc::default(),
             expander: None,
             launches: Arc::default(),
@@ -352,6 +355,7 @@ impl EngineState {
             rhai: Arc::default(),
             shell_slot: crate::rhai_host::ShellSlot::default(),
             stores: Arc::default(),
+            extension_sync: Arc::default(),
             updates: Arc::new(crate::updates::Updates::offline()),
             expander: None,
             launches: Arc::default(),
@@ -483,6 +487,18 @@ impl EngineState {
     #[must_use]
     pub fn global_shortcuts(&self) -> Arc<crate::global_shortcuts::Control> {
         Arc::clone(&self.global_shortcuts)
+    }
+
+    /// The extension stores, and the trigger of the installer of the
+    /// extensions `compass.json` declares.
+    #[must_use]
+    pub fn extension_sync(
+        &self,
+    ) -> (
+        Arc<crate::stores::Stores>,
+        Arc<crate::extension_sync::Trigger>,
+    ) {
+        (Arc::clone(&self.stores), Arc::clone(&self.extension_sync))
     }
 
     /// The application and root item index.
@@ -3845,6 +3861,9 @@ pub async fn run(socket: &SocketPath, hotkey: bool) -> Result<()> {
     tokio::spawn(crate::catalog_watch::watch_extensions(Arc::clone(&state)));
     // `compass.json` edited by hand or by `compass theme set`.
     tokio::spawn(crate::config_watch::run(Arc::clone(&state)));
+    // The extensions `compass.json` declares, installed now and after each
+    // change to it; detached, so a slow store never holds up the socket.
+    tokio::spawn(crate::extension_sync::run(Arc::clone(&state)));
 
     // Snippet keyword expansion: the input server, when `input_server.enabled`.
     {

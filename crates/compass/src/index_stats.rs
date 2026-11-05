@@ -10,8 +10,10 @@ use serde_json::{Value, json};
 use crate::{EXIT_FAILURE, EXIT_OK};
 
 const NOTES: &str = "File sizes are logical bytes observed separately and may change during a \
-scan. SQLite counts share a read snapshot including committed WAL pages. FTS bytes exclude \
-indexed_file content and WAL overhead. Missing files and unavailable metrics are not zero.";
+scan. SQLite counts share a read snapshot including committed WAL pages. In-use bytes are every \
+page but the free ones and include the FTS bytes; reclaimable bytes are free pages SQLite reuses \
+before growing the file, which only VACUUM returns. FTS bytes exclude indexed_file content and \
+WAL overhead. Missing files and unavailable metrics are not zero.";
 
 /// Reads the cache without starting the indexer and prints the measurements.
 ///
@@ -59,6 +61,15 @@ fn metric_json(metric: &Measurement) -> Value {
     }
 }
 
+/// [`IndexStats::live_bytes`] or [`IndexStats::reclaimable_bytes`] as a
+/// measurement, unavailable when the pages were not all measured.
+fn derived(bytes: Option<u64>) -> Measurement {
+    bytes.map_or_else(
+        || Measurement::Unavailable("page measurements unavailable".into()),
+        Measurement::Value,
+    )
+}
+
 fn json_report(stats: &IndexStats) -> Value {
     json!({
         "schema": 1,
@@ -71,12 +82,16 @@ fn json_report(stats: &IndexStats) -> Value {
         "freelist_count": metric_json(&stats.freelist_count),
         "indexed_rows": metric_json(&stats.indexed_rows),
         "fts_bytes": metric_json(&stats.fts_bytes),
+        "live_bytes": metric_json(&derived(stats.live_bytes())),
+        "reclaimable_bytes": metric_json(&derived(stats.reclaimable_bytes())),
         "notes": NOTES,
     })
 }
 
 fn human_report(stats: &IndexStats) -> String {
     let mut out = format!("File index size: {}\n", status(stats));
+    let live = derived(stats.live_bytes());
+    let reclaimable = derived(stats.reclaimable_bytes());
     for (label, metric) in [
         ("Database bytes", &stats.database_bytes),
         ("WAL bytes", &stats.wal_bytes),
@@ -84,6 +99,8 @@ fn human_report(stats: &IndexStats) -> String {
         ("Page size (bytes)", &stats.page_size),
         ("Page count", &stats.page_count),
         ("Freelist pages", &stats.freelist_count),
+        ("In-use bytes", &live),
+        ("Reclaimable bytes", &reclaimable),
         ("Indexed rows", &stats.indexed_rows),
         ("FTS bytes (dbstat)", &stats.fts_bytes),
     ] {

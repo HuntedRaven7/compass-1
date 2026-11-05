@@ -611,6 +611,22 @@ pub enum ExtCommand {
         #[arg(long)]
         json: bool,
     },
+
+    /// Install the store extensions `extensions.installed` in compass.json
+    /// declares and that are not installed yet. Never uninstalls anything.
+    ///
+    /// The engine does this itself when it starts and whenever compass.json
+    /// changes; this runs it now and says what became of each entry.
+    Sync {
+        /// Say what would be installed, without installing or asking the
+        /// network.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit the outcome as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The spikes. See [`crate::spike`] for what each one is for.
@@ -980,6 +996,24 @@ mod tests {
 
         let cli = parse(&["compass", "ext", "list", "--json"]);
         assert_eq!(cli.command, Command::Ext(ExtCommand::List { json: true }));
+    }
+
+    #[test]
+    fn ext_sync_parses() {
+        assert_eq!(
+            parse(&["compass", "ext", "sync"]).command,
+            Command::Ext(ExtCommand::Sync {
+                dry_run: false,
+                json: false
+            })
+        );
+        assert_eq!(
+            parse(&["compass", "ext", "sync", "--dry-run", "--json"]).command,
+            Command::Ext(ExtCommand::Sync {
+                dry_run: true,
+                json: true
+            })
+        );
     }
 
     #[test]

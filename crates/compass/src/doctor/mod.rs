@@ -69,6 +69,12 @@ pub struct Inputs<'a, B: BusProbe, F: FsProbe> {
     pub wayland: Option<checks::WaylandFindings>,
     /// What reading `compass.json` found.
     pub config: &'a checks::ConfigFacts,
+    /// What installing the extensions `compass.json` declares would do, or
+    /// why the file could not be read.
+    pub declared_extensions: &'a Result<Vec<compass_core::declared_extensions::Step>, String>,
+    /// The file-search index's measurements; `None` without a cache
+    /// directory to find it in.
+    pub file_index: Option<&'a compass_db::index_stats::IndexStats>,
 }
 
 /// Runs every check, in report order.
@@ -84,6 +90,8 @@ pub async fn run<B: BusProbe, F: FsProbe>(inputs: &Inputs<'_, B, F>) -> Report {
         input_server,
         ref wayland,
         config,
+        declared_extensions,
+        file_index,
     } = *inputs;
 
     let checks = vec![
@@ -108,6 +116,8 @@ pub async fn run<B: BusProbe, F: FsProbe>(inputs: &Inputs<'_, B, F>) -> Report {
         checks::keyring(env, bus).await,
         checks::flatpak(fs),
         checks::input_server(fs, input_server),
+        checks::declared_extensions(declared_extensions),
+        checks::file_index(file_index),
         checks::application_dirs(env, fs),
         checks::screen_reader(bus).await,
     ];
@@ -144,6 +154,13 @@ pub async fn run_on_this_machine(socket: &SocketPath, engine: Engine) -> Report 
     let config = tokio::task::spawn_blocking(gather_config)
         .await
         .unwrap_or_default();
+    let declared_extensions = tokio::task::spawn_blocking(gather_declared_extensions)
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()));
+    let file_index = tokio::task::spawn_blocking(gather_file_index)
+        .await
+        .ok()
+        .flatten();
     let inputs = Inputs {
         env: &env,
         fs: &fs,
@@ -154,6 +171,8 @@ pub async fn run_on_this_machine(socket: &SocketPath, engine: Engine) -> Report 
         engine,
         input_server: &input_server,
         config: &config,
+        declared_extensions: &declared_extensions,
+        file_index: file_index.as_ref(),
         wayland: tokio::task::spawn_blocking(probe_wayland)
             .await
             .ok()
@@ -161,6 +180,38 @@ pub async fn run_on_this_machine(socket: &SocketPath, engine: Engine) -> Report 
     };
 
     run(&inputs).await
+}
+
+/// What reconciling `extensions.installed` would do now, worked out without
+/// the network.
+///
+/// # Errors
+///
+/// When `compass.json` cannot be read, with why.
+pub fn gather_declared_extensions() -> Result<Vec<compass_core::declared_extensions::Step>, String>
+{
+    let config = compass_core::Config::load().map_err(|error| error.to_string())?;
+    let installed: std::collections::HashSet<String> =
+        compass_core::manifest::registry::scan(&compass_core::manifest::registry::search_paths())
+            .extensions
+            .into_iter()
+            .map(|manifest| manifest.id)
+            .collect();
+    Ok(compass_core::declared_extensions::plan(
+        config.extensions().installed(),
+        |id| installed.contains(id),
+        compass_core::raycast_overrides::Manifest::shipped(),
+    ))
+}
+
+/// The file-search index's measurements, read-only; `None` without a cache
+/// directory.
+#[must_use]
+pub fn gather_file_index() -> Option<compass_db::index_stats::IndexStats> {
+    let cache = compass_core::xdg_dirs::cache_home()?;
+    Some(compass_db::index_stats::inspect(
+        &crate::indexer_service::database_path(&cache),
+    ))
 }
 
 /// Reads `compass.json` and checks it, as the engine does when it starts.
@@ -317,6 +368,26 @@ mod tests {
             ..checks::InputServerFacts::default()
         });
 
+    static NOTHING_DECLARED: Result<Vec<compass_core::declared_extensions::Step>, String> =
+        Ok(Vec::new());
+
+    /// An index not built yet, as `inspect` finds it.
+    static NO_INDEX: std::sync::LazyLock<compass_db::index_stats::IndexStats> =
+        std::sync::LazyLock::new(|| {
+            use compass_db::index_stats::Measurement;
+            let unavailable = Measurement::Unavailable("file index has not been created".into());
+            compass_db::index_stats::IndexStats {
+                database_bytes: Measurement::Missing,
+                wal_bytes: Measurement::Missing,
+                shm_bytes: Measurement::Missing,
+                page_size: unavailable.clone(),
+                page_count: unavailable.clone(),
+                freelist_count: unavailable.clone(),
+                indexed_rows: unavailable.clone(),
+                fts_bytes: unavailable,
+            }
+        });
+
     fn inputs<'a>(
         env: &'a Env,
         fs: &'a FakeFs,
@@ -334,6 +405,8 @@ mod tests {
             engine: Engine::Rust,
             input_server: &HEALTHY_INPUT_SERVER,
             config: &CLEAN_CONFIG,
+            declared_extensions: &NOTHING_DECLARED,
+            file_index: Some(&NO_INDEX),
             // The healthy machine is GNOME; the barren one has no display.
             wayland: env.get("WAYLAND_DISPLAY").map(|_| checks::WaylandFindings {
                 family: compass_wayland::compositor::Family::Gnome,
@@ -434,7 +507,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "duplicate check names");
-        assert_eq!(count, 18);
+        assert_eq!(count, 20);
         assert!(
             report
                 .checks
