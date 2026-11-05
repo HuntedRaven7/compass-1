@@ -516,6 +516,31 @@ jobs:
           scripts/vmtest/launcher.sh vmtest-out launcher 2>&1 \
             | tee vmtest-out/launcher-driver.log
 
+      # The `launcher-rss` figures as perf points (#307), kept for 90 days so a
+      # series exists when someone sets a window budget. Recorded, not gated:
+      # this tier does not run on pushes to `main`, and the window's figure here
+      # is llvmpipe's, so it must never become the hardware baseline -- the
+      # `renderer` key is what stops that. The engine figure is already held to
+      # its 20 MB ceiling inside `launcher-rss`.
+      - name: Record the idle RSS figures as perf points
+        run: |
+          python3 scripts/ci/perf-gate.py extract vmtest-out/launcher-driver.log \
+            --profile flatpak --renderer llvmpipe --out "$RUNNER_TEMP/vm-rss.jsonl"
+          # The VM runs on this runner's CPU; --runner names the tier as well
+          # as the label, because a guest is not the bare runner.
+          python3 scripts/ci/perf-gate.py stamp "$RUNNER_TEMP/vm-rss.jsonl" \
+            --runner ubuntu-24.04/vm-tier \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --out perf-points/vm-rss.jsonl
+
+      - name: Keep the idle RSS points
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-points-vm-${{ github.event.pull_request.head.sha || github.sha }}
+          path: perf-points/vm-rss.jsonl
+          if-no-files-found: error
+          retention-days: 90
+
       - name: What the boot reported
         if: always()
         run: scripts/vmtest/report.sh vmtest-out

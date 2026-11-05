@@ -1,0 +1,235 @@
+name: Performance
+
+# Suite 4 and the idle-RSS figures, and the gate that judges them (#306, #307).
+# docs/rust-engine/PERF-GATES.md has the analysis behind every constant here.
+#
+# A WORKFLOW OF ITS OWN, ON A SCHEDULE AS WELL AS ON PUSHES
+#
+# The gate's tolerance is taken from a series of runs measured in one
+# environment (runner label, image, CPU model, profile), and it does not judge
+# until that environment has 30 points. Pushes alone would take months to get
+# there: `main` saw 26 pushes in October 2026, spread over at least two CPU
+# models. The schedule measures `main` again every six hours, on whatever
+# machine the pool hands out. That is the runner-to-runner spread on unchanged
+# code, which is exactly what the tolerance is meant to come from. ADR-0022 §5:
+# "the tolerance is derived from repeated runs (#306), not bought with quieter
+# hardware". Keeping these jobs out of `rust.yaml` means the schedule does not
+# rerun the whole of CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+# The event is part of the group, so a scheduled run never cancels the run of a
+# push to `main`. Only pull requests cancel: every push to `main` is judged.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # SUITE 4. §8.8's matrix has had a "Suite 4 benches — every PR informational;
+  # blocking on `main`, < 10 min" row since it was written, and nothing ran it.
+  #
+  # The target itself was the same shape of gap one rung down: §8.7's pre-flight
+  # command invoked `cargo bench --bench slas` against a target that did not
+  # exist, so anyone following the documented sequence got "no bench target
+  # named `slas`". #113 built the target. This runs it.
+  #
+  # `cargo bench` prints a number and exits zero whatever the number says —
+  # which is how a 24x miss sat unnoticed in `compass-ipc`'s bench. The absolute
+  # SLAs are enforced by tests `rust.yaml` runs on every PR:
+  #
+  #     fuzzy rank  crates/compass-search/tests/ranking_budget.rs  (p50 and p99)
+  #     IPC         crates/compass-ipc's round-trip assertions
+  #
+  # What this job adds is a *number over time*, and the `perf-gate` job below
+  # turns that number into the `main`-blocking half of §8.8's row.
+  #
+  # WHAT IS ASSERTED HERE
+  #
+  # That the rows were measured. `criterion-report.py` exits non-zero when an
+  # expected row has no estimates, so a run where the bench silently measured
+  # nothing fails here instead of passing as an empty table. Its `--selftest`
+  # proves the refusal, and runs first so a broken reporter is not mistaken for
+  # a broken bench.
+  #
+  # The idle-RSS figure is measured in the same job, so all four figures of a
+  # run share one machine and one set of environment fields.
+  suite4-benches:
+    name: "Suite 4: the SLA benches and idle RSS (informational)"
+    runs-on: ubuntu-24.04
+    # §8.8 budgets this at 10 minutes. Measured before the RSS step joined it:
+    # ~50 s to compile and ~30 s to run the bench. The margin is for a cold
+    # cache and the debug build of the engine.
+    timeout-minutes: 20
+
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      # The commit that was measured. On a pull_request event `github.sha` is
+      # the merge commit GitHub synthesises, which exists in no history and
+      # changes whenever the base moves; the first run of this job uploaded
+      # head 9e8e8b4's estimates as `slas-criterion-3ad85c0c...`.
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # `iced_layershell` (the wlroots launcher surface) builds
+      # smithay-client-toolkit with xkbcommon, found through pkg-config, and the
+      # idle-RSS test builds the `compass` binary that links it.
+      - name: Install the xkbcommon headers
+        run: sudo apt-get update -q && sudo apt-get install -y -q libxkbcommon-dev
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+
+      - name: Cache cargo
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: suite4-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: suite4-${{ runner.os }}-
+
+      # Before the bench, so a reporter that cannot refuse an empty run is
+      # found as a broken reporter rather than as a passing benchmark.
+      - name: The reporter must be able to refuse
+        run: python3 scripts/ci/criterion-report.py --selftest
+
+      # `--save-baseline pr` is what §8.7's documented pre-flight sequence
+      # passes, so the target is exercised the way the docs tell a contributor
+      # to exercise it.
+      - name: Run the SLA benches
+        run: cargo bench --locked -p compass-testkit --bench slas -- --save-baseline pr
+
+      - name: The numbers, against the SLAs §8.5 names
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/perf"
+          python3 scripts/ci/criterion-report.py --points "$RUNNER_TEMP/perf/slas.jsonl" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Per-commit idle RSS (#13, #307), with `--nocapture` because the number
+      # IS the output: nextest suppresses stdout for passing tests, and a
+      # measurement nobody can read is the same defect as `launcher-rss`
+      # passing on `0 kB`. A debug build, as it always has been; the figure is
+      # keyed on that profile.
+      - name: Idle RSS, per commit
+        env:
+          COMPASS_PERF_POINTS: ${{ runner.temp }}/perf/engine-rss.jsonl
+        run: cargo test --locked -p compass --test idle_memory -- --nocapture
+
+      # Stamped here, on the machine that measured: the image and CPU model
+      # are part of the baseline key, and the gate job runs somewhere else.
+      # --runner must match this job's `runs-on`.
+      - name: Stamp the figures with where they were measured
+        run: |
+          python3 scripts/ci/perf-gate.py stamp \
+            "$RUNNER_TEMP/perf/slas.jsonl" "$RUNNER_TEMP/perf/engine-rss.jsonl" \
+            --runner ubuntu-24.04 --sha "$HEAD_SHA" --out perf-points/points.jsonl
+
+      - name: Keep the perf points
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-points-${{ env.HEAD_SHA }}
+          path: perf-points/points.jsonl
+          if-no-files-found: error
+          retention-days: 90
+
+      # The raw estimates as well, for anything the median alone cannot answer.
+      - name: Keep the estimates
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: slas-criterion-${{ env.HEAD_SHA }}
+          path: target/criterion/slas/*/new/estimates.json
+          # warn, not error: the report step above already fails when a row has
+          # no estimates, and `always()` would otherwise turn one failed bench
+          # into two red steps saying the same thing.
+          if-no-files-found: warn
+          retention-days: 90
+
+  # THE REGRESSION GATE. §8.8: "every PR informational; blocking on `main`".
+  #
+  # It judges this run's figures against the same metrics from up to 150
+  # earlier runs of this workflow on `main` (pushes and the schedule), fetched
+  # as `perf-points-*` artifacts. Artifacts rather than the actions cache: the
+  # cache is evicted after seven idle days, which would silently restart every
+  # series, while an artifact is kept for its stated 90 days and belongs to the
+  # run and commit that produced it.
+  #
+  # Only points from the same runner label, image, CPU model, core count,
+  # architecture, build profile and renderer are compared. Until an environment
+  # has 30 such points the gate reports and does not judge.
+  #
+  # A regression fails this job on a push to `main`. On a pull request, a
+  # scheduled run or a manual run it is a warning. A run that produced no figure
+  # for an expected metric fails on any event: a gate that measured nothing
+  # must not pass. To accept a deliberate regression, add an entry to
+  # scripts/ci/perf-resets.json in the same PR.
+  perf-gate:
+    name: "Performance gate (blocking on main, informational on PRs)"
+    needs: suite4-benches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # `actions: read` lets `gh run download` fetch artifacts from earlier runs.
+    # A job-level block replaces the workflow default, so `contents: read` is
+    # restated for the checkout.
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Before judging anything, so a comparator that cannot tell compatible,
+      # incompatible and regressed samples apart is found as a broken gate
+      # rather than as a passing one.
+      - name: The comparator must tell a regression from an incompatible baseline
+        run: python3 scripts/ci/perf-gate.py --selftest
+
+      - name: This run's points
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: perf-points-${{ github.event.pull_request.head.sha || github.sha }}
+          path: perf-current
+
+      - name: The series from earlier runs on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci/perf-gate.py fetch \
+            --repo "${{ github.repository }}" \
+            --exclude-run "${{ github.run_id }}" \
+            --dest perf-baseline
+
+      - name: Judge this run against the series
+        env:
+          BLOCKING: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          set -o pipefail
+          mode=()
+          if [ "$BLOCKING" = true ]; then mode=(--blocking); fi
+          python3 scripts/ci/perf-gate.py compare "${mode[@]}" \
+            --current perf-current \
+            --baseline perf-baseline \
+            --resets scripts/ci/perf-resets.json \
+            --expect slas.fuzzy_rank_top20_of_10k \
+            --expect slas.ipc_roundtrip_ping \
+            --expect engine.idle_rss_kb \
+            --expect engine.idle_hwm_kb \
+            | tee -a "$GITHUB_STEP_SUMMARY"

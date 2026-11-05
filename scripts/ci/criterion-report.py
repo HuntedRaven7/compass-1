@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read a criterion run's estimates and report them against the SLA table.
 
-Run: python3 scripts/ci/criterion-report.py [target/criterion/slas]
+Run: python3 scripts/ci/criterion-report.py [target/criterion/slas] [--points PATH]
      python3 scripts/ci/criterion-report.py --selftest
 
 WHY THIS EXISTS
@@ -18,15 +18,16 @@ against the SLA the table names, and says which rows the harness cannot reach.
 WHAT IT DOES NOT DO
 
 It does not gate. The thresholds below are the SLAs, and a *threshold* is not
-the same thing as a *regression gate*: the gate §8.5 wants ("fail on a >5%
-regression") needs a baseline series that does not exist yet, and one measured
-on the machine that will judge it -- the idle-RSS figure already differs ~8%
-between a laptop and a runner, which would trip a 5% gate by itself. Recorded
-before gated, per ADR-0010.
+the same thing as a *regression gate*. With `--points PATH` it writes each
+row's median as a point for `perf-gate.py`, which judges it against the series
+from earlier `main` runs; docs/rust-engine/PERF-GATES.md explains that gate.
+The median, not the mean criterion prints: the two differ by ~6% on the IPC
+row, and the series is only comparable if every point uses the same statistic.
 """
 
 import json
 import pathlib
+import platform
 import sys
 
 # The rows `benches/slas.rs` measures, and the SLA each one is named against in
@@ -77,7 +78,13 @@ def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
 
-    root = pathlib.Path(argv[1] if len(argv) > 1 else "target/criterion/slas")
+    args = argv[1:]
+    points_path = None
+    if "--points" in args:
+        at = args.index("--points")
+        points_path = pathlib.Path(args[at + 1])
+        del args[at : at + 2]
+    root = pathlib.Path(args[0] if args else "target/criterion/slas")
     found = medians(root)
 
     missing = [key for key in ROWS if key not in found]
@@ -91,7 +98,27 @@ def main(argv: list[str]) -> int:
         return 1
 
     print("\n".join(report(found)))
+    if points_path is not None:
+        with points_path.open("a") as handle:
+            for point in points(found):
+                handle.write(json.dumps(point) + "\n")
     return 0
+
+
+def points(found: dict[str, float]) -> list[dict]:
+    """Each expected row as a point for perf-gate.py to stamp and judge."""
+    return [
+        {
+            "metric": f"slas.{key}",
+            "statistic": "median",
+            "unit": "ns",
+            "value": found[key],
+            # `cargo bench` builds with the bench profile, which is not the
+            # debug profile the idle-RSS test runs under.
+            "env": {"profile": "bench", "arch": platform.machine(), "renderer": "none"},
+        }
+        for key in ROWS
+    ]
 
 
 def selftest() -> int:
@@ -113,6 +140,12 @@ def selftest() -> int:
     assert "❌" in "\n".join(report(over)), "a row over its SLA is marked"
     under = dict.fromkeys(ROWS, 1.0)
     assert "❌" not in "\n".join(report(under)), "a row under its SLA is not"
+
+    emitted = points(dict.fromkeys(ROWS, 2.0))
+    assert [point["metric"] for point in emitted] == [f"slas.{key}" for key in ROWS], (
+        "every row becomes a point, named after its bench"
+    )
+    assert all(point["statistic"] == "median" for point in emitted), "points carry the median"
 
     print("selftest: ok")
     return 0

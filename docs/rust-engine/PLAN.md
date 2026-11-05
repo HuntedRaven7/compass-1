@@ -1828,9 +1828,13 @@ packaging; the wlroots compositor matrix from Phase 5; perf and RSS trends.
 
 **Runner class (#309).** Every tier, the performance gates included, runs on GitHub-hosted runners;
 Depot is declined. Benchmark and RSS baselines (Suite 4, #306, #307, #310) are keyed on the runner
-label they were measured on — `ubuntu-24.04` x86_64 — and a change of label starts a new baseline
-series rather than comparing across machines. Hosted-runner variance is handled by deriving the
-tolerance from repeated runs, not by buying quieter hardware.
+label they were measured on — `ubuntu-24.04` x86_64 — and also on the image, the CPU model, the core
+count, the build profile and the renderer. The label alone is not enough: the hosted pool appears to
+serve at least two CPU models, whose fuzzy-row medians differ by ~45%. A change to any part of the
+key starts a new baseline series rather than comparing across machines. Hosted-runner variance is
+handled by deriving the tolerance from repeated runs, including a six-hourly scheduled run of
+`perf.yaml` on `main`, not by buying quieter hardware. [PERF-GATES.md](./PERF-GATES.md) has the
+analysis.
 
 ### 8.9 The VM tier: a real Bluefin VM, driven by corral
 

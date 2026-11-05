@@ -1170,6 +1170,17 @@ $((ready_ms - start_ms)) ms total (llvmpipe, reported not gated — see §8.5)"
     echo 'note: the launcher figure includes wgpu under software rendering, so it is'
     echo '      an upper bound rather than the shipping figure; the engine figure is not.'
 
+    # The same figures, machine-readable, for `perf-gate.py extract` (#307).
+    # Two names, because the window's figure is mostly the renderer and is
+    # only comparable with other llvmpipe readings, while the engine's is not.
+    # A zero is an unreadable /proc, not a reading, so it is not emitted.
+    if [ "${rss_kb:-0}" -gt 0 ]; then
+      printf 'perf-point window.idle_rss_kb %s kB\n' "$rss_kb"
+    fi
+    if [ "${erss_kb:-0}" -gt 0 ]; then
+      printf 'perf-point engine.idle_rss_kb %s kB\n' "$erss_kb"
+    fi
+
     # THE ENGINE FIGURE IS NOW GATED, AND THE CEILING COMES FROM MEASUREMENT.
     #
     # ADR-0010: recorded before gated. It has been recorded, and the numbers

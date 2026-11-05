@@ -140,17 +140,6 @@ jobs:
       # Scoped to the two budget tests rather than the workspace: a cold release
       # build of just these is about twelve seconds, against minutes for
       # everything including the renderer.
-      # Per-commit idle RSS (#13). Its own step, and NOT under `nextest`, for a
-      # reason worth stating: nextest suppresses stdout for passing tests, so
-      # the figure this test exists to report never reached the log. It ran,
-      # it passed, and it tracked nothing — a measurement nobody can read is
-      # the same defect as `launcher-rss` passing on `0 kB`.
-      #
-      # `cargo test -- --nocapture` is what the SLA step below already uses,
-      # and for the same reason: the number IS the output.
-      - name: Idle RSS, per commit
-        run: cargo test -p compass --test idle_memory -- --nocapture
-
       - name: SLA budgets, in release
         run: |
           cargo test --release -p compass-search --test ranking_budget -- --nocapture
@@ -415,41 +404,10 @@ jobs:
             exit 1
           }
 
-  # SUITE 4. §8.8's matrix has had a "Suite 4 benches — every PR informational;
-  # blocking on `main`, < 10 min" row since it was written, and nothing ran it.
-  #
-  # The target itself was the same shape of gap one rung down: §8.7's pre-flight
-  # command invoked `cargo bench --bench slas` against a target that did not
-  # exist, so anyone following the documented sequence got "no bench target
-  # named `slas`". #113 built the target. This runs it.
-  #
-  # INFORMATIONAL, AND SAYING SO RATHER THAN IMPLYING IT
-  #
-  # `cargo bench` prints a number and exits zero whatever the number says —
-  # which is how a 24x miss sat unnoticed in `compass-ipc`'s bench. So this job
-  # cannot be the enforcement on its own, and the enforcement it is not
-  # replacing already exists in tests CI runs on every PR:
-  #
-  #     fuzzy rank  crates/compass-search/tests/ranking_budget.rs  (p50 and p99)
-  #     IPC         crates/compass-ipc's round-trip assertions
-  #
-  # What this job adds is the thing a threshold cannot give: a *number over
-  # time*. A 4% regression that never crosses a line is invisible to a gate and
-  # obvious in a series.
-  #
-  # The `main`-blocking half of §8.8's row is deliberately NOT here yet. It
-  # needs a baseline series that does not exist, measured on the machine that
-  # will judge it: the idle-RSS figure already differs ~8% between a laptop and
-  # a runner, which would trip a 5% gate on its own. Recorded before gated,
-  # per ADR-0010 — the same reason the RSS gate in #13 is still unset.
-  #
-  # WHAT IS ASSERTED
-  #
-  # That the rows were measured. `criterion-report.py` exits non-zero when an
-  # expected row has no estimates, so a run where the bench silently measured
-  # nothing fails here instead of passing as an empty table. Its `--selftest`
-  # proves the refusal, and runs first so a broken reporter is not mistaken for
-  # a broken bench.
+  # Suite 4 (the SLA benches), the per-commit idle RSS and the regression gate
+  # that judges both live in perf.yaml, which also runs on a schedule so the
+  # gate's baseline fills without rerunning everything here.
+
   paint-tier:
     name: "Paint tier: the launcher rendered, on wgpu and on tiny-skia"
     runs-on: ubuntu-24.04
@@ -573,68 +531,3 @@ jobs:
             --selftest \
             --cpp target/release/compass \
             --rust target/release/compass | tee "$GITHUB_STEP_SUMMARY"
-
-  suite4-benches:
-    name: "Suite 4: the SLA benches (informational)"
-    runs-on: ubuntu-24.04
-    # §8.8 budgets this at 10 minutes. Measured: ~50 s to compile, ~30 s to
-    # run. The margin is for a cold cache, not for the bench growing into it.
-    timeout-minutes: 15
-
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
-
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
-
-      - name: Cache cargo
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: suite4-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: suite4-${{ runner.os }}-
-
-      # Before the bench, so a reporter that cannot refuse an empty run is
-      # found as a broken reporter rather than as a passing benchmark.
-      - name: The reporter must be able to refuse
-        run: python3 scripts/ci/criterion-report.py --selftest
-
-      # `--save-baseline pr` is what §8.7's documented pre-flight sequence
-      # passes, so the target is exercised the way the docs tell a contributor
-      # to exercise it.
-      - name: Run the SLA benches
-        run: cargo bench --locked -p compass-testkit --bench slas -- --save-baseline pr
-
-      - name: The numbers, against the SLAs §8.5 names
-        run: |
-          set -o pipefail
-          python3 scripts/ci/criterion-report.py | tee -a "$GITHUB_STEP_SUMMARY"
-
-      # The raw estimates, so a series can be built from past runs rather than
-      # started from scratch the day somebody wants to set the gate.
-      - name: Keep the estimates
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          # The PR HEAD, not `github.sha`.
-          #
-          # On a pull_request event `github.sha` is the merge commit GitHub
-          # synthesises, which exists in no history and changes whenever the
-          # base moves. The first run of this job proved it: head 9e8e8b4
-          # uploaded `slas-criterion-3ad85c0c...`. A baseline series keyed to
-          # those is unusable, and a series is the only reason this artifact
-          # exists.
-          name: slas-criterion-${{ github.event.pull_request.head.sha || github.sha }}
-          path: target/criterion/slas/*/new/estimates.json
-          # warn, not error: the report step above already fails when a row has
-          # no estimates, and `always()` would otherwise turn one failed bench
-          # into two red steps saying the same thing.
-          if-no-files-found: warn
-          retention-days: 90

@@ -45,6 +45,8 @@ Keep the number of comments to a strict minimum, good code shouldn't need many c
 
 A pull request that claims a speed-up or a memory saving should say how it was measured. For anything the README's comparison covers, rerun `just bench-compare` and update [BENCHMARKS.md](docs/rust-engine/BENCHMARKS.md) with the new numbers.
 
+The `Performance` workflow compares the SLA benches and the engine's idle memory with earlier runs on `main` from the same kind of machine. On a pull request a regression is a warning, and on `main` it fails the build. If a change makes something slower on purpose, add an entry to `scripts/ci/perf-resets.json` in the same pull request and give the reason. [PERF-GATES.md](docs/rust-engine/PERF-GATES.md) explains how the tolerance is chosen.
+
 ### AI generated code
 
 AI generated code is treated the same as regular code. As such, all the aforementioned rules apply.

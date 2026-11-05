@@ -1,0 +1,4 @@
+{
+  "about": "Deliberate performance changes that restart a metric's baseline. Each entry is {\"metric\": ..., \"after\": \"YYYY-MM-DDTHH:MM:SSZ\", \"reason\": ...}; points recorded before `after` stop counting, so the gate reports rather than judges until 30 new points exist. See docs/rust-engine/PERF-GATES.md.",
+  "resets": []
+}

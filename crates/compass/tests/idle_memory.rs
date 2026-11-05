@@ -22,36 +22,47 @@
 //! every commit, so a change that doubles the engine's resident set is visible
 //! in the PR that caused it rather than in a nightly run nobody reads.
 //!
-//! # Why it reports rather than gates, for now
+//! # Where the regression gate lives
 //!
-//! ADR-0010: a threshold is measured before it is invented. A >5% regression
-//! gate needs a stored baseline from `main`, which needs a series, which needs
-//! this to have been running for a while. So this prints the figure and
-//! asserts only a **sanity ceiling** — set well above the measured value, to
-//! catch a leak or a runaway allocation rather than to police megabytes.
+//! ADR-0010: a threshold is measured before it is invented, so this test does
+//! not hold one. With `COMPASS_PERF_POINTS` set it appends its figures, as JSON
+//! lines, to that file; CI stamps them with the runner's environment and
+//! `scripts/ci/perf-gate.py` judges them against the series from earlier `main`
+//! runs measured in the same environment and profile
+//! (`docs/rust-engine/PERF-GATES.md`). The test itself asserts only a **sanity
+//! ceiling** — set well above the measured value, to catch a leak or a runaway
+//! allocation rather than to police megabytes — so a developer running it
+//! locally gets the same protection without a baseline.
 //!
-//! Measured here, debug, four consecutive runs: **24 768 / 24 792 / 24 860 /
-//! 24 844 kB** — a spread of 0.4%. That stability is the useful part: it says a
-//! 5% regression gate would be signal rather than noise once there is a
-//! baseline to compare against, which is not true of every number in §8.5.
+//! The metrics are `engine.idle_rss_kb` and `engine.idle_hwm_kb`: the engine,
+//! named apart from the resident window process (`window.idle_rss_kb`), whose
+//! resident set is mostly the renderer and is only comparable within one
+//! renderer class.
+//!
+//! Measured on one machine, debug, four consecutive runs: **24 768 / 24 792 /
+//! 24 860 / 24 844 kB** — a spread of 0.4%. The same commit read **26 760 kB**
+//! on a runner, ~8% apart. Both facts shape the gate: the figure is stable
+//! enough within one environment to gate, and different enough between
+//! environments that a baseline from another machine is not a baseline.
 //!
 //! # The figure is only comparable within one build profile
 //!
-//! These are **debug** numbers, because `cargo nextest run --workspace` is what
-//! CI runs and that is a debug build. A release engine will differ, so
-//! comparing a release reading against this series would manufacture a
-//! regression that is really a profile change. Whatever eventually stores the
-//! baseline has to key it on the profile, and this is the note that says so
-//! before someone finds out the hard way.
+//! These are **debug** numbers, because `cargo test -p compass` is what CI
+//! runs and that is a debug build. A release engine will differ, so comparing a
+//! release reading against this series would manufacture a regression that is
+//! really a profile change. Each figure therefore carries its profile, and the
+//! gate refuses to compare across profiles.
 //!
 //! No release figure is recorded here yet: measuring one needs a release build
 //! of the workspace, and the machine this was written on ran out of disk
 //! allowance before finishing it. Left unmeasured rather than estimated.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
 use tempfile::TempDir;
 
 /// A session bus address with nothing behind it, for every engine this file
@@ -68,6 +79,24 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// realistic count rather than an empty index matters because an engine
 /// measured with nothing loaded would report a number no user ever sees.
 const ENTRIES: usize = 757;
+
+/// How many engines are started and measured, one after another.
+///
+/// The figure reported is their median. One reading is at the mercy of
+/// whatever else the runner was doing during the settle, and a gate that blocks
+/// `main` should not be.
+const SAMPLES: usize = 3;
+
+/// Where CI asks for the figures as JSON lines, for `scripts/ci/perf-gate.py`.
+const POINTS_ENV: &str = "COMPASS_PERF_POINTS";
+
+/// The build profile the figures belong to. The gate keys on it, because a
+/// debug engine's resident set is not a release engine's.
+const PROFILE: &str = if cfg!(debug_assertions) {
+    "debug"
+} else {
+    "release"
+};
 
 fn binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("test binary path");
@@ -169,13 +198,8 @@ fn start() -> (Engine, u32) {
     (engine, pid)
 }
 
-#[test]
-fn the_idle_engine_reports_its_resident_set() {
-    if status_kb(std::process::id(), "VmRSS").is_none() {
-        println!("skipping: /proc/self/status is unreadable, so this is not Linux");
-        return;
-    }
-
+/// One idle engine's resident set and peak, in kB.
+fn measure() -> (u64, u64) {
     let (engine, pid) = start();
 
     // Settle, so what is measured is a resting engine rather than one still
@@ -184,12 +208,61 @@ fn the_idle_engine_reports_its_resident_set() {
 
     let rss = status_kb(pid, "VmRSS").expect("the engine's VmRSS");
     let hwm = status_kb(pid, "VmHWM").expect("the engine's VmHWM");
+    drop(engine);
+    (rss, hwm)
+}
+
+fn median(samples: &[u64]) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
+/// Appends the figures to `$COMPASS_PERF_POINTS` as perf-gate points.
+///
+/// Only what this process knows goes in: the metric, the profile, the
+/// architecture. The runner, image and CPU are stamped by CI on the same
+/// machine, and the commit by the workflow that knows which head it built.
+fn write_points(path: &std::ffi::OsStr, rss: &[u64], hwm: &[u64]) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|error| panic!("open {}: {error}", path.to_string_lossy()));
+    for (metric, samples) in [("engine.idle_rss_kb", rss), ("engine.idle_hwm_kb", hwm)] {
+        let point = json!({
+            "metric": metric,
+            "statistic": "median",
+            "unit": "kB",
+            "value": median(samples),
+            "samples": samples,
+            "env": {
+                "profile": PROFILE,
+                "arch": std::env::consts::ARCH,
+                // The engine draws nothing, so no renderer can be in its figure.
+                "renderer": "none",
+            },
+        });
+        writeln!(file, "{point}").expect("append a perf point");
+    }
+}
+
+#[test]
+fn the_idle_engine_reports_its_resident_set() {
+    if status_kb(std::process::id(), "VmRSS").is_none() {
+        println!("skipping: /proc/self/status is unreadable, so this is not Linux");
+        return;
+    }
+
+    let (rss, hwm): (Vec<u64>, Vec<u64>) = (0..SAMPLES).map(|_| measure()).unzip();
+    let (median_rss, peak_hwm) = (median(&rss), hwm.iter().copied().max().unwrap_or(0));
 
     println!(
-        "engine idle, {ENTRIES} entries indexed, UNSANDBOXED: VmRSS {rss} kB ({} MB), \
-         peak VmHWM {hwm} kB ({} MB)",
-        rss / 1024,
-        hwm / 1024
+        "engine idle, {ENTRIES} entries indexed, UNSANDBOXED, {PROFILE} build, median of \
+         {SAMPLES} starts: VmRSS {median_rss} kB ({} MB), peak VmHWM {peak_hwm} kB ({} MB); \
+         samples VmRSS {rss:?}, VmHWM {hwm:?}",
+        median_rss / 1024,
+        peak_hwm / 1024
     );
     println!(
         "  NOT the §8.5 SLA. That row is < 30 MB measured inside the Flatpak; this is the \
@@ -200,22 +273,30 @@ fn the_idle_engine_reports_its_resident_set() {
     // unreadable or already-dead process reports a small number, and a small
     // number passes a ceiling. The VM tier's RSS gate had exactly this defect,
     // passing on `0 kB`.
-    assert!(
-        rss > 1024,
-        "the engine reported {rss} kB, which is not a running engine — the measurement is \
-         what is wrong, not the engine"
-    );
+    for &reading in &rss {
+        assert!(
+            reading > 1024,
+            "the engine reported {reading} kB, which is not a running engine — the \
+             measurement is what is wrong, not the engine"
+        );
+    }
 
     // The sanity ceiling. Deliberately loose: its job is to catch a leak or a
-    // runaway allocation, not to police megabytes. The real budget is the
-    // sandboxed one in §8.5 and it is gated in the VM tier at 20 MB.
+    // runaway allocation, not to police megabytes. Regressions inside it are
+    // perf-gate.py's to judge, and the sandboxed budget in §8.5 is gated in the
+    // VM tier at 20 MB.
     const CEILING_KB: u64 = 150 * 1024;
     assert!(
-        hwm < CEILING_KB,
-        "the idle engine peaked at {hwm} kB, over the {CEILING_KB} kB sanity ceiling. This is \
-         not the SLA — it is loose enough that crossing it means something is leaking or \
-         allocating without bound, which is worth a look before the number is tightened"
+        peak_hwm < CEILING_KB,
+        "the idle engine peaked at {peak_hwm} kB, over the {CEILING_KB} kB sanity ceiling. \
+         This is not the SLA — it is loose enough that crossing it means something is \
+         leaking or allocating without bound, which is worth a look before the number is \
+         tightened"
     );
 
-    drop(engine);
+    // Written after the assertions, so a run that measured nothing usable
+    // leaves no point for the gate to mistake for a baseline.
+    if let Some(path) = std::env::var_os(POINTS_ENV) {
+        write_points(&path, &rss, &hwm);
+    }
 }
