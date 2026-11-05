@@ -154,15 +154,14 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFile {
     }
 }
 
-/// Where the last `lines` lines of `file` start, as the C++ `findLastLines`:
-/// a trailing newline does not count as an empty last line, and asking for
-/// more lines than there are starts at the beginning.
+/// Where the last `lines` lines of the first `size` bytes of `file` start, as
+/// the C++ `findLastLines`: a trailing newline does not count as an empty last
+/// line, and asking for more lines than there are starts at the beginning.
 ///
 /// # Errors
 ///
 /// When the file cannot be read.
-pub fn last_lines_offset(file: &mut File, lines: usize) -> std::io::Result<u64> {
-    let size = file.metadata()?.len();
+pub fn last_lines_offset(file: &mut File, size: u64, lines: usize) -> std::io::Result<u64> {
     if size == 0 {
         return Ok(0);
     }
@@ -215,8 +214,15 @@ pub fn tail(path: &Path, lines: usize, out: &mut impl Write) -> std::io::Result<
     let Ok(mut file) = File::open(path) else {
         return Ok(None);
     };
-    let offset = last_lines_offset(&mut file, lines)?;
-    drain(&mut file, offset, out).map(Some)
+    // One size for both the search and the copy: the engine keeps appending,
+    // and copying to whatever the end is by then would print more lines than
+    // were asked for. `follow` picks up from `size`.
+    let size = file.metadata()?.len();
+    let offset = last_lines_offset(&mut file, size, lines)?;
+    file.seek(SeekFrom::Start(offset))?;
+    std::io::copy(&mut (&mut file).take(size - offset), out)?;
+    out.flush()?;
+    Ok(Some(size))
 }
 
 /// After [`tail`], prints what is appended to `path` as it is written,
@@ -274,6 +280,19 @@ mod tests {
         assert_eq!(tail_of("", 5), "");
         let long: String = (0..5000).map(|i| format!("line {i}\n")).collect();
         assert_eq!(tail_of(&long, 3), "line 4997\nline 4998\nline 4999\n");
+    }
+
+    #[test]
+    fn lines_appended_after_the_size_was_taken_are_not_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        std::fs::write(&path, "a\nb\nc\nnew\n").unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(
+            last_lines_offset(&mut file, 6, 1).unwrap(),
+            4,
+            "the line before the cut"
+        );
     }
 
     #[test]
