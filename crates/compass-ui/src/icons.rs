@@ -180,20 +180,21 @@ impl Glyph {
     }
 }
 
-/// The C++ Vicinae dark theme's accents (`ThemeFile::vicinaeDark`), which a
-/// command tile is drawn from before [`tile_tone`] evens them out.
+/// libadwaita's accent colours (`AdwAccentColor`, 1.6), which a command tile
+/// is drawn from before [`tile_tone`] evens them out. Cyan is Adwaita's teal;
+/// gray is the palette's neutral `dark_1` rather than the bluish slate accent.
 const TILE_ACCENTS: [(compass_core::commands::Tile, crate::design::Rgb); 8] = {
     use crate::design::Rgb;
     use compass_core::commands::Tile;
     [
-        (Tile::Red, Rgb::new(0xb9, 0x54, 0x3b)),
-        (Tile::Orange, Rgb::new(0xf0, 0x88, 0x3e)),
-        (Tile::Yellow, Rgb::new(0xc9, 0xa7, 0x6e)),
-        (Tile::Green, Rgb::new(0x3a, 0x9c, 0x61)),
-        (Tile::Cyan, Rgb::new(0x6a, 0x8a, 0x7c)),
-        (Tile::Blue, Rgb::new(0x2f, 0x6f, 0xed)),
-        (Tile::Purple, Rgb::new(0xbc, 0x8c, 0xff)),
-        (Tile::Gray, Rgb::new(128, 132, 138)),
+        (Tile::Red, Rgb::new(0xe6, 0x2d, 0x42)),
+        (Tile::Orange, Rgb::new(0xed, 0x5b, 0x00)),
+        (Tile::Yellow, Rgb::new(0xc8, 0x88, 0x00)),
+        (Tile::Green, Rgb::new(0x3a, 0x94, 0x4a)),
+        (Tile::Cyan, Rgb::new(0x21, 0x90, 0xa4)),
+        (Tile::Blue, Rgb::new(0x35, 0x84, 0xe4)),
+        (Tile::Purple, Rgb::new(0x91, 0x41, 0xac)),
+        (Tile::Gray, Rgb::new(0x77, 0x76, 0x7b)),
     ]
 };
 

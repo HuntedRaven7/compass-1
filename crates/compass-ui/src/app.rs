@@ -1152,6 +1152,10 @@ pub struct LauncherApp {
     icon_cache: crate::icons::IconCache,
     /// Where the builtin icon set is installed, read once at startup.
     builtin_icons: Option<std::path::PathBuf>,
+    /// The icon theme's symbolic SVG for each builtin that has one
+    /// ([`compass_core::builtin_icon::symbolic_name`]), resolved once at
+    /// startup so `view` never walks the theme.
+    symbolic_icons: std::collections::HashMap<&'static str, std::path::PathBuf>,
     /// File-type icons for file rows, by path, warmed as `icon_cache` is.
     file_glyphs: crate::icons::FileGlyphCache,
     /// Which navigation chords are in force. See [`compass_core::keybinding`].
@@ -1400,6 +1404,15 @@ impl LauncherApp {
         app.tint = flags.appearance_preset.tint;
         app.subtitles = flags.appearance_preset.subtitles;
         app.started_at = flags.started_at;
+        app.symbolic_icons = compass_core::builtin_icon::symbolic_names()
+            .iter()
+            .filter_map(|&(builtin, symbolic)| {
+                let path = flags.icon_lookup.find(symbolic)?;
+                path.extension()
+                    .is_some_and(|ext| ext == "svg")
+                    .then_some((builtin, path))
+            })
+            .collect();
         app.icon_lookup = flags.icon_lookup;
         app.link = flags.link;
         app.exit_on_engine_disconnect = flags.exit_on_engine_disconnect;
@@ -1519,6 +1532,7 @@ impl LauncherApp {
             icon_lookup: IconLookup::default(),
             icon_cache: crate::icons::IconCache::new(),
             builtin_icons: None,
+            symbolic_icons: std::collections::HashMap::new(),
             file_glyphs: crate::icons::FileGlyphCache::default(),
             geometry: design::GEOMETRY,
             field_rule: false,
@@ -5260,17 +5274,22 @@ impl LauncherApp {
             .unwrap_or_else(|| self.initial_badge(title, selected))
     }
 
-    /// The builtin icon `name` as an SVG of `size`, drawn in `color`.
+    /// The builtin icon `name` as an SVG of `size`, drawn in `color`: the
+    /// icon theme's symbolic stand-in when it has one
+    /// ([`compass_core::builtin_icon::symbolic_name`]), else the builtin file.
     fn builtin_svg(
         &self,
         name: &str,
         color: Color,
         size: f32,
     ) -> Option<Element<'static, Message>> {
-        let file = self
-            .builtin_icons
-            .as_ref()?
-            .join(compass_core::builtin_icon::file_name(name)?);
+        let file = match self.symbolic_icons.get(name) {
+            Some(themed) => themed.clone(),
+            None => self
+                .builtin_icons
+                .as_ref()?
+                .join(compass_core::builtin_icon::file_name(name)?),
+        };
         Some(
             svg(file)
                 .width(Length::Fixed(size))

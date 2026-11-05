@@ -2590,6 +2590,14 @@ the channel that matters.
 Behaviour that intentionally differs from the C++ engine. Each is pinned by a test that fails if
 the behaviour changes, so a future fix is loud rather than silent.
 
+### `compass-core::builtin_icon` — GNOME symbolic icons over Vicinae's artwork
+
+Builtin icons with a freedesktop counterpart (`cog` → `emblem-system-symbolic`, `copy-clipboard` →
+`edit-paste-symbolic`, and so on; the table is `builtin_icon::symbolic_name`) are drawn from the
+icon theme's symbolic SVG, recoloured like the builtin, so commands look like the rest of a GNOME
+desktop. Names without one, and every name when no theme ships the icon, keep the Vicinae SVG.
+Command tiles take libadwaita's accent colours instead of Vicinae's dark-theme accents.
+
 ### `compass-core::calculator` — fend instead of Numen, and a digit required
 
 The C++ calculator is Numen, an in-tree library; porting it was not the job, so root search uses

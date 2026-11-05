@@ -518,7 +518,7 @@ impl ExtensionPage {
             source = if self.prefers_dark { dark } else { light };
         }
         let (path, monochrome) = match source {
-            ImageSource::Builtin(name) => match compass_core::builtin_icon::path(name) {
+            ImageSource::Builtin(name) => match self.builtin_path(name) {
                 Some(path) => (path, true),
                 // Not a builtin: what `ImageURL(source)` makes of the string.
                 None => return self.source_icon(name, tint),
@@ -546,9 +546,7 @@ impl ExtensionPage {
                             tint,
                         });
                     }
-                    crate::icons::Glyph::Builtin { name, .. } => {
-                        (compass_core::builtin_icon::path(&name)?, true)
-                    }
+                    crate::icons::Glyph::Builtin { name, .. } => (self.builtin_path(&name)?, true),
                     crate::icons::Glyph::Text(glyph) => return Some(RowIcon::Text(glyph)),
                 }
             }
@@ -559,6 +557,16 @@ impl ExtensionPage {
             monochrome,
             tint,
         })
+    }
+
+    /// The file builtin `name` is drawn from: the icon theme's symbolic
+    /// stand-in ([`compass_core::builtin_icon::symbolic_name`]) when it has
+    /// an SVG one, else the installed builtin.
+    fn builtin_path(&self, name: &str) -> Option<std::path::PathBuf> {
+        compass_core::builtin_icon::symbolic_name(name)
+            .and_then(|symbolic| self.icon_lookup.as_ref()?.find(symbolic))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "svg"))
+            .or_else(|| compass_core::builtin_icon::path(name))
     }
 
     /// A bare icon string read as `ImageURL(source)` reads it: an emoji or
@@ -572,7 +580,7 @@ impl ExtensionPage {
         let url = ImageUrl::from_source(source, &lookup);
         let (path, monochrome) = match url.kind {
             ImageUrlType::Emoji | ImageUrlType::Symbol => return Some(RowIcon::Text(url.name)),
-            ImageUrlType::Builtin => (compass_core::builtin_icon::path(&url.name)?, true),
+            ImageUrlType::Builtin => (self.builtin_path(&url.name)?, true),
             ImageUrlType::Local => (std::path::PathBuf::from(&url.name), false),
             ImageUrlType::System => (self.icon_lookup.as_ref()?.find(&url.name)?, false),
             _ => return None,

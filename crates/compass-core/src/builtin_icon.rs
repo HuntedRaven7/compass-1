@@ -87,9 +87,154 @@ pub fn path(name: &str) -> Option<std::path::PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Every `(builtin, symbolic)` pair [`symbolic_name`] knows, sorted by builtin.
+#[must_use]
+pub fn symbolic_names() -> &'static [(&'static str, &'static str)] {
+    SYMBOLIC
+}
+
+/// The GNOME (Adwaita) symbolic icon that stands in for builtin `name`.
+///
+/// The builtin set is Vicinae's own artwork. On a GNOME desktop the launcher
+/// should look like the rest of it, so the host draws the theme's
+/// `<name>-symbolic` icon instead when the theme has one, and keeps the
+/// builtin SVG for every name without a counterpart here (brand logos, mostly).
+#[must_use]
+pub fn symbolic_name(name: &str) -> Option<&'static str> {
+    SYMBOLIC
+        .binary_search_by(|(builtin, _)| builtin.cmp(&name))
+        .ok()
+        .map(|index| SYMBOLIC[index].1)
+}
+
+/// Builtin name to freedesktop symbolic name, sorted by builtin name.
+const SYMBOLIC: &[(&str, &str)] = &[
+    ("add-person", "contact-new-symbolic"),
+    ("alarm", "alarm-symbolic"),
+    ("alarm-ringing", "alarm-symbolic"),
+    ("app-window", "focus-windows-symbolic"),
+    ("app-window-grid-2x2", "view-app-grid-symbolic"),
+    ("app-window-grid-3x3", "view-app-grid-symbolic"),
+    ("app-window-list", "view-list-symbolic"),
+    ("arrow-clockwise", "object-rotate-right-symbolic"),
+    ("arrow-counter-clockwise", "object-rotate-left-symbolic"),
+    ("arrow-down", "go-down-symbolic"),
+    ("arrow-left", "go-previous-symbolic"),
+    ("arrow-right", "go-next-symbolic"),
+    ("arrow-up", "go-up-symbolic"),
+    ("battery", "battery-good-symbolic"),
+    ("battery-charging", "battery-good-charging-symbolic"),
+    ("bell", "preferences-system-notifications-symbolic"),
+    ("blank-document", "x-office-document-symbolic"),
+    ("bluetooth", "bluetooth-active-symbolic"),
+    ("bolt", "insert-link-symbolic"),
+    ("bookmark", "user-bookmarks-symbolic"),
+    ("box", "package-x-generic-symbolic"),
+    ("brush", "preferences-desktop-appearance-symbolic"),
+    ("bug", "dialog-warning-symbolic"),
+    ("calculator", "accessories-calculator-symbolic"),
+    ("calendar", "x-office-calendar-symbolic"),
+    ("camera", "camera-photo-symbolic"),
+    ("carousel", "view-paged-symbolic"),
+    ("cart", "system-software-install-symbolic"),
+    ("check", "object-select-symbolic"),
+    ("checkmark", "object-select-symbolic"),
+    ("chevron-down", "pan-down-symbolic"),
+    ("chevron-left", "pan-start-symbolic"),
+    ("chevron-right", "pan-end-symbolic"),
+    ("chevron-up", "pan-up-symbolic"),
+    ("clock", "preferences-system-time-symbolic"),
+    ("code", "applications-engineering-symbolic"),
+    ("cog", "emblem-system-symbolic"),
+    ("coin", "drive-harddisk-symbolic"),
+    ("copy-clipboard", "edit-paste-symbolic"),
+    ("desktop", "computer-symbolic"),
+    ("download", "folder-download-symbolic"),
+    ("duplicate", "edit-copy-symbolic"),
+    ("ellipsis", "view-more-symbolic"),
+    ("emoji", "face-smile-symbolic"),
+    ("envelope", "mail-unread-symbolic"),
+    ("exclamationmark", "dialog-warning-symbolic"),
+    ("eye", "view-reveal-symbolic"),
+    ("eye-disabled", "view-conceal-symbolic"),
+    ("floating-window", "window-restore-symbolic"),
+    ("folder", "folder-symbolic"),
+    ("forward", "media-skip-forward-symbolic"),
+    ("fullscreen", "view-fullscreen-symbolic"),
+    ("globe-01", "web-browser-symbolic"),
+    ("hammer", "applications-engineering-symbolic"),
+    ("hard-drive", "drive-harddisk-symbolic"),
+    ("heart", "emblem-favorite-symbolic"),
+    ("house", "user-home-symbolic"),
+    ("image", "image-x-generic-symbolic"),
+    ("info-01", "dialog-information-symbolic"),
+    ("key", "dialog-password-symbolic"),
+    ("keyboard", "input-keyboard-symbolic"),
+    ("link", "insert-link-symbolic"),
+    ("lock", "system-lock-screen-symbolic"),
+    ("logout", "system-log-out-symbolic"),
+    ("magnifying-glass", "system-search-symbolic"),
+    ("maximize", "view-fullscreen-symbolic"),
+    ("microphone", "audio-input-microphone-symbolic"),
+    ("minus", "list-remove-symbolic"),
+    ("monitor", "video-display-symbolic"),
+    ("moon", "weather-clear-night-symbolic"),
+    ("music", "audio-x-generic-symbolic"),
+    ("network", "network-workgroup-symbolic"),
+    ("new-document", "document-new-symbolic"),
+    ("new-folder", "folder-new-symbolic"),
+    ("overview", "view-app-grid-symbolic"),
+    ("paragraph", "text-x-generic-symbolic"),
+    ("pause", "media-playback-pause-symbolic"),
+    ("pencil", "document-edit-symbolic"),
+    ("person", "avatar-default-symbolic"),
+    ("pin", "view-pin-symbolic"),
+    ("play", "media-playback-start-symbolic"),
+    ("plug", "application-x-addon-symbolic"),
+    ("plus", "list-add-symbolic"),
+    ("power", "system-shutdown-symbolic"),
+    ("print", "printer-symbolic"),
+    ("question-mark-circle", "dialog-question-symbolic"),
+    ("redo", "view-refresh-symbolic"),
+    ("repeat", "media-playlist-repeat-symbolic"),
+    ("rewind", "media-skip-backward-symbolic"),
+    ("rotate-clockwise", "system-reboot-symbolic"),
+    ("save-document", "document-save-symbolic"),
+    ("shuffle", "media-playlist-shuffle-symbolic"),
+    ("snippets", "text-editor-symbolic"),
+    ("speaker-down", "audio-volume-low-symbolic"),
+    ("speaker-high", "audio-volume-high-symbolic"),
+    ("speaker-low", "audio-volume-low-symbolic"),
+    ("speaker-off", "audio-volume-muted-symbolic"),
+    ("speaker-on", "audio-volume-high-symbolic"),
+    ("speaker-up", "audio-volume-high-symbolic"),
+    ("star", "starred-symbolic"),
+    ("stop", "media-playback-stop-symbolic"),
+    ("sun", "weather-clear-symbolic"),
+    ("switch-windows", "focus-windows-symbolic"),
+    ("terminal", "utilities-terminal-symbolic"),
+    ("text", "font-x-generic-symbolic"),
+    ("trash", "user-trash-symbolic"),
+    ("undo", "edit-undo-symbolic"),
+    ("upload", "send-to-symbolic"),
+    ("warning", "dialog-warning-symbolic"),
+    ("wifi", "network-wireless-symbolic"),
+    ("xmark", "window-close-symbolic"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_symbolic_stand_in_is_for_a_builtin_and_the_table_is_sorted() {
+        assert!(SYMBOLIC.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for (builtin, _) in SYMBOLIC {
+            assert!(is_builtin(builtin), "{builtin}");
+        }
+        assert_eq!(symbolic_name("cog"), Some("emblem-system-symbolic"));
+        assert_eq!(symbolic_name("github"), None);
+    }
 
     #[test]
     fn the_icons_are_found_under_the_first_data_dir_that_has_them() {
