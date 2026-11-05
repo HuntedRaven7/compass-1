@@ -18,10 +18,12 @@
 
 #![deny(missing_docs)]
 
+pub mod accessibility;
 pub mod launch;
 pub mod shortcut_inhibit;
 pub mod window_material;
 
+pub use accessibility::{AccessibilityTree, ActionSink, accesskit};
 pub use launch::{AppLauncher, LaunchError, LaunchFuture, LaunchMethod, NullLauncher};
 pub use shortcut_inhibit::ShortcutInhibitor;
 pub use window_material::{

@@ -60,6 +60,8 @@ wayland-client = "0.31"
 # The launcher's own `wl_surface` under winit, for background blur: the
 # workspace's one `unsafe` bridge, kept in a crate of its own (ADR-0019).
 compass-wayland-foreign.workspace = true
+# The launcher's accessibility tree on AT-SPI (ADR-0022 §1).
+compass-a11y-linux.workspace = true
 compass-crypto.workspace = true
 compass-sqlcipher-sys.workspace = true
 getrandom.workspace = true

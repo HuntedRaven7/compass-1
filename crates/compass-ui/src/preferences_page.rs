@@ -129,6 +129,12 @@ pub fn field_id(index: usize) -> iced::widget::Id {
 /// for when the keyboard moves to a checkbox or a dropdown.
 pub const NO_FIELD: &str = "form-no-field";
 
+/// What the form says in place of a field of a kind it cannot edit.
+#[must_use]
+pub fn unsupported_note(declared: &str) -> String {
+    format!("Compass cannot edit {declared} preferences yet")
+}
+
 /// What a key does to the focused field that is not a text field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKey {

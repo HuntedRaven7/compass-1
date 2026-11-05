@@ -23,7 +23,7 @@
 //! * [`desktop`] — which desktop this is, and our GNOME Shell extension.
 //! * [`sandbox`] — Flatpak detection and the application directories.
 //! * [`input`] — the input server behind snippet keyword expansion.
-//! * [`a11y`] — whether a screen reader is on, given the launcher has no tree.
+//! * [`a11y`] — whether a screen reader is on, and what of the launcher it can read.
 //! * [`wlroots`](mod@wlroots) — the wlroots protocols and compositor IPC this session has.
 //! * [`clipboard`] — clipboard history and the keyring its key is kept in.
 //! * [`config`](mod@config) — whether `compass.json` reads as its author meant.

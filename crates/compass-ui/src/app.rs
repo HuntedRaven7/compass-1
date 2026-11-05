@@ -26,6 +26,7 @@ use crate::message::{Direction, Message};
 use crate::resident::{EngineLink, UiCommand, UiOutcome};
 use crate::scroll::scrollable;
 
+mod a11y;
 mod apps;
 mod calculator;
 mod clipboard;
@@ -104,6 +105,27 @@ const ICON_PIXELS: u32 = GEOMETRY.icon_size as u32;
 /// field.
 fn focus_search() -> Task<Message> {
     iced::widget::operation::focus(SEARCH_INPUT)
+}
+
+/// The line under a question saying which keys answer it, as the card shows
+/// it and the accessibility tree reads it.
+fn answer_keys(confirm: &str) -> String {
+    format!("Enter: {confirm}    Esc: cancel")
+}
+
+/// [`answer_keys`] for an extension's alert, which names its own cancel and
+/// may offer a remembered answer.
+fn alert_keys(alert: &crate::backend::ExtensionPrompt) -> String {
+    match &alert.remember_text {
+        Some(remember) => format!(
+            "Enter: {}    Ctrl+Enter: {remember}    Esc: {}",
+            alert.confirm_text, alert.cancel_text
+        ),
+        None => format!(
+            "Enter: {}    Esc: {}",
+            alert.confirm_text, alert.cancel_text
+        ),
+    }
 }
 
 /// Set when the app asks its event loop to end.
@@ -1230,6 +1252,8 @@ pub struct LauncherApp {
     backdrop: Option<window::Id>,
     /// The backdrop's size, which is the room the launcher is centred in.
     backdrop_size: Option<iced::Size>,
+    /// The accessibility tree's view of this window ([`crate::accessibility`]).
+    a11y: crate::accessibility::TreeSync,
 }
 
 /// What a dismissal does. See [`LauncherApp::on_dismiss`].
@@ -1563,6 +1587,7 @@ impl LauncherApp {
             focus_seen: false,
             backdrop: None,
             backdrop_size: None,
+            a11y: crate::accessibility::TreeSync::default(),
         }
     }
 
@@ -2100,6 +2125,9 @@ impl LauncherApp {
             );
         }
         streams.extend(self.hud_subscription());
+        if crate::accessibility::installed() {
+            streams.push(crate::accessibility::subscription());
+        }
         iced::Subscription::batch(streams)
     }
 
@@ -2398,6 +2426,7 @@ impl LauncherApp {
             Some(report) => Task::batch([task, report]),
             None => task,
         };
+        self.follow_accessibility();
         tracing::debug!(target: "compass_ui::state", "{}", self.state_line());
         if self.remote_pending.is_empty() {
             return task;
@@ -3440,6 +3469,7 @@ impl LauncherApp {
             }
             Message::AppRuntimeLoaded { .. } | Message::AppQuit(_) => self.runtime_message(message),
             Message::WindowFocusChanged(focused) => self.window_focus_changed(focused),
+            Message::Accessibility(request) => self.accessibility_request(request),
             Message::ShortcutCaptureSet(result) => {
                 if let Err(error) = result {
                     tracing::warn!(%error, "the engine did not suspend the global shortcuts");
@@ -4396,7 +4426,7 @@ impl LauncherApp {
                     })
                     .size(16),
                 text(confirm.message.as_str()).font(self.font()),
-                text(format!("Enter: {}    Esc: cancel", confirm.confirm_text))
+                text(answer_keys(&confirm.confirm_text))
                     .font(self.font())
                     .size(12),
             ]
@@ -4412,9 +4442,7 @@ impl LauncherApp {
                     })
                     .size(16),
                 text(compass_core::power_commands::CONFIRM_BODY).font(self.font()),
-                text(format!("Enter: {}    Esc: cancel", power.name))
-                    .font(self.font())
-                    .size(12),
+                text(answer_keys(power.name)).font(self.font()).size(12),
             ]
             .spacing(8)
             .padding(Padding::new(18.0))
@@ -6221,7 +6249,7 @@ impl LauncherApp {
                     None => iced::widget::text("").into(),
                 },
                 (PreferenceInputKind::Unsupported { declared }, _) => {
-                    iced::widget::text(format!("Compass cannot edit {declared} preferences yet"))
+                    iced::widget::text(crate::preferences_page::unsupported_note(declared))
                         .font(self.font())
                         .size(12)
                         .into()
@@ -6458,16 +6486,7 @@ impl LauncherApp {
             if !alert.message.is_empty() {
                 prompt = prompt.push(iced::widget::text(alert.message.clone()).font(self.font()));
             }
-            let keys = match &alert.remember_text {
-                Some(remember) => format!(
-                    "Enter: {}    Ctrl+Enter: {remember}    Esc: {}",
-                    alert.confirm_text, alert.cancel_text
-                ),
-                None => format!(
-                    "Enter: {}    Esc: {}",
-                    alert.confirm_text, alert.cancel_text
-                ),
-            };
+            let keys = alert_keys(alert);
             prompt = prompt.push(iced::widget::text(keys).font(self.font()).size(12));
             return prompt.into();
         }
@@ -6521,19 +6540,7 @@ impl LauncherApp {
             }
             let item = &sections[s].items[i];
             let selected = position == page.selected;
-            let accessories: Vec<&str> = item
-                .accessories
-                .iter()
-                .filter_map(|a| a.text.as_deref().or(a.tag.as_deref()))
-                .collect();
-            let subtitle = match (&item.subtitle, accessories.is_empty()) {
-                (Some(subtitle), true) => Some(subtitle.clone()),
-                (Some(subtitle), false) => {
-                    Some(format!("{subtitle}  ·  {}", accessories.join("  ")))
-                }
-                (None, false) => Some(accessories.join("  ")),
-                (None, true) => None,
-            };
+            let subtitle = crate::extension_page::row_subtitle(item);
             let icon = match page.icon(s, i) {
                 Some(icon) => self.masked_icon(icon, page.mask(s, i), selected),
                 None => self.initial_badge(&item.title, selected),

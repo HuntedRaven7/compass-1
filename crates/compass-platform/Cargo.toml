@@ -17,6 +17,9 @@ compass-xdg.workspace = true
 # A window's native handles, for `WindowMaterial` (the 0.6 iced and winit lend;
 # every platform has them, so the seam holds).
 raw-window-handle = "0.6"
+# The accessibility tree the launcher describes itself as (ADR-0022 §1);
+# platform-neutral, every platform's adapter takes it.
+accesskit.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

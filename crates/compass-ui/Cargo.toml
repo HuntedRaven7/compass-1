@@ -47,6 +47,13 @@ tempfile.workspace = true
 mime_guess.workspace = true
 # The local time for a file preview's modified date (already in the tree through `compass`).
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+# The window's accessibility tree, described from its state
+# (`crate::semantics`, ADR-0022 §1); platform-neutral, the binary supplies
+# the adapter.
+accesskit.workspace = true
+# A text field's characters as a screen reader moves through them: grapheme
+# clusters, not bytes (already in the tree through iced's text stack).
+unicode-segmentation = "1"
 
 # The layer-shell presentation for wlroots compositors (PLAN.md Phase 5 Track
 # B). Linux-only by target so the platform seam holds: macOS and Windows never

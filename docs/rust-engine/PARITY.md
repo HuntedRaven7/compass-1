@@ -1602,6 +1602,42 @@ IPC v22: `ExtensionAlert::remember_text` and `Request::ExtensionAlertRemember`
 and Search against a Linuxbrew `brew`; Suite 1's ledger is unchanged, since its
 corpus leaves macOS-only listings out.
 
+### The accessibility tree (2026-11-05)
+
+Against what the C++'s QML exposed through Qt's `Accessible` properties (ADR-0018 counts 15 files:
+the query field, the results and the action panel), and the form controls #304 asks for. The
+route is ADR-0022 §1 — AccessKit's Unix adapter over a model of our own, since Iced 0.14 has no
+tree — and ADR-0016's "Where it stands" is the full account. #302 and #303 are done, #304 for the
+controls listed below, and #305 (Orca in a real session) is what is left.
+
+| Area | Rust | Tests that would fail on a regression |
+|---|---|---|
+| The window on AT-SPI, open and closed with the launcher | `compass_a11y_linux::AtspiTree`, `compass_platform::AccessibilityTree`, `compass_ui::accessibility` | `the_launcher_is_read_off_a_private_accessibility_bus` (private session and accessibility bus, `at-spi2-registryd`) |
+| Query, results, selection, count, empty/loading/error status | `compass_ui::semantics`, `LauncherApp::semantics` | `the_query_is_an_editable_search_field_with_its_text`, `results_are_a_list_of_named_described_options_with_their_count`, `a_status_is_a_polite_live_region_and_absent_without_one`, `a_query_describes_its_results_their_count_and_the_selection`, `no_results_is_said_once_and_an_error_replaces_it`, `focus_is_on_the_field_while_typing_and_follows_the_selection_once_moved` |
+| Action panel: menu, items, current item, shortcuts, press | same | `the_action_panel_is_a_menu_with_its_current_item`, `the_action_panel_is_described_as_a_menu_with_its_current_action`, `requests_do_what_the_keyboard_would` |
+| Forms: text, password, text area, checkbox, dropdown, tags, files, notes; required, invalid; focus order | same | `form_controls_have_their_roles_values_and_states`, `a_preference_form_has_its_controls_in_order_and_follows_the_keyboard`, `an_extension_form_names_each_control_and_its_value` |
+| Confirmations and extension alerts | same | `a_question_is_an_alert_with_the_keys_that_answer_it` |
+
+Declared differences:
+
+- **The keyboard focus is reported, not moved.** The launcher's keyboard stays in its search field
+  while the arrows move the selection, which no toolkit focus model expresses. The tree reports the
+  focus on the field while the person types and on the selected result once they move through the
+  results; the open panel, a dialog and a form's current field take it while they are there.
+  Typing hands it back to the field, so the typed text is echoed rather than the top result read
+  out at every keystroke; the result count is announced instead, politely, once it changes.
+- **Most builtin views are not described yet.** Clipboard history, the emoji picker, the window
+  switcher, the settings and the other builtin lists expose their search field only; extension
+  Detail views expose nothing under the field.
+- **No child bounds.** Nodes carry no screen rectangle, so flat review cannot place them. Under
+  Wayland a window does not know its position in any case.
+- **Not every control takes every request.** Checkboxes toggle, and single-line text fields and the
+  search field take their text. A dropdown is a combo box with its value and a file picker a button
+  with the chosen paths; opening either from assistive technology is not wired. A focus request
+  moves the keyboard in preference and argument forms, but not in an extension's form, whose
+  focus Iced keeps to itself.
+- **A password field is exposed as bullets**, one per character, never as its text.
+
 ### Earlier row notes
 
 **`src/lib/xdgpp` → `compass-xdg`** — ported whole, so the row is green. The desktop-entry, locale,

@@ -867,6 +867,23 @@ impl ExtensionPage {
     }
 }
 
+/// A list row's second line: its subtitle, then its accessories' text, as
+/// the row draws it and the accessibility tree describes it.
+#[must_use]
+pub fn row_subtitle(item: &ListItem) -> Option<String> {
+    let accessories: Vec<&str> = item
+        .accessories
+        .iter()
+        .filter_map(|a| a.text.as_deref().or(a.tag.as_deref()))
+        .collect();
+    match (&item.subtitle, accessories.is_empty()) {
+        (Some(subtitle), true) => Some(subtitle.clone()),
+        (Some(subtitle), false) => Some(format!("{subtitle}  ·  {}", accessories.join("  "))),
+        (None, false) => Some(accessories.join("  ")),
+        (None, true) => None,
+    }
+}
+
 /// A `Color` as drawn: `#rrggbb[aa]`, or one of Raycast's named colours.
 #[must_use]
 pub fn color_of(color: &compass_extension_api::view::Color) -> Option<iced::Color> {

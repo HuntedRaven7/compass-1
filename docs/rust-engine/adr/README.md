@@ -23,7 +23,7 @@ drifting away from a recorded decision is not.
 | [0013](./0013-qt-leaves-the-repository.md) | Qt leaves the repository; Linux-first is a sequence, not a scope limit | Accepted |
 | [0014](./0014-clipboard-storage-is-sqlcipher-plus-a-vendored-tokenizer.md) | The clipboard store is SQLCipher plus a vendored FTS5 tokenizer; the Rust engine links both | Superseded by ADR-0017 |
 | [0015](./0015-the-launcher-window-is-resident.md) | The launcher window is resident and `serve` summons it; amends ADR-0011 | Accepted |
-| [0016](./0016-a11y-gap.md) | Screen-reader gap — Orca cannot see the Rust launcher | Amended by ADR-0018 and ADR-0022 |
+| [0016](./0016-a11y-gap.md) | Screen-reader gap — Orca cannot see the Rust launcher | Amended by ADR-0018 and ADR-0022; the tree is on AT-SPI, the Orca gate (#305) is open |
 | [0017](./0017-a-new-launcher-not-a-reimplementation.md) | Compass is a new launcher, not a reimplementation; quality asserted absolutely, crates first, user data imported | Accepted |
 | [0018](./0018-the-open-calls-decided.md) | Screen-reader users keep the accessible engine until the Rust one has a tree; Phase 1's gate reworded; one-person plan; rustcast was a seed; the parity gate keeps blocking; nothing reported upstream | Accepted; accessibility route chosen by ADR-0022 |
 | [0019](./0019-an-unsafe-bridge-for-the-launchers-surface.md) | One `unsafe` bridge from a toolkit window's raw handles to wayland-client proxies, in `compass-wayland-foreign`, for blur behind the launcher | Accepted |

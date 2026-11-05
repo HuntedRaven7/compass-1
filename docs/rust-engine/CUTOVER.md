@@ -17,10 +17,12 @@
 
 ## What does not ship
 
-* **Accessibility tree** — the Rust launcher has no `accesskit`/`atspi` path
-  (`Cargo.lock` contains zero occurrences). Orca sees nothing. This is an
-  accepted gap for cutover, documented in **ADR-0016**, and will be stated in
-  the release notes rather than discovered by users.
+* **A screen-reader-verified launcher** — the launcher describes its search
+  field, results, action panel and forms on AT-SPI (`compass-a11y-linux`,
+  ADR-0022 §1), but no Orca session has read it yet (#305), and most builtin
+  views describe only their search field. The remaining gap is recorded in
+  **ADR-0016** and will be stated in the release notes rather than discovered
+  by users.
 
 * **C++ deletion** — `PARITY.md`'s Rust and test columns are fully green
   (`python3 scripts/ci/parity-score.py`), but no C++ directory is deleted before
@@ -29,8 +31,8 @@
 ## Gate
 
 One full release cycle with no P0 regressions. “P0” does not include a11y until
-the tree exists — the gap is not a post-cutover regression to file, it is a
-known absence to state before.
+#305's Orca gate passes — what is left of the gap is not a post-cutover
+regression to file, it is a known absence to state before.
 
 ## How to use the escape hatch
 

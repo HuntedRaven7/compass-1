@@ -213,3 +213,14 @@ excluded from the workspace, so they keep upstream's lints and `unsafe`, and
 | Ending a line of text that does not fit with an ellipsis | Iced 0.14 `text` (wraps or clips, no ellipsis); `cosmic-text` (has none either) | **Hand-written** (`compass_ui::elided`, ~120 lines with tests): a widget that shapes the line with the renderer's own `Paragraph` at layout, when its width is known, and bisects for the longest prefix that fits with `…`. Over `iced_core`'s widget traits directly, since `iced`'s `advanced` re-export would rebuild Iced with another feature set. |
 | Supervising the launcher under `compass start` | `std::process` (already) | **Used**: `start` holds the lease and the engine and runs the window as `compass launcher-child`, starting it again when it fails (`compass::supervise`). The child notices `start` going away by its parent pid changing, which needs no signal handling (and so no `tokio` `signal` feature, which would rebuild the workspace) and no `prctl`, which is `unsafe`. |
 
+
+## The accessibility tree (2026-11-05)
+
+ADR-0022 §1 chose the route; these are the crates under it. All are MIT OR Apache-2.0.
+
+| Need | Crate | Decision |
+|---|---|---|
+| A platform-neutral accessibility tree the launcher can describe itself as | `accesskit` 0.25 | **Used** (`compass_ui::semantics`, `compass_platform::AccessibilityTree`). Iced 0.14 builds none (iced-rs/iced#552), so the tree is described from the launcher's state; AccessKit's macOS and Windows adapters take the same tree. |
+| Serving it on AT-SPI | `accesskit_unix` 0.24, with `accesskit_atspi_common` and `atspi` 0.29 under it; hand-written AT-SPI over zbus | **`accesskit_unix` used** (`compass-a11y-linux`), with its `tokio` feature rather than the default `async-io`: the workspace's zbus 5.19 has `tokio`, which then drives zbus's executor in every crate sharing it, and the adapter's `async-io` thread would have no tokio runtime for it. It shares the workspace's zbus and zvariant; new in the tree are `accesskit_consumer`, `atspi`'s three crates, `zbus_xml`, `zbus-lockstep`, `phf` 0.14 and `tokio-stream`. The protocol is not hand-written (AGENTS.md). |
+| A text field's characters, as a screen reader moves through them | `unicode-segmentation` 1 (already in the tree under Iced's text stack) | **Used**: AccessKit wants each character's length, and a character is a grapheme cluster, not a byte or a `char`. |
+| Reading the tree back in a test, as Orca would | `atspi` 0.29's client proxies (dev only, already under `accesskit_unix`); `pyatspi` | **`atspi` used** (`compass-a11y-linux/tests/private_bus.rs`) under `dbus-run-session`, with the system's `at-spi-bus-launcher` and `at-spi2-registryd`. `pyatspi` would make a Rust test depend on Python bindings. |

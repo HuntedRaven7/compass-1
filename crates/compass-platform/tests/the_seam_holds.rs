@@ -58,6 +58,12 @@ const MAY_BE_LINUX_BOUND: &[&str] = &[
     // reading and injecting keys; the C++ has a separate snippet server for
     // macOS and Windows, and so will the ports of those.
     "compass-input-server",
+    // The launcher's accessibility tree on AT-SPI, through `accesskit_unix`
+    // (ADR-0022 §1). AT-SPI is the Linux accessibility bus the way MPRIS is
+    // the Linux media protocol; the tree itself is described in `compass-ui`
+    // with the platform-neutral `accesskit`, and AccessKit's macOS and
+    // Windows adapters would be their own crates beside this one.
+    "compass-a11y-linux",
 ];
 
 /// Crates whose presence in a manifest makes that crate Linux-bound.
@@ -68,6 +74,7 @@ const LINUX_ONLY_CRATES: &[&str] = &[
     "compass-wayland-protocols",
     "compass-wayland-foreign",
     "compass-platform-linux",
+    "compass-a11y-linux",
     // The direct ones, in case a shared crate reaches past our wrappers.
     "zbus",
     "ashpd",
@@ -76,6 +83,8 @@ const LINUX_ONLY_CRATES: &[&str] = &[
     "wayland-sys",
     "wayland-protocols",
     "smithay",
+    "accesskit_unix",
+    "atspi",
 ];
 
 fn workspace_root() -> PathBuf {

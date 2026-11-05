@@ -452,6 +452,12 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             ..compass_ui::AppFlags::default()
         };
 
+        // The window's accessibility tree on AT-SPI (ADR-0022 §1), for
+        // either surface. It watches the session bus from the first window
+        // on, and exports nothing until assistive technology turns
+        // accessibility on.
+        compass_ui::accessibility::install(Box::new(compass_a11y_linux::AtspiTree::new()));
+
         // The surface: a layer surface on the wlroots family, an
         // `xdg_toplevel` everywhere else, and always on GNOME.
         match launcher_surface() {

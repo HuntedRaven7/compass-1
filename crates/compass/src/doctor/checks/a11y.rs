@@ -1,11 +1,13 @@
-//! Whether a screen reader is running, and what that costs here.
+//! Whether a screen reader is running, and what it can read here.
 //!
 //! Part of [`super`]; see that module for the purity rule every function here
 //! keeps to.
 //!
-//! The Rust launcher has no accessibility tree (ADR-0016, #118), so a screen
-//! reader sees nothing of it. That is a known absence rather than a fault, so
-//! it is a warning, and only when it matters: when a screen reader is on.
+//! The launcher describes itself on AT-SPI (ADR-0022 §1): the search field,
+//! the results and the selection, the action panel and forms. Its other views
+//! describe only their search field, and Orca has not yet been checked
+//! against it in a real session (#305). So a running screen reader is still a
+//! warning, and only then does it matter.
 
 use compass_ipc::{DoctorCheck, DoctorStatus};
 
@@ -19,7 +21,8 @@ pub const A11Y_OBJECT_PATH: &str = "/org/a11y/bus";
 /// Interface holding the screen-reader switch GNOME's settings flip.
 pub const A11Y_STATUS_INTERFACE: &str = "org.a11y.Status";
 
-/// Whether a screen reader is enabled, and so whether the missing tree matters.
+/// Whether a screen reader is enabled, and so whether what the tree leaves
+/// out matters.
 pub async fn screen_reader<B: BusProbe>(bus: &B) -> DoctorCheck {
     const NAME: &str = "a11y.screen-reader";
     let enabled = bus
@@ -34,29 +37,20 @@ pub async fn screen_reader<B: BusProbe>(bus: &B) -> DoctorCheck {
         Ok(Some(value)) if value == "true" => check(
             NAME,
             DoctorStatus::Warn,
-            "a screen reader is enabled, and this launcher exposes no accessibility tree: it \
-             cannot read the query, the results or which one is selected",
+            "a screen reader is enabled. Compass describes its search, results, action panel \
+             and forms to it, but its other views show only their search field, and it has not \
+             been checked with Orca yet",
         ),
-        Ok(Some(_)) => check(
-            NAME,
-            DoctorStatus::Ok,
-            "no screen reader enabled. Compass cannot be read by a screen reader yet",
-        ),
+        Ok(Some(_)) => check(NAME, DoctorStatus::Ok, "no screen reader enabled"),
         Ok(None) => check(
             NAME,
             DoctorStatus::Ok,
-            format!(
-                "{A11Y_BUS_NAME} does not report a screen-reader switch, so none is running. \
-                 Compass cannot be read by a screen reader yet"
-            ),
+            format!("{A11Y_BUS_NAME} does not report a screen-reader switch, so none is running"),
         ),
         Err(err) => check(
             NAME,
             DoctorStatus::Warn,
-            format!(
-                "could not ask {A11Y_BUS_NAME} whether a screen reader is enabled: {err}. If \
-                 one is, it cannot read Compass yet"
-            ),
+            format!("could not ask {A11Y_BUS_NAME} whether a screen reader is enabled: {err}"),
         ),
     }
 }
@@ -77,12 +71,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_enabled_screen_reader_is_warned_about_by_name() {
+    async fn an_enabled_screen_reader_is_told_what_it_can_and_cannot_read() {
         let result = screen_reader(&reader("true")).await;
         assert_eq!(result.status, DoctorStatus::Warn);
         let detail = result.detail.expect("detail");
-        assert!(!detail.contains("#118"), "{detail}");
-        assert!(detail.contains("cannot read"), "{detail}");
+        assert!(!detail.contains("#305"), "{detail}");
+        assert!(detail.contains("describes its search"), "{detail}");
+        assert!(detail.contains("other views"), "{detail}");
     }
 
     #[tokio::test]

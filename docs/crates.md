@@ -65,6 +65,7 @@ has the full rules.
 | `compass-power` | Power actions over systemd-logind. Linux-bound. |
 | `compass-media` | Media players over MPRIS. Linux-bound. |
 | `compass-input-server` | The small privileged helper behind snippet keyword expansion. Linux-bound. |
+| `compass-a11y-linux` | The launcher window's accessibility tree on AT-SPI, through AccessKit's Unix adapter (ADR-0022). Linux-bound. |
 
 ## Tests
 

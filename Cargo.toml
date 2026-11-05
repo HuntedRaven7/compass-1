@@ -39,6 +39,7 @@ compass-wayland = { path = "crates/compass-wayland" }
 compass-wayland-protocols = { path = "crates/compass-wayland-protocols" }
 compass-platform = { path = "crates/compass-platform" }
 compass-platform-linux = { path = "crates/compass-platform-linux" }
+compass-a11y-linux = { path = "crates/compass-a11y-linux" }
 compass-ui = { path = "crates/compass-ui" }
 compass-crypto = { path = "crates/compass-crypto" }
 compass-clipboard = { path = "crates/compass-clipboard" }
@@ -58,6 +59,14 @@ jsonc-parser = { version = "0.33", features = ["serde", "serde_json", "cst"] }
 # Which key of `compass.json` holds a wrongly typed value, so the rest of the
 # file still loads. See crates/compass-core/src/config_issues.rs.
 serde_path_to_error = "0.1"
+# The launcher's accessibility tree (ADR-0022 §1). `accesskit` is the
+# platform-neutral tree the UI describes itself as; `accesskit_unix` serves it
+# over AT-SPI, on its own thread and its own tokio runtime. The `tokio`
+# feature, not the default `async-io`: the workspace's zbus has `tokio`, which
+# then takes over zbus's executor, and the adapter's `async-io` thread would
+# have no tokio runtime for it. See crates/compass-a11y-linux.
+accesskit = "0.25"
+accesskit_unix = { version = "0.24", default-features = false, features = ["tokio"] }
 thiserror = "2"
 # niri's own IPC types (Request, Reply, Window, Workspace); the Hyprland socket is
 # hand-rolled. See CRATE-AUDIT "Compositor IPC".

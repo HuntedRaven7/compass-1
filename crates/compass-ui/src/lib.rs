@@ -12,6 +12,7 @@
 /// Flatpak's pid namespace `std::process::id()` is not the pid the Shell sees.
 pub const APP_ID: &str = "org.tunaos.compass";
 
+pub mod accessibility;
 pub mod action_panel;
 pub mod adwaita;
 pub mod app;
@@ -51,6 +52,7 @@ pub mod resident;
 pub mod root_list;
 pub mod script_page;
 mod scroll;
+pub mod semantics;
 pub mod settings;
 pub mod settings_page;
 mod shortcut_inhibit;

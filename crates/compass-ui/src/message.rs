@@ -626,4 +626,8 @@ pub enum Message {
     /// The engine's answer to the recorder asking whether the desktop would
     /// bind a combination: the combination, and the refusal if any.
     ShortcutProbed(String, Result<Option<String>, String>),
+    /// Assistive technology asked something of the window's accessibility
+    /// tree: press a result, focus a field, set the search text
+    /// ([`crate::accessibility`]).
+    Accessibility(accesskit::ActionRequest),
 }
