@@ -65,6 +65,88 @@ they run the keyboard, and still leave `/dev/uinput` closed on most distribution
 `getcap`), and what the running engine says about it; `compass input-server status|enable|disable`
 reads and flips `input_server.enabled`.
 
+## Upgrades and removal
+
+Compass runs as each logged-in user and never as root. A package therefore reaches a running engine
+only through that user's own service manager or the engine's own IPC socket, as that user, so the
+engine saves its state and exits the way `compass shutdown` makes it. No package signals a Compass
+process, and no package touches anything under a home directory. Every output follows these rules:
+
+- **An upgrade hands a running engine over to the new version, or says that it has not.** It never
+  leaves two resident launchers: `compass start` holds a lease beside the IPC socket, so starting the
+  new version while the old one still runs shows the old window rather than opening another.
+- **Removal stops running engines and keeps every user's files.** The package's own files go
+  (binaries, helpers, desktop entry, `compass.service`); nothing in any home directory does.
+  Reinstalling picks everything up again.
+- **Deleting a user's data is that user's explicit act**, with `compass data remove`.
+
+### What each output does
+
+| Output | Upgrade | Removal |
+|---|---|---|
+| Arch | `post_upgrade` in `arch/compass.install`, once the new files are in place: for each user whose `compass.service` is active, `systemctl --user --machine=<user>@.host daemon-reload` and `try-restart compass.service`, so their own manager restarts it on the new binary. A user running Compass any other way (desktop autostart, a terminal) is named in a message and keeps the old version until Compass next starts. | `pre_remove`: for each user, `stop compass.service` through their manager when it is active, and otherwise `runuser -u <user> -- compass shutdown` against `/run/user/<uid>/compass/ipc.sock`. A user whose engine does not stop is named; it stops when they log out. `post_remove` says where the data was kept. |
+| Flatpak | Flatpak never stops a running app. `flatpak update` leaves the running Compass on the old version until it exits; `flatpak run org.tunaos.compass shutdown`, then opening Compass again, switches to the new one. | `flatpak uninstall org.tunaos.compass` keeps `~/.var/app/org.tunaos.compass`. `flatpak uninstall --delete-data org.tunaos.compass` deletes it, and with it every Compass file the sandbox could write. |
+| Nix | Home Manager's `programs.compass.systemd` unit names the store path in `ExecStart`, so a new package is a changed unit, which Home Manager restarts when `systemd.user.startServices` is on. Otherwise run `systemctl --user restart compass`. | Removing the package or the module never touches a home directory. |
+| Homebrew | `brew upgrade` replaces the files; run `brew services restart compass` if Compass runs as a service, or `compass shutdown` and start it again. | Run `brew services stop compass` before `brew uninstall compass`; neither touches a home directory. |
+| AppImage | Replace the file, then `compass shutdown` and start the new one. | Delete the file. Nothing else was installed. |
+
+There is no `.deb` or `.rpm` package yet. One must follow the Arch script: hand over in `postinst`
+(`try-restart` through each user's manager, or a message), stop in `prerm`, and never delete a
+user's files, not even on `purge`.
+
+### What Compass keeps, and where
+
+Under each XDG base directory Compass owns one `compass` directory. Inside the Flatpak, the bases
+are under `~/.var/app/org.tunaos.compass`.
+
+| Base | Path | What |
+|---|---|---|
+| `$XDG_CONFIG_HOME` | `~/.config/compass` | `compass.json`, themes, Rhai scripts |
+| `$XDG_DATA_HOME` | `~/.local/share/compass` | the databases, extensions and clipboard history |
+| `$XDG_CACHE_HOME` | `~/.cache/compass` | the file index, downloaded images, exchange rates |
+| `$XDG_STATE_HOME` | `~/.local/state/compass` | the engine log |
+
+Beside each there may be a `vicinae` symlink pointing at it, left by the move from Vicinae's names
+(ADR-0020) so that an older build still finds the same data. A real `vicinae` directory belongs to
+upstream Vicinae, which can be installed beside Compass. `$XDG_RUNTIME_DIR/compass` holds only a
+running engine's socket and lock, and is emptied at logout. Secrets in the keyring use upstream's
+labels, which Vicinae shares, so neither a package nor `compass data remove` deletes them.
+
+### Deleting it: `compass data remove`
+
+`compass data remove` lists every path above, says what would happen to each, and deletes nothing.
+`compass data remove --yes` deletes:
+
+- each `compass` directory, with everything in it;
+- each `vicinae` symlink that points at the `compass` directory beside it.
+
+It keeps:
+
+- each real `vicinae` directory, and each `vicinae` link that points anywhere else, unless
+  `--include-vicinae` is passed;
+- whatever a symlink points to. A `compass` entry that is a link (into a dotfiles checkout, for
+  example) is removed as a link, and so is any link inside the directories;
+- everything else in the base directories.
+
+It refuses while an engine answers on the socket, since the engine has these files open: quit it
+with `compass shutdown` (or `systemctl --user stop compass`) first. A path that changed between the
+listing and the deletion is left alone. Run it before uninstalling, since the command goes with the
+package; after uninstalling, delete the four directories listed above by hand. In the Flatpak, run
+`flatpak run org.tunaos.compass data remove --yes`, or uninstall with `--delete-data`.
+
+If you enabled the unit (`systemctl --user enable compass`), run `systemctl --user disable compass`
+before uninstalling, or the enablement link in `~/.config/systemd/user` is left pointing at nothing.
+
+### Recovering
+
+- **Two launchers, or one that ignores the new version.** `compass shutdown` stops the engine and the
+  `compass start` that owns it. Then start Compass again from the application grid, or with
+  `systemctl --user start compass`. `compass ping` reports the running engine's pid.
+- **An engine that will not shut down.** `systemctl --user stop compass`, or end the `compass`
+  process from a system monitor. The lease and socket are released when the process exits.
+- **Data you meant to keep.** Uninstalling never deletes it; reinstalling finds it where it was.
+  `compass data remove --yes` cannot be undone, which is why it lists everything first.
+
 ## System-wide defaults
 
 A distribution sets defaults for every user in `compass/compass.json` under `$XDG_CONFIG_DIRS`,

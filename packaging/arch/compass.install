@@ -2,11 +2,69 @@
 # keyword expansion. Like upstream Vicinae's helper, it gets
 # cap_dac_override rather than the user joining the input group: the
 # capability is on one small program that talks only to its parent.
+#
+# Upgrades and removal (packaging/README.md, "Upgrades and removal"):
+# Compass runs as each logged-in user, never as root. A running engine is
+# reached through its owner's own service manager or its own IPC socket, as
+# its owner, so it saves its state and exits the way `compass shutdown` makes
+# it; no process is signalled. No user's files are ever touched: deleting
+# them is `compass data remove`, run by that user.
+
+_compass_bin=/usr/bin/compass
+
+# "uid user" once for each user running this package's compass. A Flatpak or
+# AppImage compass has another executable and is left alone.
+_compass_users() {
+  for _pid in $(pgrep -x compass 2>/dev/null); do
+    case "$(readlink "/proc/$_pid/exe" 2>/dev/null)" in
+      "$_compass_bin" | "$_compass_bin (deleted)") stat -c %u "/proc/$_pid" 2>/dev/null ;;
+    esac
+  done | sort -un | while read -r _uid; do
+    _user=$(id -nu "$_uid" 2>/dev/null) && printf '%s %s\n' "$_uid" "$_user"
+  done
+}
+
+# systemctl against one user's own service manager.
+_compass_user_systemctl() {
+  _for=$1
+  shift
+  systemctl --user --machine="$_for@.host" "$@" 2>/dev/null
+}
 
 post_install() {
   setcap cap_dac_override+ep /usr/lib/compass/compass-input-server
 }
 
+# After the new files are in place: a compass.service is restarted onto the
+# new version by its own manager. Any other session is told, not stopped; it
+# keeps the old version until it next starts, and `compass start` from the new
+# one reaches it rather than opening a second launcher.
 post_upgrade() {
   post_install
+  _compass_users | while read -r _uid _user; do
+    if _compass_user_systemctl "$_user" --quiet is-active compass.service; then
+      _compass_user_systemctl "$_user" daemon-reload
+      _compass_user_systemctl "$_user" try-restart compass.service && continue
+    fi
+    echo "Compass is still running the previous version for $_user. Run \`compass shutdown\` and then start Compass again to use the new one."
+  done
+}
+
+# Before the files go: each running engine is asked to stop, so none is left
+# running from a deleted binary without its helpers.
+pre_remove() {
+  _compass_users | while read -r _uid _user; do
+    if _compass_user_systemctl "$_user" --quiet is-active compass.service; then
+      _compass_user_systemctl "$_user" stop compass.service && continue
+    elif timeout 10 runuser -u "$_user" -- env -i "XDG_RUNTIME_DIR=/run/user/$_uid" \
+      "$_compass_bin" shutdown >/dev/null 2>&1; then
+      continue
+    fi
+    echo "Compass could not be stopped for $_user. It stops when they log out."
+  done
+}
+
+post_remove() {
+  echo "Each user's Compass settings, extensions and history were kept, in ~/.config/compass, ~/.local/share/compass, ~/.cache/compass and ~/.local/state/compass. Reinstalling uses them again."
+  echo "To delete them, a user runs \`compass data remove --yes\` before Compass is removed, or deletes those directories."
 }

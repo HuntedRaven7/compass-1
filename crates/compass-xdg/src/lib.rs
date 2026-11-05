@@ -33,6 +33,7 @@ pub mod mimeapps_writer;
 pub mod reader;
 pub mod scan;
 pub mod terminal;
+pub mod user_data;
 pub mod value;
 pub mod xdg_dirs;
 

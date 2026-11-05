@@ -3785,6 +3785,19 @@ Permissions** command (IPC v16 `ListScriptGrants`, `RevokeScriptGrant`), which r
 opening asks again (`script_permissions_are_listed_and_revoking_asks_again`,
 `script_permissions_lists_what_was_allowed_and_revokes_it`).
 
+### `compass data remove` and package lifecycle — a Compass addition, with no C++ counterpart
+
+The C++ CLI has no way to delete a user's data, and its packages do nothing to a running server on
+upgrade or removal. Compass's packages hand a running engine over on upgrade, stop it on removal
+through the user's own service manager or socket, and never delete a user's files; `compass data
+remove` lists the `compass` directory under each XDG base, with the `vicinae` link the cutover left
+beside it, and deletes them only with `--yes` and only while no engine answers. Vicinae's own
+`vicinae` directories are kept unless `--include-vicinae` is passed, since the C++ engine may still
+be installed beside Compass. The rules are in `packaging/README.md` ("Upgrades and removal")
+(`with_yes_it_removes_compass_s_paths_and_nothing_else`, `it_refuses_while_an_engine_answers`,
+`removal_stops_each_users_engine_through_their_own_manager_or_socket`,
+`an_upgrade_restarts_the_service_and_tells_everyone_else`, `the_script_never_deletes_or_signals`).
+
 ### Extension Store and Raycast Store — what the port does not have yet
 
 Both stores run end to end (IPC v14: `StoreBrowse`, `StoreExtension`, `StoreInstall`,

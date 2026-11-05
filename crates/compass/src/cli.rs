@@ -280,6 +280,10 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
 
+    /// Your Compass configuration and data: listing and deleting them.
+    #[command(subcommand)]
+    Data(DataCommand),
+
     /// One-off experiments that answer a question the code cannot.
     ///
     /// Hidden: these are addressed to whoever is answering the question — CI,
@@ -573,6 +577,29 @@ pub enum ConfigCommand {
 
     /// Print out the default config: every setting at its default.
     Default,
+}
+
+/// `compass data` subcommands.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum DataCommand {
+    /// List Compass's configuration, data, cache and state, and delete them with `--yes`.
+    ///
+    /// Without `--yes` nothing is deleted: the exact paths are listed with what
+    /// would happen to each. Only `compass` under each XDG base directory is
+    /// removed, with the `vicinae` link Compass left beside it. Vicinae's own
+    /// directories stay unless `--include-vicinae` is passed. A symlink is
+    /// removed as a link, never what it points to. Refuses while Compass is
+    /// running. Uninstalling the package never deletes any of this.
+    Remove {
+        /// Delete the listed paths instead of only listing them.
+        #[arg(long)]
+        yes: bool,
+
+        /// Also delete Vicinae's own `vicinae` directories, which Compass
+        /// otherwise leaves for an installed Vicinae.
+        #[arg(long)]
+        include_vicinae: bool,
+    },
 }
 
 /// Extension management subcommands.
@@ -1105,6 +1132,24 @@ mod tests {
         assert_eq!(
             parse(&["compass", "theme", "reset"]).command,
             Command::Theme(ThemeCommand::Reset)
+        );
+    }
+
+    #[test]
+    fn data_remove_is_a_dry_run_unless_told_otherwise() {
+        assert_eq!(
+            parse(&["compass", "data", "remove"]).command,
+            Command::Data(DataCommand::Remove {
+                yes: false,
+                include_vicinae: false
+            })
+        );
+        assert_eq!(
+            parse(&["compass", "data", "remove", "--yes", "--include-vicinae"]).command,
+            Command::Data(DataCommand::Remove {
+                yes: true,
+                include_vicinae: true
+            })
         );
     }
 }

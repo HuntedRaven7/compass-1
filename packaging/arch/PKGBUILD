@@ -29,7 +29,8 @@ optdepends=(
 provides=('compass')
 conflicts=('compass')
 options=('!lto' '!debug')
-# Grants compass-input-server cap_dac_override (snippet keyword expansion).
+# Grants compass-input-server cap_dac_override (snippet keyword expansion), and
+# hands running engines over on upgrade and removal (packaging/README.md).
 install=compass.install
 source=("compass::git+${COMPASS_GIT_URL:-https://github.com/tuna-os/compass.git}${COMPASS_GIT_REF:+#$COMPASS_GIT_REF}")
 sha256sums=('SKIP')

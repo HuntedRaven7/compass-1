@@ -52,6 +52,15 @@ flatpak run org.tunaos.compass -- doctor --check-only
 must stay committed: Flathub builds have no network access, so every dependency is declared up
 front.
 
+## Updating and uninstalling
+
+`flatpak update` never stops a running Compass: it keeps the old version until it exits.
+`flatpak run org.tunaos.compass shutdown`, then opening Compass again, switches to the new one.
+`flatpak uninstall org.tunaos.compass` keeps the user's settings and data in
+`~/.var/app/org.tunaos.compass`. To delete them, run
+`flatpak run org.tunaos.compass data remove --yes` before uninstalling, or uninstall with
+`--delete-data`. See "Upgrades and removal" in [`../README.md`](../README.md).
+
 ## The store icon
 
 `icons/{64x64,128x128}/org.tunaos.compass.png` are the PNGs `appstreamcli compose` renders from

@@ -19,6 +19,7 @@ pub mod clipboard_service;
 pub mod config_cmd;
 pub mod config_watch;
 pub mod conformance;
+pub mod data_cmd;
 pub mod developer;
 pub mod dmenu;
 pub mod doctor;
@@ -775,6 +776,8 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
 
         Command::Config(config_cmd) => config_cmd::run(config_cmd),
+
+        Command::Data(data_cmd) => data_cmd::run(&socket, data_cmd).await,
 
         // Handled in `run`, before the runtime exists.
         Command::Ui | Command::Start { .. } | Command::LauncherChild { .. } => {
