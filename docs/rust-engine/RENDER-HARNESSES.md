@@ -227,6 +227,18 @@ not Vulkan and llvmpipe is neither.
 PLAN.md §8.9. It is the only thing that can fail for a reason the other two
 cannot see, and it found #91 and #95 exactly that way.
 
+Every call it makes has a budget (#333): ssh connects within
+`VMTEST_SSH_CONNECT_S` and notices a vanished guest through keepalives; each
+guest command, corral call, state probe and the failure-time journal stop at
+their own `VMTEST_*_BUDGET_S`; and hide, summon and the action panel are
+waited for -- the launcher's own state line first, then a frame that framediff
+says shows the result -- rather than slept through. A failed gate keeps its own
+exit status even when the journal cannot be collected, which is reported on a
+`SECONDARY:` line of its own. `scripts/vmtest/launcher-selftest.py` runs the
+real script against a stub guest (`fakevm.py`) and proves each of those paths,
+hangs included, without a VM; `scripts/tier2/spike-selftest.py` does the same
+for the headless spike's readiness probes.
+
 ## Playwright mechanics that will bite you
 
 Every one of these cost a run to discover.

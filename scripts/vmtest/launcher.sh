@@ -31,10 +31,51 @@ vm="${2:?usage: launcher.sh <artifact-dir> <vm-name>}"
 query="${LAUNCHER_QUERY:-fi}"
 checks=/usr/libexec/compass-vmtest/checks.sh
 
+# EVERY CALL THAT LEAVES THIS SCRIPT HAS A BUDGET. (#333)
+#
+# The job has one timeout, seventy-five minutes, and until now it was the only
+# bound on anything here. An SSH connection to a guest that stopped answering,
+# a checks.sh subcommand stuck behind a dead session bus, a corral screenshot
+# waiting on a wedged QMP socket -- each of those sat until the job was killed,
+# and a job killed by its own timeout uploads no explanation. Worse, the
+# diagnostic collector below runs exactly when the guest is least likely to
+# answer, and it could spend the rest of the job's time asking.
+#
+# So each kind of call gets its own budget, sized from what the guest side is
+# known to wait for internally rather than guessed:
+#
+#   VMTEST_SSH_CONNECT_S      15   reaching sshd at all (ssh ConnectTimeout,
+#                                  which also bounds the banner exchange)
+#   VMTEST_GUEST_BUDGET_S    300   one checks.sh subcommand; launcher-start
+#                                  alone waits up to 90 + 150 s inside the guest
+#   VMTEST_PROBE_BUDGET_S     20   one read-only observation (ui-state, status)
+#   VMTEST_CORRAL_BUDGET_S    60   one corral screenshot, type or key
+#   VMTEST_DIAGNOSTICS_BUDGET_S 60 the journal collected after a failure
+#   VMTEST_SETTLE_BUDGET_S    30   one hide/summon/panel transition, all attempts
+#   VMTEST_POLL_S              1   the pause between two attempts at one
+#   VMTEST_KILL_GRACE_S        5   SIGTERM to SIGKILL, for a call over budget
+#
+# Overridable so the negative tests (launcher-selftest.py) can hang a stub and
+# watch it be stopped in seconds rather than minutes; the defaults are what CI
+# runs.
+ssh_connect_s="${VMTEST_SSH_CONNECT_S:-15}"
+guest_budget_s="${VMTEST_GUEST_BUDGET_S:-300}"
+probe_budget_s="${VMTEST_PROBE_BUDGET_S:-20}"
+corral_budget_s="${VMTEST_CORRAL_BUDGET_S:-60}"
+diagnostics_budget_s="${VMTEST_DIAGNOSTICS_BUDGET_S:-60}"
+settle_budget_s="${VMTEST_SETTLE_BUDGET_S:-30}"
+poll_s="${VMTEST_POLL_S:-1}"
+kill_grace_s="${VMTEST_KILL_GRACE_S:-5}"
+
 # corral wrote result.json as root and it holds the run's own SSH details.
 # Reading them beats rebuilding the invocation here and drifting out of step.
+#
+# ConnectTimeout bounds reaching sshd; ServerAlive* notice a guest that went
+# away under an established connection (three unanswered probes five seconds
+# apart), which no budget on the remote command can tell apart from a command
+# that is merely slow.
 sudo chown -R "$(id -un)" "$out" 2>/dev/null || true
-mapfile -t ssh_argv < <(RESULT="$out/result.json" python3 - <<'PY'
+mapfile -t ssh_argv < <(RESULT="$out/result.json" CONNECT_S="$ssh_connect_s" python3 - <<'PY'
 import json, os
 ssh = json.load(open(os.environ['RESULT']))['ssh']
 for part in ['ssh',
@@ -44,18 +85,95 @@ for part in ['ssh',
              '-o', 'UserKnownHostsFile=/dev/null',
              '-o', 'LogLevel=ERROR',
              '-o', 'BatchMode=yes',
+             '-o', f"ConnectTimeout={os.environ['CONNECT_S']}",
+             '-o', 'ServerAliveInterval=5',
+             '-o', 'ServerAliveCountMax=3',
              f"{ssh['user']}@{ssh['host']}"]:
     print(part)
 PY
 )
 
-guest() { "${ssh_argv[@]}" "$@"; }
+# The bounded call in flight, so a cancellation can stop it rather than leave
+# it running after this script is gone.
+#
+# `timeout` puts itself and the command in a process group of their own, which
+# is what lets it stop a command's descendants as well as the command. The
+# price is that a Ctrl+C or a runner's SIGTERM sent to THIS script's group no
+# longer reaches them -- so the call runs in the background and is waited for,
+# which lets the traps below fire at once and hand the signal on. `timeout`
+# forwards a signal it receives to its whole group, so passing it the signal is
+# enough to reap everything the call started and nothing it did not.
+active_pid=""
+cancelled_by=""
+run_bounded() {
+  local status=0
+  "$@" &
+  active_pid=$!
+  wait "$active_pid" || status=$?
+  active_pid=""
+  return "$status"
+}
+
+cancel() {
+  cancelled_by="SIG$1"
+  if [ -n "$active_pid" ]; then
+    kill -TERM "$active_pid" 2>/dev/null || true
+    wait "$active_pid" 2>/dev/null || true
+  fi
+  echo "CANCELLED: the run received $cancelled_by; the call in flight was stopped." >&2
+  exit "$2"
+}
+trap 'cancel INT 130' INT
+trap 'cancel TERM 143' TERM
+
+# guest_within BUDGET COMMAND...: run COMMAND in the guest, stopped at BUDGET.
+#
+# The command's own status is returned untouched, so every gate still fails
+# with its own verdict. Only the two statuses that are not a verdict are named,
+# because "exit 124" and "exit 255" in a log say nothing to the next reader:
+# 124/137 are `timeout` stopping it, 255 is ssh failing to reach the guest or
+# losing it.
+#
+# stdin is /dev/null because nothing here feeds the guest input, and an ssh
+# left reading a terminal it does not own would stop on SIGTTIN and sit there
+# until its budget ran out.
+guest_within() {
+  local budget="$1" status=0
+  shift
+  run_bounded timeout --kill-after="$kill_grace_s" "$budget" \
+    "${ssh_argv[@]}" "$@" </dev/null || status=$?
+  case "$status" in
+    124|137)
+      echo "TIMEOUT: the guest command \`$*\` did not finish within its ${budget}s budget and was stopped." >&2 ;;
+    255)
+      echo "SSH: the guest did not answer \`$*\`: ssh exited 255, so no connection was made within ${ssh_connect_s}s or it was lost." >&2 ;;
+  esac
+  return "$status"
+}
+guest() { guest_within "$guest_budget_s" "$@"; }
 
 # `sudo -E "$(command -v corral)"`, not `sudo corral`: corral is on PATH via
 # GITHUB_PATH, and sudo replaces PATH with secure_path, so `sudo corral` is
 # "command not found". Verified that -E alone does not help — secure_path wins.
+#
+# `timeout` runs under sudo, not around it: corral is root's process, and a
+# `timeout` running as this user could signal sudo but not reap what corral
+# leaves behind when SIGKILL is needed. As root it can.
 corral_bin="$(command -v corral)"
-shot() { sudo -E "$corral_bin" screenshot "$vm" -o "$out/$1" ; }
+host_corral_within() {
+  local budget="$1" status=0
+  shift
+  run_bounded sudo -E timeout --kill-after="$kill_grace_s" "$budget" \
+    "$corral_bin" "$@" || status=$?
+  case "$status" in
+    124|137)
+      echo "TIMEOUT: \`corral $1\` did not finish within its ${budget}s budget and was stopped." >&2 ;;
+  esac
+  return "$status"
+}
+host_corral() { host_corral_within "$corral_budget_s" "$@"; }
+# shot FRAME [CORRAL-FLAG...]
+shot() { host_corral screenshot "$vm" -o "$out/$1" "${@:2}"; }
 
 # WHEN A GATE FAILS, TAKE THE GUEST'S JOURNAL WITH US.
 #
@@ -74,20 +192,186 @@ shot() { sudo -E "$corral_bin" screenshot "$vm" -o "$out/$1" ; }
 # answering SSH is exactly when this runs, and a diagnostic that fails must not
 # replace the real exit status with its own -- that would turn a specific gate
 # failure into an unexplained one, which is the opposite of the point.
+#
+# And bounded, because "the guest has stopped answering" is the likeliest
+# reason to be here: an unbounded collector would spend the rest of the job
+# waiting on the one machine that is known to be stuck. When collection fails
+# it says so on a line of its own, marked SECONDARY, so the reader can see both
+# that the evidence is missing and that its absence is not why the run failed.
+#
+# A cancelled run collects nothing: the person or runner that cancelled it is
+# not waiting for a journal, and a minute spent fetching one is a minute of a
+# cancellation not taking effect.
 collect_diagnostics() {
-  local status=$?
+  local status=$? diag_status=0
   trap - EXIT
   if [ "$status" -eq 0 ]; then
     return 0
   fi
+  if [ -n "$cancelled_by" ]; then
+    echo "=== the run was cancelled by $cancelled_by (status $status): no diagnostics collected ==="
+    return "$status"
+  fi
   echo
   echo "=== the run failed (status $status): collecting the guest's journal ==="
-  guest "$checks" journal > "$out/journal.txt" 2>&1 || true
+  guest_within "$diagnostics_budget_s" "$checks" journal > "$out/journal.txt" 2>&1 \
+    || diag_status=$?
   tail -n 40 "$out/journal.txt" || true
-  echo "--- the full journal is journal.txt in this job's artifact ---"
+  if [ "$diag_status" -ne 0 ]; then
+    echo "SECONDARY: collecting the journal failed with status $diag_status; what it printed is in journal.txt."
+    echo "  That is a second problem, not the reason this run failed. The run's own status is $status, and it is the status this job exits with."
+  else
+    echo "--- the full journal is journal.txt in this job's artifact ---"
+  fi
   return "$status"
 }
 trap collect_diagnostics EXIT
+
+# WAITING FOR A TRANSITION, NOT SLEEPING THROUGH ONE. (#333)
+#
+# Hide, summon and the action panel each used to be followed by `sleep 5` and
+# a screenshot. Five seconds was a guess that held on most runs: on a slow
+# llvmpipe frame it was too short and the gate failed on a frame taken before
+# the repaint, and on every other run it was five seconds spent doing nothing.
+#
+# What replaces it waits for two things, in order, because either alone can be
+# satisfied by the wrong screen:
+#
+#   the launcher's own state line says the transition happened (ui-state), and
+#   a screenshot shows the screen in the state that transition should produce,
+#   judged against a named reference frame by framediff.
+#
+# Pixels that have stopped changing are never the condition. A frozen error
+# dialog is perfectly stable, and so is a launcher that never went away.
+#
+# Only observations are retried -- ui-state, launcher-status and screenshots
+# change nothing in the guest. The toggle, the summon and the chord that cause
+# each transition run once, before the wait, and are never repeated: a second
+# toggle would undo the first and could make a broken hide look like a slow
+# one.
+#
+# Every attempt is kept under attempts/ in the artifact, numbered, with what it
+# printed, so a failed wait shows the whole sequence it saw and not only the
+# last frame.
+attempts_dir="$out/attempts"
+
+# The budget for one attempt: the probe budget, or whatever is left of the
+# transition's budget if that is less, so one hung attempt cannot carry the
+# wait past its deadline.
+attempt_budget() {
+  local deadline="$1" cap="$2" left
+  left=$(( deadline - SECONDS ))
+  if [ "$left" -lt 1 ]; then left=1; fi
+  if [ "$left" -lt "$cap" ]; then echo "$left"; else echo "$cap"; fi
+}
+
+# await_state SLUG WHAT KEY=VALUE...
+#
+# Polls `checks.sh ui-state KEY=VALUE...` until the launcher's last state line
+# carries every KEY=VALUE. Returns 0 when it does; 1 when the launcher process
+# has exited, which no amount of waiting will change; 255 when the guest stops
+# answering SSH, for the same reason; 124 when the budget runs out.
+await_state() {
+  local slug="$1" what="$2"
+  shift 2
+  local deadline=$(( SECONDS + settle_budget_s )) attempt=0 status log
+  mkdir -p "$attempts_dir"
+  while :; do
+    attempt=$(( attempt + 1 ))
+    log="$attempts_dir/$slug-state-$(printf '%02d' "$attempt").txt"
+    status=0
+    guest_within "$(attempt_budget "$deadline" "$probe_budget_s")" \
+      "$checks" ui-state "$@" >"$log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+      echo "ok: $what (attempt $attempt)"
+      sed -n '/^--- asserting/,$p' "$log"
+      return 0
+    fi
+    if [ "$status" -eq 255 ]; then
+      cat "$log"
+      echo "FAIL: the guest stopped answering SSH while waiting for $what." >&2
+      return 255
+    fi
+    # Not there yet, or the probe itself timed out. Which of those it was is in
+    # the attempt's log; what decides whether to keep waiting is whether the
+    # launcher is still alive to get there.
+    if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then
+      status=0
+      guest_within "$(attempt_budget "$deadline" "$probe_budget_s")" \
+        "$checks" launcher-status >>"$log" 2>&1 || status=$?
+      case "$status" in
+        0|124|137) ;;
+        255)
+          tail -n 20 "$log"
+          echo "FAIL: the guest stopped answering SSH while waiting for $what." >&2
+          return 255 ;;
+        *)
+          tail -n 40 "$log"
+          echo "FAIL: the launcher exited while waiting for $what." >&2
+          return 1 ;;
+      esac
+    fi
+    echo "  attempt $attempt: not yet ($(basename "$log"))"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      break
+    fi
+    sleep "$poll_s"
+  done
+  echo "--- the last attempt ---"
+  cat "$log"
+  echo "FAIL: TIMEOUT: $what did not happen within ${settle_budget_s}s ($attempt attempts, each kept in attempts/)." >&2
+  return 124
+}
+
+# await_paint FRAME REFERENCE WHAT [CORRAL-FLAG...] -- FRAMEDIFF-FLAG...
+#
+# Screenshots until `framediff.py REFERENCE <shot> FRAMEDIFF-FLAG...` holds,
+# then keeps that shot as $out/FRAME. On timeout the last shot taken is kept
+# as FRAME anyway, so the artifact and any gate after this show the screen the
+# wait gave up on rather than nothing. Returns 0, or 124 on timeout.
+await_paint() {
+  local frame="$1" reference="$2" what="$3"
+  shift 3
+  local shot_flags=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    shot_flags+=("$1")
+    shift
+  done
+  shift
+  local deadline=$(( SECONDS + settle_budget_s )) attempt=0 status candidate log last_shot=""
+  mkdir -p "$attempts_dir"
+  while :; do
+    attempt=$(( attempt + 1 ))
+    candidate="$attempts_dir/${frame%.png}-$(printf '%02d' "$attempt").png"
+    log="${candidate%.png}.txt"
+    status=0
+    host_corral_within "$(attempt_budget "$deadline" "$corral_budget_s")" \
+      screenshot "$vm" -o "$candidate" "${shot_flags[@]}" >"$log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+      last_shot="$candidate"
+      python3 scripts/vmtest/framediff.py "$reference" "$candidate" "$@" >>"$log" 2>&1 \
+        || status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+      cp "$candidate" "$out/$frame"
+      echo "ok: $what (attempt $attempt, kept as $frame)"
+      tail -n 2 "$log"
+      return 0
+    fi
+    echo "  attempt $attempt: not yet: $(tail -n 1 "$log")"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      break
+    fi
+    sleep "$poll_s"
+  done
+  if [ -n "$last_shot" ]; then
+    cp "$last_shot" "$out/$frame"
+  fi
+  echo "--- the last attempt ---"
+  cat "$log"
+  echo "FAIL: TIMEOUT: $what was not on screen within ${settle_budget_s}s ($attempt attempts, each kept in attempts/; the last frame taken is $frame)." >&2
+  return 124
+}
 
 # THE CONTAINMENT BOX IS DERIVED FROM THE WINDOW, NOT WRITTEN DOWN TWICE.
 #
@@ -320,7 +604,7 @@ guest "$checks" launcher-diagnose || true
 
 echo
 echo "=== 2. the screen with the launcher open ==="
-sudo -E "$corral_bin" screenshot "$vm" -o "$out/launcher-01-open.png" --require-paint
+shot "launcher-01-open.png" --require-paint
 
 echo
 echo "=== 3. type a query at it ==="
@@ -391,7 +675,7 @@ echo "=== 3. type a query at it ==="
 # CONTROLLED, on the published artifact of run 35285035604 rather than on a
 # claim: these exact arguments against that run's two frames exit 1 with
 # "FAIL: only 0.00% of pixels changed, expected at least 0.10%".
-sudo -E "$corral_bin" type "$vm" "$query"
+host_corral type "$vm" "$query"
 shot "launcher-02-typed.png"
 
 echo
@@ -522,8 +806,20 @@ guest "$checks" window-attached
 #
 # Symmetry is the fix: the appearing frame is waited for, so the disappearing
 # one must be too.
-sleep 5
-shot "launcher-04-hidden.png"
+#
+# Waited for, not slept through (#333; see "WAITING FOR A TRANSITION" at the
+# top). The paint condition is the went-away gate's own, against the same
+# control, and that is deliberate rather than circular. "Changed since the
+# launcher was last on screen" is already true of a frame taken part-way
+# through GNOME's close animation, with the window still partly drawn -- which
+# would put this gate back in the race it lost on a17680e. The end state is
+# what is waited for, and the end state is "looks like the desktop did". The
+# paired gates in 3d4 still judge the kept frame, and the summon half is what
+# stops a screen that never showed a launcher from passing both.
+await_state hide "the launcher to report its window hidden" "window=hidden"
+await_paint launcher-04-hidden.png "$out/launcher-00-before.png" \
+  "the desktop, repainted without the launcher" -- \
+  --max-percent 3 --ignore-box 0 0 1279 139 --ignore-box 0 700 1279 799
 
 echo
 echo "=== 3d3. and does summoning it bring the window back? ==="
@@ -532,8 +828,15 @@ guest "$checks" summon
 # instant, and screenshotting before the paint would produce "summon does not
 # work" for the same reason step 1 produced "the launcher does not draw" --
 # twice, wrongly.
-sleep 5
-sudo -E "$corral_bin" screenshot "$vm" -o "$out/launcher-05-summoned.png" --require-paint
+#
+# Waited for rather than slept through. The paint condition is the open gate's
+# floor and box, measured against the HIDDEN frame rather than the control: it
+# asks whether the window came back since it went, which the came-back gate in
+# 3d4 -- measured against the control -- does not.
+await_state summon "the launcher to report its window open" "window=open"
+await_paint launcher-05-summoned.png "$out/launcher-04-hidden.png" \
+  "the launcher, painted again over the desktop" --require-paint -- \
+  --min-percent 3 "${expect_box[@]}" --ignore-box 0 0 1279 139
 
 echo
 echo "=== 3d4. the two assertions that make the pair mean something ==="
@@ -614,11 +917,23 @@ echo "=== 3d4b. does Ctrl+B open the action panel? (recorded again, see below) =
 # What must NOT happen is the floor being nudged until it passes. If the new
 # figure is near 0.00 the chord stopped arriving and that is a bug in the
 # rewrite, not a threshold to tune.
-if sudo -E "$corral_bin" key "$vm" ctrl b; then
-  # The same settle the open and summon paths get, for the same reason: a
-  # screenshot taken before the paint reads as "the panel does not open".
-  sleep 5
-  if shot "launcher-06-panel.png"; then
+if host_corral key "$vm" ctrl b; then
+  # The same wait the hide and summon paths get, for the same reason: a
+  # screenshot taken before the paint reads as "the panel does not open". The
+  # paint condition is the recorded floor below, against the summoned frame.
+  #
+  # Neither half is a gate here. This step records, and 3d4c gates on the
+  # launcher's own account; a wait that runs out says so, and the figure from
+  # the last frame taken is printed anyway, because a figure near zero is the
+  # finding.
+  await_state panel "the launcher to report the action panel open" "panel=open" \
+    || echo "NOT GATED HERE: the launcher did not report the panel open, and 3d4c below gates on exactly that."
+  await_paint launcher-06-panel.png "$out/launcher-05-summoned.png" \
+    "the action panel, painted over the list" -- \
+    --min-percent 0.1 "${expect_box[@]}" \
+    --ignore-box 0 0 1279 139 --ignore-box 0 700 1279 799 \
+    || echo "NOT GATED: the panel's paint did not arrive within the wait; the figure below is from the last frame taken."
+  if [ -f "$out/launcher-06-panel.png" ]; then
     python3 scripts/vmtest/framediff.py \
       "$out/launcher-05-summoned.png" "$out/launcher-06-panel.png" \
       --min-percent 0.1 "${expect_box[@]}" \
@@ -685,10 +1000,10 @@ echo "=== 3e. harvest a real desktop-entry corpus from this box ==="
 # does not write into the repository: a corpus shapes every ranking assertion
 # we make, and it should not grow by a job quietly appending to it.
 guest "$checks" harvest-corpus || true
-if "${ssh_argv[@]}" test -f /tmp/corpus.tar.gz 2>/dev/null; then
+if guest_within "$probe_budget_s" test -f /tmp/corpus.tar.gz 2>/dev/null; then
   # `ssh cat > file` rather than scp: scp's protocol has been deprecated and
   # removed in places, and this needs no second tool.
-  "${ssh_argv[@]}" cat /tmp/corpus.tar.gz > "$out/corpus.tar.gz" 2>/dev/null \
+  guest cat /tmp/corpus.tar.gz > "$out/corpus.tar.gz" 2>/dev/null \
     && echo "corpus.tar.gz retrieved ($(wc -c < "$out/corpus.tar.gz") bytes)" \
     || echo "(could not retrieve the corpus tarball)"
 else
