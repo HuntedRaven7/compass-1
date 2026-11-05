@@ -181,9 +181,12 @@ mod tests {
                             _ => Response::Ack,
                         }
                     },
-                    move |link| {
+                    move |mut link| {
                         let links_tx = links_tx.clone();
                         async move {
+                            if link.confirm().await.is_err() {
+                                return;
+                            }
                             let _ = links_tx.send(link).await;
                             // Held so the link outlives this task and the
                             // socket stays open for the test.

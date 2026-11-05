@@ -3752,10 +3752,10 @@ pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Respo
             forward(&slot, command, what).await
         }
 
-        // Accepting is the whole decision: the transport reads this response,
-        // writes it, and then hands the connection over as a `WindowLink`. The
-        // engine never refuses an attach — see `WindowSlot` for why replacing
-        // beats refusing.
+        // Accepting is the whole decision: the transport hands the connection
+        // over as a `WindowLink`, and `run` writes the acceptance once the link
+        // is in the slot. The engine never refuses an attach — see `WindowSlot`
+        // for why replacing beats refusing.
         Request::AttachWindow => Response::WindowAttached,
 
         // An outcome is a *reply* on an attached connection, never a request.
@@ -3911,9 +3911,18 @@ pub async fn run(socket: &SocketPath, hotkey: bool) -> Result<()> {
                     tracing::info!("a launcher window attached");
                     // Replaces any previous window; see `WindowSlot`. The old
                     // link drops here, closing that window's socket.
-                    let replaced = window_slot.lock().await.replace(link).is_some();
+                    let mut slot = window_slot.lock().await;
+                    let replaced = slot.replace(link).is_some();
                     if replaced {
                         tracing::info!("the previous launcher window was replaced");
+                    }
+                    // Told only now that it is in the slot, so a request sent
+                    // the moment its attach returns finds it.
+                    if let Some(link) = slot.as_mut()
+                        && let Err(err) = link.confirm().await
+                    {
+                        tracing::info!(error = %err, "the launcher window left while attaching");
+                        *slot = None;
                     }
                 }
             },

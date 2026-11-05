@@ -88,9 +88,12 @@ where
         let _ = listener
             .serve_with_shutdown_attach(
                 handler,
-                move |link| {
+                move |mut link| {
                     let links_tx = links_tx.clone();
                     async move {
+                        if link.confirm().await.is_err() {
+                            return;
+                        }
                         // Held until the receiver drops it, which is what keeps
                         // the socket open for the duration of the test.
                         let _ = links_tx.send(link).await;

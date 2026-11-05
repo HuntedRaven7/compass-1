@@ -129,12 +129,17 @@ impl Listener {
     /// Like [`Listener::serve_with_shutdown`], but hands over connections that
     /// become launcher windows.
     ///
-    /// When `handler` answers a request with [`Response::WindowAttached`], that
-    /// response is written and then the connection **stops being
-    /// request/response**: it is wrapped in a [`WindowLink`] and passed to
-    /// `on_attach`, which owns it for the rest of its life. `on_attach` runs on
-    /// the connection's own task, so it may block for as long as the window
-    /// lives without holding up other clients.
+    /// When `handler` answers a request with [`Response::WindowAttached`], the
+    /// connection **stops being request/response**: it is wrapped in a
+    /// [`WindowLink`] and passed to `on_attach`, which owns it for the rest of
+    /// its life. `on_attach` runs on the connection's own task, so it may block
+    /// for as long as the window lives without holding up other clients.
+    ///
+    /// The acceptance is **not written yet**: `on_attach` stores the link
+    /// where requests will find it and then calls [`WindowLink::confirm`]. A
+    /// window that is told it attached is therefore already reachable, so a
+    /// request sent the moment its attach returns cannot be refused for want
+    /// of a window.
     ///
     /// The handler decides *whether* to attach — a server that already holds a
     /// window can refuse a second one by answering [`Response::Error`] instead,
@@ -211,9 +216,10 @@ where
 /// Serves a connection until the peer closes it **or** becomes a window.
 ///
 /// Returns `Ok(Some(link))` when `handler` answered with
-/// [`Response::WindowAttached`]: that response has been written and the
-/// connection now belongs to the returned [`WindowLink`]. Returns `Ok(None)`
-/// when the peer closed an ordinary request/response connection.
+/// [`Response::WindowAttached`]: the connection now belongs to the returned
+/// [`WindowLink`], whose acceptance is sent by [`WindowLink::confirm`] (or by
+/// its first push). Returns `Ok(None)` when the peer closed an ordinary
+/// request/response connection.
 pub async fn serve_connection_until_attach<F, Fut>(
     stream: UnixStream,
     handler: F,
@@ -240,20 +246,16 @@ where
         }
 
         let response = handler(envelope.request).await;
-        let attaching = matches!(response, Response::WindowAttached);
-        framed
-            .send(&ResponseEnvelope::new(envelope.id, response))
-            .await?;
-
-        if attaching {
-            // Written first, handed over second: the window must see the
-            // acceptance before any push, or it would decode a command as the
-            // answer to its own attach request.
+        if matches!(response, Response::WindowAttached) {
             return Ok(Some(WindowLink {
                 framed,
                 next_id: envelope.id.wrapping_add(1),
+                unconfirmed: Some(envelope.id),
             }));
         }
+        framed
+            .send(&ResponseEnvelope::new(envelope.id, response))
+            .await?;
     }
 
     Ok(None)
@@ -271,9 +273,29 @@ where
 pub struct WindowLink {
     framed: Framed<UnixStream, FrameCodec<RequestEnvelope>>,
     next_id: u64,
+    /// Id of the attach request whose acceptance has not been written yet.
+    unconfirmed: Option<u64>,
 }
 
 impl WindowLink {
+    /// Tells the window its attach was accepted, if it has not been told.
+    ///
+    /// Call it once the link is where requests can reach it; see
+    /// [`Listener::serve_with_shutdown_attach`]. Every push confirms first, so
+    /// the window always reads the acceptance before any command.
+    ///
+    /// # Errors
+    ///
+    /// The write failing, typically because the window already went away.
+    pub async fn confirm(&mut self) -> Result<()> {
+        if let Some(id) = self.unconfirmed.take() {
+            self.framed
+                .send(&ResponseEnvelope::new(id, Response::WindowAttached))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Pushes `command` to the window and waits for what it did.
     ///
     /// # Errors
@@ -292,6 +314,7 @@ impl WindowLink {
     /// in order, before the next one, so the next push skips answers to
     /// commands older than its own instead of taking one as its own.
     pub async fn push(&mut self, command: WindowCommand) -> Result<WindowOutcome> {
+        self.confirm().await?;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
 
