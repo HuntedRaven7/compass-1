@@ -247,11 +247,14 @@ jobs:
             dbus-x11 \
             glib2 \
             procps-ng \
+            util-linux \
             flatpak \
             bubblewrap \
             orca \
             at-spi2-core \
-            python3-gobject
+            python3-gobject \
+            xdg-desktop-portal \
+            xdg-desktop-portal-gnome
 
       - name: Fetch the Flatpak bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -312,6 +315,19 @@ jobs:
         run: |
           scripts/tier2/headless-gnome-spike.sh \
             scripts/tier2/orca.sh
+      # #314: the whole install journey, through the real xdg-desktop-portal
+      # this time -- fresh install, first run from the exported entry,
+      # repeated activation, login start through the Background portal (and
+      # its refusal, the control), logout and login from the autostart entry
+      # the portal wrote, upgrade while running, uninstall, reinstall and
+      # `compass data remove`, with exactly one session after every step.
+      # Last, because it uninstalls the app. docs/getting-started.md
+      # ("Supported desktops and packages") lists what it stands in for and
+      # what stays manual.
+      - name: Does the install journey hold?
+        run: |
+          scripts/tier2/headless-gnome-spike.sh \
+            scripts/tier2/install-journey.sh
 
       - name: Keep the logs
         if: always()
@@ -325,5 +341,8 @@ jobs:
             /tmp/orca-debug.log
             /tmp/orca-transcript.md
             /tmp/tier2-orca-launcher.log
+            /tmp/tier2-journey/*.log
+            /tmp/tier2-journey/*.json
+            /tmp/tier2-journey/*.txt
           if-no-files-found: warn
           retention-days: 7

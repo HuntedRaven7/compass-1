@@ -1060,7 +1060,9 @@ Declared differences:
   that. The row says what the desktop answered (on, declined, or unavailable, never on when it is
   not) and reports the packaged `compass.service` user unit without touching it
   (`compass_core::login_start`, `compass_platform::LoginStarter`,
-  `compass_platform_linux::LinuxLoginStart`, IPC v25 `Request::LoginStart`).
+  `compass_platform_linux::LinuxLoginStart`, IPC v25 `Request::LoginStart`). The same switch is
+  `compass login-start status|enable|disable [--json]` from a terminal, which exits non-zero when
+  the state afterwards is not the one asked for (#314, `login_start_cli`).
 - The macOS permissions step is not offered, as on the C++'s Linux build.
 - An "Add extensions" step before the last recommends `compass_core::onboarding::RECOMMENDED_EXTENSIONS`
   (store extensions Suite 1 shows rendering) with an Install button each, through the store's own

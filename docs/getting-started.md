@@ -36,7 +36,9 @@ Settings, General. It is off until you turn it on. Compass asks your desktop's B
 which shows you what it allows, to run `compass start --hidden` when you log in. Where there is no
 Background portal (some wlroots sessions) and Compass is not in the Flatpak, it writes
 `~/.config/autostart/compass.desktop` itself, and turning the switch off removes only that file.
-If your desktop declines, the switch stays off and says so.
+If your desktop declines, the switch stays off and says so. From a terminal, `compass login-start
+status` shows the same state, and `compass login-start enable` and `compass login-start disable`
+change it as the switch does.
 
 Packages also install a systemd user unit, which Compass never turns on or off. Settings says when
 it is installed and whether it is enabled. To use the unit instead of the switch:
@@ -138,6 +140,75 @@ the GlobalShortcuts portal. Anywhere else, bind a key to `compass toggle` in you
 keyboard settings.
 
 `compass doctor` says which of these mechanisms your session has.
+
+## Update and uninstall
+
+Updating never stops a running Compass, and it never starts a second one. The running launcher
+keeps the old version until it exits. To switch to the new version straight away, quit Compass
+and open it again:
+
+```sh
+flatpak update org.tunaos.compass
+flatpak run org.tunaos.compass shutdown
+```
+
+Then open **Compass** from the application grid, or log out and in again. With a package, run
+`compass shutdown` after the package manager finishes. The Arch package restarts `compass.service`
+itself when you use the systemd unit.
+
+Uninstalling keeps your settings, extensions, clipboard history and log, so reinstalling picks
+them up again. To remove Compass completely:
+
+1. Turn off **Start at login**, or run `compass login-start disable`. With the Flatpak this matters:
+   the desktop wrote `~/.config/autostart/org.tunaos.compass.desktop` for it, and uninstalling
+   leaves that file behind. If you have already uninstalled, delete the file yourself.
+2. Run `compass data remove`, which lists what it would delete, then `compass data remove --yes`.
+   It refuses while Compass runs, so run `compass shutdown` first. In the Flatpak, use
+   `flatpak run org.tunaos.compass data remove --yes`.
+3. Uninstall: `flatpak uninstall org.tunaos.compass`, or your package manager's remove command.
+
+[Packaging](https://github.com/tuna-os/compass/blob/main/packaging/README.md#upgrades-and-removal)
+describes what each package does on upgrade and removal, and exactly what `compass data remove`
+deletes and keeps.
+
+## Supported desktops and packages
+
+The table says how start at login works in each setup, and how the whole journey (install, first
+run, opening Compass again while it runs, start at login, logging out and in, updating,
+uninstalling, and removing your data) is checked. "Every change" means a check that runs on every
+pull request that touches Compass's code; each check fails when a step leaves no Compass running,
+two of them, a window where there should be none, or your data gone.
+
+| Package | Desktop | Start at login | Install journey |
+|---|---|---|---|
+| Flatpak | GNOME 50 (Fedora 44) and GNOME 51 (Fedora 45) | Background portal | Every change, in a container: GNOME's compositor and the real GNOME portal, with GNOME Shell's part played by the script ([`install-journey.sh`](https://github.com/tuna-os/compass/blob/main/scripts/tier2/install-journey.sh)) |
+| Flatpak | GNOME on Bluefin | Background portal | Nightly, in a virtual machine: the installed Flatpak in a real GNOME session (first run and the launcher; not updates or removal) |
+| Flatpak | KDE Plasma 6 | Background portal | By hand |
+| Flatpak | Sway, Hyprland, niri | Background portal where the session's portal offers one; otherwise unavailable, and the switch says so | By hand |
+| Arch (`compass-git`) | Any | Background portal, or Compass's own autostart entry where there is none | Every change to the package, and nightly: install, update and removal through pacman while a user's Compass runs ([`arch-journey.sh`](https://github.com/tuna-os/compass/blob/main/scripts/packaging/arch-journey.sh)) |
+| Not sandboxed (Arch, Nix, AppImage, from source) | Sway, with no Background portal | Compass's own `~/.config/autostart/compass.desktop` | Every change, on a headless Sway ([`install-journey-on-sway.sh`](https://github.com/tuna-os/compass/blob/main/scripts/wlroots/install-journey-on-sway.sh)) |
+| Nix, AppImage, Homebrew | Any | As above | Nix and the AppImage are built and smoke-tested in CI; updates and removal, and Homebrew, by hand |
+
+These steps are still checked by hand, on a real desktop, because the automated checks stand in
+for them:
+
+- **GNOME's "Background activity" dialog.** The automated check records the answer in advance, where
+  GNOME keeps it (`flatpak permission-set background background org.tunaos.compass yes`, or `no`
+  for the refusal), so no dialog appears. By hand: allow it and the switch turns on; deny it and
+  the switch stays off and says your desktop did not allow it.
+- **The keyboard shortcut dialog** (GlobalShortcuts portal) and pressing the key afterwards. GNOME
+  Shell does not run in the container.
+- **Opening Compass from the application grid.** The automated check runs the exact command the
+  installed application entry names.
+- **A real logout and login.** The automated check ends Compass's processes as a session ending
+  would, then runs the command in the autostart entry, as the session would at login.
+- **Updating from a published release.** The automated check updates to a rebuilt copy of the
+  build under test: a new Flatpak commit with one file added. A `flatpak update` from the TunaOS
+  remote, from one published release to the next, is checked by hand.
+- **The Arch package with `compass.service` enabled.** The container has no systemd user manager,
+  so restarting the unit on update and stopping it on removal are checked against a stand-in
+  `systemctl`, and by hand.
+- **KDE Plasma**, throughout.
 
 ## Extensions
 

@@ -85,6 +85,15 @@ jobs:
           COMPASS_WLROOTS_WORK: /tmp/compass-wlroots
         run: scripts/wlroots/launcher-on-sway.sh target/debug/compass
 
+      # #314: the install journey on the path with no Background portal --
+      # login start writes Compass's own autostart entry; logout, login,
+      # upgrade by replacing the binary, uninstall and `compass data remove`,
+      # with exactly one session after every step.
+      - name: "Rung 4: the install journey without a portal"
+        env:
+          COMPASS_WLROOTS_WORK: /tmp/compass-wlroots/journey
+        run: scripts/wlroots/install-journey-on-sway.sh target/debug/compass
+
       - name: Keep the logs and screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

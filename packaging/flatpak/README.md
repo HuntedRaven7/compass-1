@@ -64,7 +64,12 @@ front.
 `flatpak uninstall org.tunaos.compass` keeps the user's settings and data in
 `~/.var/app/org.tunaos.compass`. To delete them, run
 `flatpak run org.tunaos.compass data remove --yes` before uninstalling, or uninstall with
-`--delete-data`. See "Upgrades and removal" in [`../README.md`](../README.md).
+`--delete-data`. Neither removes `~/.config/autostart/org.tunaos.compass.desktop`, which the
+Background portal wrote when start at login was turned on: run
+`flatpak run org.tunaos.compass login-start disable` before uninstalling, or delete the file. Left
+behind, it only fails at login with "not installed". See "Upgrades and removal" in
+[`../README.md`](../README.md); `scripts/tier2/install-journey.sh` runs the whole journey against
+the real portal.
 
 ## The store icon
 

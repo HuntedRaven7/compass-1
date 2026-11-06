@@ -288,6 +288,14 @@ pub enum Command {
     #[command(subcommand)]
     Clipboard(ClipboardCommand),
 
+    /// Whether Compass starts when you log in, and turning it on or off.
+    ///
+    /// The same as Settings' "Start at login" switch: the running engine asks
+    /// your desktop's Background portal, or, outside the Flatpak where there is
+    /// no portal, writes its own `~/.config/autostart/compass.desktop`.
+    #[command(subcommand)]
+    LoginStart(LoginStartCommand),
+
     /// One-off experiments that answer a question the code cannot.
     ///
     /// Hidden: these are addressed to whoever is answering the question — CI,
@@ -623,6 +631,31 @@ pub enum DataCommand {
         /// otherwise leaves for an installed Vicinae.
         #[arg(long)]
         include_vicinae: bool,
+    },
+}
+
+/// `compass login-start` subcommands.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum LoginStartCommand {
+    /// Print whether Compass starts when you log in, and how.
+    Status {
+        /// Emit the status as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start Compass, hidden, when you log in. Exits non-zero when the desktop
+    /// declines or the session has no way to do it.
+    Enable {
+        /// Emit the status afterwards as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop starting Compass when you log in. A systemd unit you enabled
+    /// yourself is left alone.
+    Disable {
+        /// Emit the status afterwards as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1221,5 +1254,22 @@ mod tests {
             parse(&["compass", "clipboard", "reset", "--yes"]).command,
             Command::Clipboard(ClipboardCommand::Reset { yes: true })
         );
+    }
+
+    #[test]
+    fn login_start_reads_and_changes_the_switch() {
+        assert_eq!(
+            parse(&["compass", "login-start", "status"]).command,
+            Command::LoginStart(LoginStartCommand::Status { json: false })
+        );
+        assert_eq!(
+            parse(&["compass", "login-start", "enable", "--json"]).command,
+            Command::LoginStart(LoginStartCommand::Enable { json: true })
+        );
+        assert_eq!(
+            parse(&["compass", "login-start", "disable"]).command,
+            Command::LoginStart(LoginStartCommand::Disable { json: false })
+        );
+        assert!(Cli::try_parse_from(["compass", "login-start"]).is_err());
     }
 }

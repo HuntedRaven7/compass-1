@@ -46,6 +46,7 @@ pub mod indexer_service;
 pub mod indexer_watch;
 pub mod input_server;
 pub mod ipc;
+pub mod login_start_cmd;
 pub mod logs;
 pub mod notification_icon;
 pub(crate) mod paste;
@@ -793,6 +794,11 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Data(data_cmd) => data_cmd::run(&socket, data_cmd).await,
 
         Command::Clipboard(clipboard) => clipboard_cmd::run(&socket, clipboard).await,
+
+        Command::LoginStart(command) => {
+            require_servable_engine(cli.engine)?;
+            login_start_cmd::run(&socket, command).await
+        }
 
         // Handled in `run`, before the runtime exists.
         Command::Ui | Command::Start { .. } | Command::LauncherChild { .. } => {

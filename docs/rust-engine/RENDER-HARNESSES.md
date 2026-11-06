@@ -330,3 +330,29 @@ reported `Opened` before the layer surface existed.
 
 It proves nothing about GNOME, and nothing about Hyprland or niri beyond what
 their shared protocols imply.
+
+## The install journeys — t2, wlroots and the Arch package, per PR
+
+```sh
+scripts/tier2/headless-gnome-spike.sh scripts/tier2/install-journey.sh  # Flatpak, real portal
+scripts/wlroots/install-journey-on-sway.sh target/debug/compass         # no portal, ~10 s
+scripts/packaging/arch-journey.sh path/to/compass-git-*.pkg.tar.zst     # as root, pacman
+```
+
+Install, first run, repeated activation, start at login, logout and login,
+upgrade while running, uninstall, reinstall and `compass data remove` (#314),
+each followed by a count of Compass's processes by role: exactly one `start`,
+one `serve` and one `launcher-child`, or none after a shutdown. The tier-2 one
+runs the Flatpak against the real `xdg-desktop-portal` and
+`xdg-desktop-portal-gnome`: the Background portal writes the autostart entry,
+and its control is the same request with the permission store's answer set to
+"no", which must leave no entry. The Sway one takes the path with no portal,
+where Compass writes its own entry; with the UI lease ignored it fails at the
+second activation. The Arch one runs pacman's real hooks with a user's engine
+running; its container needs `CAP_SYS_PTRACE`, without which root cannot read
+another user's `/proc/<pid>/exe` and the hooks would find no one.
+
+They stand in for GNOME Shell and gnome-session: "the app grid" is the
+exported entry's Exec line, "login" is the autostart entry's, "logout" is
+SIGTERM. The dialogs, the real app grid and a real logout stay manual, and
+`docs/getting-started.md` ("Supported desktops and packages") lists them.

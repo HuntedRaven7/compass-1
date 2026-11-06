@@ -92,6 +92,11 @@ jobs:
     timeout-minutes: 90
     container:
       image: archlinux:base-devel
+      # The install hooks find each user's engine through /proc/<pid>/exe,
+      # which root reads for another user's process only with
+      # CAP_SYS_PTRACE. A real system's root has it; Docker's default
+      # capabilities do not, and without it the journey below refuses to run.
+      options: --cap-add=SYS_PTRACE
     steps:
       # git before checkout, so the checkout is a real repository makepkg can
       # clone from rather than a tarball.
@@ -134,6 +139,13 @@ jobs:
         run: |
           REQUIRE_RUNTIME=1 scripts/packaging/smoke.sh \
             --prefix /usr --libexecdir /usr/lib -- /usr/bin/compass
+
+      # #314: install, upgrade and removal through real pacman transactions,
+      # with a user's engine running: post_upgrade names them and leaves it
+      # running, pre_remove stops it through its own socket, their data
+      # survives both, and `compass data remove --yes` deletes it.
+      - name: "The install journey through pacman"
+        run: scripts/packaging/arch-journey.sh /tmp/pkg/compass-git-*.pkg.tar.zst
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
