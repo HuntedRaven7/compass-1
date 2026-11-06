@@ -232,12 +232,18 @@ Every call it makes has a budget (#333): ssh connects within
 guest command, corral call, state probe and the failure-time journal stop at
 their own `VMTEST_*_BUDGET_S`; and hide, summon and the action panel are
 waited for -- the launcher's own state line first, then a frame that framediff
-says shows the result -- rather than slept through. A failed gate keeps its own
-exit status even when the journal cannot be collected, which is reported on a
-`SECONDARY:` line of its own. `scripts/vmtest/launcher-selftest.py` runs the
-real script against a stub guest (`fakevm.py`) and proves each of those paths,
-hangs included, without a VM; `scripts/tier2/spike-selftest.py` does the same
-for the headless spike's readiness probes.
+says shows the result -- rather than slept through. The baseline frames are
+waited for too (#345): nothing is looked at until GNOME Shell has logged that
+it finished starting (`checks.sh shell-started`, within
+`VMTEST_SESSION_BUDGET_S`), because corral's boot marker can arrive before the
+wallpaper and the startup overview do, and the login and bare-desktop frames
+are each kept only once `VMTEST_STABLE_SHOTS` screenshots in a row agree.
+A failed gate keeps its own exit status even when the journal cannot be
+collected, which is reported on a `SECONDARY:` line of its own.
+`scripts/vmtest/launcher-selftest.py` runs the real script against a stub
+guest (`fakevm.py`) and proves each of those paths, hangs and a late shell
+included, without a VM; `scripts/tier2/spike-selftest.py` does the same for the
+headless spike's readiness probes.
 
 ## Playwright mechanics that will bite you
 

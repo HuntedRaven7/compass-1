@@ -24,10 +24,15 @@ $FAKEVM_DIR/scenario.json says how this guest misbehaves:
     unreachable_after  an event after which every ssh fails as ssh does, 255
     hang          ["ssh:<subcommand>[:<needle>]", "corral:<verb>[:<needle>]"]
     fail          {"<subcommand>": exit status}
+    shell_started_after  seconds from the run's start before GNOME Shell says
+                  it has started (`checks.sh shell-started`); until then the
+                  screen is an unpainted desktop that holds perfectly still
+    settling_for  seconds after the shell starts, and again after the overview
+                  is dismissed, during which no two screenshots are alike
 
 Nothing here is a model of checks.sh beyond what launcher.sh reads back: the
-state line's keys, launcher-status's exit, and frames that pass or fail the
-real framediff gates for the reason the scenario names.
+state line's keys, launcher-status's exit, the shell's startup line, and frames
+that pass or fail the real framediff gates for the reason the scenario names.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ SSH_EVENTS = {
     "window-attached": "hide",
     "summon": "summon",
     "control-app-start": "control",
+    "overview-dismiss": "dismiss",
 }
 
 
@@ -125,7 +131,38 @@ def state_line() -> str:
     )
 
 
+def shell_started_at() -> float:
+    """When the pretend GNOME Shell finishes starting, from the run's start."""
+    boot = next((e["t"] for e in events() if e["kind"] == "boot"), 0.0)
+    return boot + float(scenario().get("shell_started_after", 0))
+
+
+def session_frame(now: float) -> str | None:
+    """What the shell has on screen of its own, or None once it rests on the desktop.
+
+    The sequence run 42074769175 caught part-way: an unpainted desktop that
+    holds still, the startup animation, the overview it opens at login, and the
+    animation of its closing once it is dismissed.
+    """
+    started = shell_started_at()
+    if now < started:
+        return "unpainted"
+    settling = float(scenario().get("settling_for", 0))
+    dismissed = [e["t"] for e in events() if e["kind"] == "dismiss"]
+    moving_since = dismissed[0] if dismissed else started
+    if now < moving_since + settling:
+        # Each screenshot differs from the one before it.
+        counter = STATE / "animation-frames"
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        return "anim-a" if count % 2 == 0 else "anim-b"
+    return None if dismissed else "overview"
+
+
 def screen() -> Path:
+    shell = session_frame(time.time())
+    if shell is not None:
+        return FRAMES / f"{shell}.png"
     s = scenario()
     started = typed = panel = control = False
     window = "open"
@@ -182,6 +219,17 @@ def ssh(argv: list[str]) -> int:
     if sub in s.get("fail", {}):
         print(f"stub: {sub} fails as the scenario asks", file=sys.stderr)
         return int(s["fail"][sub])
+    if sub == "shell-started":
+        if time.time() < shell_started_at():
+            print("GNOME Shell has not logged 'GNOME Shell started at' this boot yet")
+            return 1
+        print("bluefin gnome-shell[2779]: GNOME Shell started at (stub)")
+        return 0
+    if sub == "overview-dismiss" and time.time() < shell_started_at():
+        # As checks.sh, which refuses: before the shell has started the overview
+        # is closed only because the startup animation has not opened it yet.
+        print("refusing to dismiss the overview: GNOME Shell has not started", file=sys.stderr)
+        return 1
     if sub in SSH_EVENTS:
         record(SSH_EVENTS[sub])
 

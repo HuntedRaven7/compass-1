@@ -302,7 +302,7 @@ def differing_fields(env: dict, other: tuple) -> str:
 
 
 def render(verdicts: list[dict], blocking: bool) -> list[str]:
-    mode = "blocking (push to main)" if blocking else "informational (not a push to main)"
+    mode = "blocking (a run measuring main)" if blocking else "informational"
     lines = [
         (f"Performance gate, {mode}. Tolerance is the baseline median plus {K:g} x the "
          f"scaled MAD of the last {WINDOW} compatible `main` points, at least "

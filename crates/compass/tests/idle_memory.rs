@@ -283,8 +283,9 @@ fn the_idle_engine_reports_its_resident_set() {
 
     // The sanity ceiling. Deliberately loose: its job is to catch a leak or a
     // runaway allocation, not to police megabytes. Regressions inside it are
-    // perf-gate.py's to judge, and the sandboxed budget in §8.5 is gated in the
-    // VM tier at 20 MB.
+    // perf-gate.py's to judge. In the VM tier the sandboxed engine's own memory
+    // (RssAnon + RssShmem) is gated at 20 MB and its VmRSS against the tier's
+    // nightly series (PERF-GATES.md).
     const CEILING_KB: u64 = 150 * 1024;
     assert!(
         peak_hwm < CEILING_KB,

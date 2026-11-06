@@ -20,6 +20,10 @@ the guest (as `ssh`) and corral, with each failure staged on purpose:
     a hung remote command, probe, screenshot, collector          must be stopped
     a real ssh against a server that never sends a banner        must time out
     a run cancelled with SIGTERM mid-call                        must reap the call
+    a shell that finishes starting after the boot marker, and
+      a desktop still animating when it does (#345)              must pass, on still frames
+    a shell that never finishes starting                         must fail before any frame
+    a desktop that never holds still                             must fail on stillness
 
 and every hung stub leaves a grandchild behind, which must be gone afterwards,
 while an unrelated sentinel process started by this file must still be alive.
@@ -66,6 +70,10 @@ QUERY = (320, 200, 520, 220, (255, 255, 255))
 PANEL = (600, 300, 900, 500, (90, 90, 120))
 ERROR = (400, 300, 880, 500, (180, 40, 40))
 CONTROL = (100, 300, 400, 600, (60, 160, 60))
+# The session before it rests on the desktop, as run 42074769175 caught it: a
+# black desktop under the top bar, the startup animation, and the overview.
+UNPAINTED = [(0, 0, W - 1, H - 1, (0, 0, 0)), (0, 0, W - 1, 30, (40, 40, 40))]
+OVERVIEW = (300, 150, 980, 650, (120, 90, 140))
 FRAMES = {
     "desktop": [],
     "open": [WINDOW],
@@ -73,6 +81,10 @@ FRAMES = {
     "panel": [WINDOW, QUERY, PANEL],
     "error": [ERROR],
     "control": [CONTROL],
+    "unpainted": UNPAINTED,
+    "overview": [OVERVIEW],
+    "anim-a": [(200, 200, 500, 500, (150, 150, 150))],
+    "anim-b": [(600, 250, 900, 550, (150, 150, 150))],
 }
 
 # Small budgets, so a hang is seen to be stopped in seconds. Every scenario
@@ -181,6 +193,10 @@ class Run:
 
     def start(self) -> None:
         self.started = time.time()
+        # The guest's clock starts here: the pretend shell finishes starting
+        # `shell_started_after` seconds after launcher.sh does.
+        (self.state / "events.jsonl").write_text(
+            json.dumps({"kind": "boot", "t": self.started}) + "\n")
         # A session of its own, so a cancellation test can signal launcher.sh
         # the way a runner would without signalling this file.
         self.proc = subprocess.Popen(
@@ -327,6 +343,18 @@ SCENARIOS = {
                                                 {"VMTEST_DIAGNOSTICS_BUDGET_S": "3"}).run(),
     "silent-sshd": real_ssh_scenario,
     "cancelled": cancelled_scenario,
+    # #345: the shell finishes starting four seconds after the run begins, as
+    # it did after corral's boot marker in run 42074769175, and its startup and
+    # the overview's closing each animate for three seconds after that. The
+    # unpainted desktop before it holds perfectly still, so a wait for stillness
+    # alone would keep it.
+    "slow-session": lambda f: Run(f, "slow-session",
+                                  {"shell_started_after": 4, "settling_for": 3}).run(),
+    "session-never-starts": lambda f: Run(f, "session-never-starts",
+                                          {"shell_started_after": 1000},
+                                          {"VMTEST_SESSION_BUDGET_S": "4"}).run(),
+    "desktop-never-still": lambda f: Run(f, "desktop-never-still", {"settling_for": 1000},
+                                         {"VMTEST_SETTLE_BUDGET_S": "5"}).run(),
 }
 
 RESULTS: dict[str, concurrent.futures.Future] = {}
@@ -529,6 +557,50 @@ class Bounds(unittest.TestCase):
         self.assertOutput(run, "no diagnostics collected")
         self.assertLess(run.ended - run.signalled, 1 + SLACK_S, run.report())
         self.assertReaped(run)
+
+    # -- the baseline frames wait for the session (#345) --------------------
+
+    def test_baselines_wait_for_the_shell_and_for_still_frames(self):
+        run = self.result("slow-session")
+        self.assertStatus(run, 0)
+        self.assertOutput(run, "ok: the session's GNOME Shell to finish starting up")
+        self.assertOutput(run, "ok: the login frame held still")
+        self.assertOutput(run, "ok: the bare desktop held still")
+        # The shell was asked until it said so, and the screen was not looked
+        # at, nor the overview dismissed, before it had.
+        polls = [t for t, what in run.calls() if what.startswith("ssh shell-started")]
+        self.assertGreater(len(polls), 1, run.report())
+        self.assertGreater(run.first_call("corral screenshot"), polls[-1], run.report())
+        self.assertGreater(run.first_call("ssh overview-dismiss"), polls[-1], run.report())
+        # What was kept is the session at rest: the overview it opened at login,
+        # then the desktop once that had finished closing -- never the unpainted
+        # desktop, though it held still, nor a frame of either animation.
+        frames = Path(run.env["FAKEVM_FRAMES"])
+        self.assertEqual((run.out / "launcher-00z-login.png").read_bytes(),
+                         (frames / "overview.png").read_bytes(), run.report())
+        self.assertEqual((run.out / "launcher-00a-bare-desktop.png").read_bytes(),
+                         (frames / "desktop.png").read_bytes(), run.report())
+        # It waited through the closing animation's frames rather than keeping
+        # the first three it saw.
+        attempts = list((run.out / "attempts").glob("launcher-00a-bare-desktop-*.png"))
+        self.assertGreater(len(attempts), 3, run.report())
+
+    def test_a_shell_that_never_starts_fails_before_any_frame(self):
+        run = self.result("session-never-starts")
+        self.assertStatus(run, 124)
+        self.assertOutput(run, "FAIL: TIMEOUT: the session's GNOME Shell to finish starting "
+                               "up did not happen within 4s")
+        self.assertFalse([what for _, what in run.calls() if what.startswith("corral")],
+                         run.report())
+        self.assertOutput(run, "collecting the guest's journal")
+
+    def test_a_desktop_that_never_holds_still_fails_on_stillness(self):
+        run = self.result("desktop-never-still")
+        self.assertStatus(run, 124)
+        self.assertOutput(run, "FAIL: TIMEOUT: the login frame did not hold still within 5s")
+        self.assertTrue((run.out / "launcher-00z-login.png").exists(), run.report())
+        attempts = list((run.out / "attempts").glob("launcher-00z-login-*.png"))
+        self.assertGreater(len(attempts), 3, run.report())
 
 
 if __name__ == "__main__":

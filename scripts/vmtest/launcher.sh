@@ -51,7 +51,11 @@ checks=/usr/libexec/compass-vmtest/checks.sh
 #   VMTEST_PROBE_BUDGET_S     20   one read-only observation (ui-state, status)
 #   VMTEST_CORRAL_BUDGET_S    60   one corral screenshot, type or key
 #   VMTEST_DIAGNOSTICS_BUDGET_S 60 the journal collected after a failure
-#   VMTEST_SETTLE_BUDGET_S    30   one hide/summon/panel transition, all attempts
+#   VMTEST_SETTLE_BUDGET_S    30   one hide/summon/panel transition, all attempts,
+#                                  and one wait for a still desktop frame
+#   VMTEST_SESSION_BUDGET_S  120   GNOME Shell finishing its startup after the
+#                                  boot marker (4 s after it in run 42074769175)
+#   VMTEST_STABLE_SHOTS        3   consecutive alike frames that make "still"
 #   VMTEST_POLL_S              1   the pause between two attempts at one
 #   VMTEST_KILL_GRACE_S        5   SIGTERM to SIGKILL, for a call over budget
 #
@@ -64,6 +68,8 @@ probe_budget_s="${VMTEST_PROBE_BUDGET_S:-20}"
 corral_budget_s="${VMTEST_CORRAL_BUDGET_S:-60}"
 diagnostics_budget_s="${VMTEST_DIAGNOSTICS_BUDGET_S:-60}"
 settle_budget_s="${VMTEST_SETTLE_BUDGET_S:-30}"
+session_budget_s="${VMTEST_SESSION_BUDGET_S:-120}"
+stable_shots="${VMTEST_STABLE_SHOTS:-3}"
 poll_s="${VMTEST_POLL_S:-1}"
 kill_grace_s="${VMTEST_KILL_GRACE_S:-5}"
 
@@ -373,6 +379,108 @@ await_paint() {
   return 124
 }
 
+# await_guest SLUG WHAT BUDGET SUBCOMMAND [ARG...]
+#
+# Polls the read-only `checks.sh SUBCOMMAND ARG...` until it exits 0, within
+# BUDGET seconds. Returns 0 when it does; 255 at once when the guest stops
+# answering SSH; 124 when the budget runs out. For a state of the session
+# rather than of the launcher, so there is no launcher to be alive or dead.
+await_guest() {
+  local slug="$1" what="$2" budget="$3"
+  shift 3
+  local deadline=$(( SECONDS + budget )) attempt=0 status log
+  mkdir -p "$attempts_dir"
+  while :; do
+    attempt=$(( attempt + 1 ))
+    log="$attempts_dir/$slug-$(printf '%02d' "$attempt").txt"
+    status=0
+    guest_within "$(attempt_budget "$deadline" "$probe_budget_s")" \
+      "$checks" "$@" >"$log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+      echo "ok: $what (attempt $attempt)"
+      cat "$log"
+      return 0
+    fi
+    if [ "$status" -eq 255 ]; then
+      cat "$log"
+      echo "FAIL: the guest stopped answering SSH while waiting for $what." >&2
+      return 255
+    fi
+    echo "  attempt $attempt: not yet: $(tail -n 1 "$log")"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      break
+    fi
+    sleep "$poll_s"
+  done
+  echo "--- the last attempt ---"
+  cat "$log"
+  echo "FAIL: TIMEOUT: $what did not happen within ${budget}s ($attempt attempts, each kept in attempts/)." >&2
+  return 124
+}
+
+# await_still FRAME WHAT -- FRAMEDIFF-FLAG...
+#
+# Screenshots until $stable_shots frames in a row are alike -- each one passes
+# `framediff.py PREVIOUS THIS FRAMEDIFF-FLAG...` against the one before it --
+# then keeps the last as $out/FRAME. Returns 0, or 124 on timeout, keeping the
+# last shot as FRAME so the artifact shows what the wait gave up on.
+#
+# THIS IS THE ONE WAIT WHERE "STOPPED CHANGING" IS THE CONDITION, and only
+# because there is nothing to compare against: these are the frames every
+# later gate is judged from. Stillness alone would also accept a session that
+# has not started drawing (run 42074769175's black desktop held still), which
+# is why every caller first waits for the shell to say it has started
+# (await_guest ... shell-started), a state rather than a picture.
+await_still() {
+  local frame="$1" what="$2"
+  shift 2
+  if [ "${1:-}" = "--" ]; then shift; fi
+  local deadline=$(( SECONDS + settle_budget_s )) attempt=0 alike=0 status
+  local candidate log previous="" last_shot=""
+  mkdir -p "$attempts_dir"
+  while :; do
+    attempt=$(( attempt + 1 ))
+    candidate="$attempts_dir/${frame%.png}-$(printf '%02d' "$attempt").png"
+    log="${candidate%.png}.txt"
+    status=0
+    host_corral_within "$(attempt_budget "$deadline" "$corral_budget_s")" \
+      screenshot "$vm" -o "$candidate" >"$log" 2>&1 || status=$?
+    if [ "$status" -ne 0 ]; then
+      # No frame, so nothing to be alike: the run of alike frames starts over.
+      alike=0
+      previous=""
+    elif [ -z "$previous" ]; then
+      alike=1
+    elif python3 scripts/vmtest/framediff.py "$previous" "$candidate" "$@" >>"$log" 2>&1; then
+      alike=$(( alike + 1 ))
+    else
+      alike=1
+    fi
+    if [ "$status" -eq 0 ]; then
+      previous="$candidate"
+      last_shot="$candidate"
+    fi
+    if [ "$alike" -ge "$stable_shots" ]; then
+      cp "$candidate" "$out/$frame"
+      echo "ok: $what held still (attempt $attempt, $alike frames alike, kept as $frame)"
+      tail -n 2 "$log"
+      return 0
+    fi
+    echo "  attempt $attempt: not yet still ($alike of $stable_shots alike): $(tail -n 1 "$log")"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      break
+    fi
+    sleep "$poll_s"
+  done
+  if [ -n "$last_shot" ]; then
+    cp "$last_shot" "$out/$frame"
+  fi
+  echo "--- the last attempt ---"
+  cat "$log"
+  echo "FAIL: TIMEOUT: $what did not hold still within ${settle_budget_s}s ($attempt attempts, each kept in attempts/; the last frame taken is $frame)." >&2
+  return 124
+}
+
 # THE CONTAINMENT BOX IS DERIVED FROM THE WINDOW, NOT WRITTEN DOWN TWICE.
 #
 # `--expect-box` asserts the changed region lies inside the window, so the box
@@ -468,10 +576,36 @@ expect_box=(--expect-box "$box_x0" "$box_y0" "$box_x1" "$box_y1")
 echo "window ${win_w}x${win_h} centred on ${screen_w}x${screen_h}" \
      "-> containment box ${box_x0},${box_y0}..${box_x1},${box_y1}"
 
+echo "=== 0-. wait for GNOME Shell to finish starting (#345) ==="
+# THE BOOT MARKER IS NOT "THE DESKTOP HAS PAINTED", AND ONE RUN SHOWED IT.
+#
+# corral is ready when wait-graphical.sh says logind has a graphical session,
+# plus ten seconds. GNOME Shell is not finished by then on every run. In run
+# 42074769175 it logged "GNOME Shell started" at 18:05:56.7, four seconds after
+# corral returned, and everything below had already happened:
+#
+#   0    the login frame was a black desktop under the top bar (deviation
+#        0.0340, against 0.1203 on a good run), the wallpaper not loaded yet;
+#   0a   OverviewActive read false, because the shell's startup animation had
+#        not opened the overview yet, so dismissing it did nothing;
+#   0a2  the "bare desktop" was the same black frame;
+#   0c   by now the startup animation HAD opened the overview, and it stayed;
+#   0d   100% of the judged pixels differed, black against the overview.
+#
+# The shell logs that line from its startup-complete handler, which runs after
+# the backgrounds have loaded and the startup animation has finished. So it is
+# waited for as a state, read from the journal (checks.sh shell-started), and
+# only then is the screen looked at.
+await_guest shell-started "the session's GNOME Shell to finish starting up" \
+  "$session_budget_s" shell-started
+
+echo
 echo "=== 0. what the session is actually showing at login ==="
 # Evidence only, and kept separate from the bare desktop below because they
-# turned out not to be the same picture.
-shot "launcher-00z-login.png"
+# turned out not to be the same picture. Taken once the frame holds still, so
+# it shows the session's resting state rather than its startup animation.
+await_still launcher-00z-login.png "the login frame" \
+  -- --max-percent 0.1 --ignore-box 0 0 1279 139 --ignore-box 0 700 1279 799
 
 echo
 echo "=== 0a. put the session on a bare desktop (the Activities overview) ==="
@@ -496,8 +630,12 @@ guest "$checks" overview-dismiss
 
 echo
 echo "=== 0a2. the bare desktop, before anything of ours runs ==="
-# Evidence only. The control for every gate below is step 0c, not this.
-shot "launcher-00a-bare-desktop.png"
+# The reference step 0d judges the engine against, so it is taken once the
+# overview's closing animation has finished: when $stable_shots frames in a row
+# agree, within a tenth of 0d's 1% bound, over the region 0d judges (the same
+# two strips of shell furniture are left out, for the reasons given at 0d).
+await_still launcher-00a-bare-desktop.png "the bare desktop" \
+  -- --max-percent 0.1 --ignore-box 0 0 1279 139 --ignore-box 0 700 1279 799
 
 echo
 echo "=== 0b. start the engine, so the launcher has something to attach to ==="

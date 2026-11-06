@@ -12,17 +12,56 @@ and one workflow, [`perf.yaml`](../../.github/workflows/perf.yaml) (#306, #307).
 | `slas.ipc_roundtrip_ping` | criterion median, ns | the same | yes, on `main` |
 | `engine.idle_rss_kb` | median of 3 starts, kB, debug | `perf.yaml`, `crates/compass/tests/idle_memory.rs` | yes, on `main` |
 | `engine.idle_hwm_kb` | median of 3 starts, kB, debug | the same | yes, on `main` |
-| `engine.idle_rss_kb` (profile `flatpak`) | one reading, kB | VM tier, `launcher-rss` | recorded only |
+| `engine.idle_rss_kb` (profile `flatpak`) | one reading, kB | VM tier, `launcher-rss` | yes, on the nightly |
+| `engine.idle_anon_kb` (profile `flatpak`) | one reading, kB | VM tier, `launcher-rss` | yes, on the nightly; also a fixed 20 MB ceiling |
 | `window.idle_rss_kb` (renderer `llvmpipe`) | one reading, kB | VM tier, `launcher-rss` | recorded only |
 | `window.idle_rss_kb` (a hardware renderer) | one reading, kB | `perf-gate.py measure-rss`, by hand | **not yet recorded** |
 
-The engine and the resident window process have separate names. The engine draws nothing, so its
-figure means the same thing in a VM and on a real machine. The window's figure is mostly the
+The engine and the resident window process have separate names. The engine draws nothing, so the
+memory it allocates means the same thing in a VM and on a real machine. Its VmRSS does not quite
+(see [The engine in the VM tier](#the-engine-in-the-vm-tier)). The window's figure is mostly the
 renderer: it is about 135 MB under llvmpipe, where wgpu's software rasteriser lives inside the
 process. A threshold set from that figure would gate Mesa.
 
 The series stores criterion's **median**, not the mean that criterion prints. On the IPC row the two
 statistics differ by about 6%, so a series has to use one of them throughout.
+
+## The engine in the VM tier
+
+The VM tier runs the shipped Flatpak in a real GNOME session, so its engine figures are judged
+against the tier's own series: `vm-tier.yaml` fetches `perf-points-*` from its earlier runs on `main`
+(`perf-gate.py fetch --workflow vm-tier.yaml`) and compares with the same rule as below. The tier
+has no push trigger, so its nightly run is the one that measures `main`, and a regression blocks
+that run. Dispatched and tagged runs report. The tier runs once a night, so the commonest CPU model
+needs about six weeks to fill a window of 30. Until then the gate reports and does not judge.
+
+`engine.idle_anon_kb` is `RssAnon + RssShmem`: what the engine allocated. It also keeps a fixed
+ceiling of 20 MB inside `launcher-rss`. `engine.idle_rss_kb` is VmRSS, and it used to have that
+ceiling. #345 moved it here. Every nightly from 2026-09-26 on read 43–45 MB and failed, against
+9.8 and 10.2 MB in the two September runs the ceiling was set from. The Flatpak bundle of run
+42007055217, started locally the way `engine-start` starts it (`serve --no-hotkey`, a session bus,
+the network), reads 42–44 MB as well. `/proc` breaks it down like this, locally and in the VM tier
+on this change's own run (42131817713, 45.9 MB):
+
+| part | MB, local | MB, VM | what it is |
+|---|---|---|---|
+| `RssAnon + RssShmem` | 9.4 | 10.6 | the engine's own memory |
+| `RssFile`, `/app/bin/compass` | 25 | 28 | clean read-only pages of the 63 MB binary that the engine shares with the window. 18 MB of it is text, locally |
+| `RssFile`, shared libraries | 8 | 7.2 | 5.4 MB (5.5 MB in the VM) of this is `libcrypto` |
+
+Most of the binary's share is the kernel's doing. The kernel maps file pages 64 kB around each
+fault (`fault_around_bytes`). With that set to 4 kB, the same engine maps 7.8 MB of text instead of
+18 MB, and its VmRSS is 26.8 MB. That share depends on the binary's size and layout and on the
+kernel's settings, not on what the engine allocates. It grew when Compass became one binary and the
+C++ engine was removed (#235). A fixed number cannot tell that apart from a leak. A series in one
+environment can.
+
+The libraries' share comes from a feature. At start, the engine fetches the exchange rates (#228)
+through ureq's native-tls agent. That loads OpenSSL, and the agent stays for the engine's lifetime.
+It costs 2.7 MB of anonymous memory and 3.7 MB of `libcrypto` pages. With
+`COMPASS_DISABLE_AUTO_RATE_REFRESH=1` the engine reads 33.9 MB. The per-commit test sets that
+variable and has no session bus, so its figure is not the session's. It also measures a debug
+build: 74 MB on the hosted runner in run 42128757578.
 
 ## A point
 
@@ -143,8 +182,10 @@ comes from the same rule, applied to its own series, once 30 points exist for an
 ## What blocks, and when
 
 - **A push to `main`:** a regression fails the `perf-gate` job (`--blocking`).
-- **A pull request, a scheduled run or a manual run:** a regression produces a warning annotation and
-  a row in the step summary. The job stays green.
+- **The VM tier's nightly run on `main`:** a regression in an `engine.*` figure fails the launcher
+  job (`--blocking`). The tier has no push trigger, so the nightly is its run on `main`.
+- **A pull request, any other scheduled run, a manual run or a tag:** a regression produces a warning
+  annotation and a row in the step summary. The job stays green.
 - **Any event:** a run with no figure for an expected metric fails. Either the bench did not run or a
   metric was renamed, and a gate that measured nothing must not pass.
 - **Not judged, on any event:** an environment with fewer than 30 points, a metric with no baseline,

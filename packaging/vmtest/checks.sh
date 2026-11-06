@@ -50,6 +50,23 @@ wait_for() {
   echo "$what: after ${SECONDS}s"
 }
 
+# Whether the session's GNOME Shell has finished starting, from the line it
+# logs in its startup-complete handler: after the backgrounds have loaded and
+# the startup animation (the overview, on a session with no windows) is over.
+# Prints that line, or why not. Read by uid, which is how the session journal
+# already shows it (`journal` below), and which leaves the greeter's shell out.
+shell_started() {
+  local line
+  line="$(journalctl -b --no-pager -o short-precise "_UID=$(uid)" 2>/dev/null \
+    | grep -m1 -F 'GNOME Shell started at' || true)"
+  if [ -n "$line" ]; then
+    echo "$line"
+    return 0
+  fi
+  echo "GNOME Shell has not logged 'GNOME Shell started at' this boot yet"
+  return 1
+}
+
 # True when some process is running the named binary, or when the sentinel says
 # it already exited. Compares the resolved /proc/PID/exe rather than matching a
 # command line, so it cannot match the shell that is doing the asking.
@@ -1149,18 +1166,31 @@ $((ready_ms - start_ms)) ms total (llvmpipe, reported not gated — see §8.5)"
     #
     # The engine is the part that is actually resident. It holds the index and
     # serves IPC, it runs whether or not a window is open, and it draws nothing,
-    # so its RSS is comparable across a VM and a real machine. Measured on an
-    # ordinary x86-64 container outside any VM it idles at 6.2 MB.
+    # so the memory it allocates is comparable across a VM and a real machine.
+    # Its VmRSS is not, quite: see below.
     #
-    # Both are printed, labelled, and neither is gated -- the numbers decide the
-    # threshold, not the other way round (ADR-0010).
+    # Both are printed and labelled. What is gated, and why it is not VmRSS, is
+    # below the measurement.
     engine_pid="$(head -1 "$ENGINE_PIDS" 2>/dev/null || true)"
+    erss_kb="" eanon_kb=""
     if [ -n "$engine_pid" ] && [ -r "/proc/$engine_pid/status" ]; then
-      erss_kb="$(awk '/^VmRSS:/{print $2}' "/proc/$engine_pid/status" 2>/dev/null || echo 0)"
+      # One read of status, so the parts add up to the whole they came with.
+      read -r erss_kb eanon_kb efile_kb eshmem_kb < <(awk '
+        /^VmRSS:/ {rss = $2} /^RssAnon:/ {anon = $2}
+        /^RssFile:/ {file = $2} /^RssShmem:/ {shmem = $2}
+        END {print rss + 0, anon + 0, file + 0, shmem + 0}' \
+        "/proc/$engine_pid/status" 2>/dev/null || echo 0 0 0 0)
+      eanon_kb=$((eanon_kb + eshmem_kb))
       printf 'engine   pid %s: VmRSS %s kB (%s MB) -- resident, draws nothing\n' \
         "$engine_pid" "$erss_kb" "$((erss_kb / 1024))"
-    else
-      erss_kb=""
+      printf '  = RssAnon+RssShmem %s kB (%s MB), its own memory\n' \
+        "$eanon_kb" "$((eanon_kb / 1024))"
+      printf '  + RssFile %s kB (%s MB), clean pages of files it maps, shared and reclaimable\n' \
+        "$efile_kb" "$((efile_kb / 1024))"
+      echo '  the largest file mappings (Rss kB):'
+      awk '/^[0-9a-f]+-[0-9a-f]+ / {name = $6} /^Rss:/ {if (name ~ /^\//) rss[name] += $2}
+        END {for (n in rss) printf "    %8d  %s\n", rss[n], n}' \
+        "/proc/$engine_pid/smaps" 2>/dev/null | sort -rn | head -n 6 || true
     fi
 
     printf 'Phase 1 gate is "idle RSS < 30 MB".\n'
@@ -1171,64 +1201,84 @@ $((ready_ms - start_ms)) ms total (llvmpipe, reported not gated — see §8.5)"
     echo '      an upper bound rather than the shipping figure; the engine figure is not.'
 
     # The same figures, machine-readable, for `perf-gate.py extract` (#307).
-    # Two names, because the window's figure is mostly the renderer and is
-    # only comparable with other llvmpipe readings, while the engine's is not.
-    # A zero is an unreadable /proc, not a reading, so it is not emitted.
+    # The window's figure is mostly the renderer and is only comparable with
+    # other llvmpipe readings. The engine's two are judged against the VM
+    # tier's own nightly series (vm-tier.yaml, PERF-GATES.md). A zero is an
+    # unreadable /proc, not a reading, so it is not emitted.
     if [ "${rss_kb:-0}" -gt 0 ]; then
       printf 'perf-point window.idle_rss_kb %s kB\n' "$rss_kb"
     fi
     if [ "${erss_kb:-0}" -gt 0 ]; then
       printf 'perf-point engine.idle_rss_kb %s kB\n' "$erss_kb"
     fi
+    if [ "${eanon_kb:-0}" -gt 0 ]; then
+      printf 'perf-point engine.idle_anon_kb %s kB\n' "$eanon_kb"
+    fi
 
-    # THE ENGINE FIGURE IS NOW GATED, AND THE CEILING COMES FROM MEASUREMENT.
+    # THE FIXED CEILING IS ON THE ENGINE'S OWN MEMORY, NOT ON VmRSS. (#345)
     #
-    # ADR-0010: recorded before gated. It has been recorded, and the numbers
-    # are steady --
+    # It was set on VmRSS from two VM runs that read 9.8 and 10.2 MB in
+    # September, and every nightly since 2026-09-26 has read 43-45 MB and
+    # failed. Run 42007055217's Flatpak bundle, run locally the way
+    # engine-start runs it (`serve --no-hotkey`, a session bus, the network),
+    # reads 42-44 MB too, and /proc says what it is:
     #
-    #   10,064 kB (9 MB)   run on 4254ba3
-    #   10,484 kB (10 MB)  run on f6bc770
-    #    ~6,300 kB (6.2 MB) on an ordinary x86-64 container, no VM
+    #    9.4 MB  RssAnon + RssShmem: what the engine allocated
+    #   25   MB  RssFile of /app/bin/compass, clean read-only pages of the 63 MB
+    #            binary the engine shares with the window (18 MB of it text)
+    #    8   MB  RssFile of shared libraries, 5.4 MB of it libcrypto
     #
-    # -- a 4% spread across two VM runs, so a ceiling is defensible where an
-    # equality would not be.
+    # The binary's share is not memory the engine asked for. The kernel maps
+    # file pages 64 kB around each fault (fault_around_bytes); set to 4 kB, the
+    # same engine reads 7.8 MB of text instead of 18, and 26.8 MB in all. So
+    # that part follows the binary's size and layout and the kernel's settings,
+    # not the engine's allocations, and it grew as Compass grew into one binary
+    # with the C++ engine gone (#235). The libraries' share is real and comes
+    # with a feature: the exchange-rate fetch at start (#228) loads OpenSSL
+    # through ureq's native-tls agent, which stays for the engine's lifetime,
+    # and costs 2.7 MB of anonymous memory and 3.7 MB of libcrypto pages
+    # (COMPASS_DISABLE_AUTO_RATE_REFRESH=1 reads 33.9 MB). The per-commit test
+    # (crates/compass/tests/idle_memory.rs) sets that variable and has no bus.
     #
-    # ENGINE_RSS_CEILING_MB is 20: about double the measured value, and
-    # two-thirds of the #13 SLA. Deliberately not tight to the measurement,
-    # because the index grows with the image's application set and somebody
-    # else's Bluefin rebase must not turn our run red. Deliberately not 30
-    # either -- sitting on the SLA would let the engine triple before anything
-    # complained, which is the decay this gate exists to prevent.
+    # So VmRSS is no longer held to a fixed number: it is judged against the
+    # VM tier's own nightly series, in its own environment, as #339 judges the
+    # per-commit figure. The fixed ceiling stays where it measures the engine,
+    # on RssAnon + RssShmem, at the same 20 MB: about double the 10.6 MB it
+    # read in this tier (run 42131817713; 9.4 MB locally) and two-thirds of the
+    # #13 SLA, for the reasons it was 20 before
+    # -- loose enough that another application set or Bluefin rebase does not
+    # turn the run red, tight enough that the engine cannot double unnoticed.
     #
-    # Only the engine is gated. The launcher's figure is mostly llvmpipe, so
-    # gating it would gate Mesa.
-    ENGINE_RSS_CEILING_MB=20
+    # Only the engine is gated here. The launcher's figure is mostly llvmpipe,
+    # so gating it would gate Mesa.
+    ENGINE_ANON_CEILING_MB=20
     if [ -z "$erss_kb" ]; then
       # Not a pass. A memory gate that quietly skips when it cannot find its
       # process reports the same green as one that measured and was satisfied.
       echo "FAIL: no engine pid recorded, so the idle-RSS gate did not run" >&2
       exit 1
     fi
-    engine_mb=$((erss_kb / 1024))
+    engine_mb=$((eanon_kb / 1024))
     # A floor as well as a ceiling, and it is not defensive padding: the read
-    # above is `awk ... || echo 0`, so an unreadable /proc entry -- or a process
+    # above falls back to zeros, so an unreadable /proc entry -- or a process
     # that exits between the existence check and the read -- yields 0, and 0 is
-    # comfortably under any ceiling. An engine reporting no resident memory is a
-    # failed measurement, not a lean engine, and it must not report green. This
-    # is the same defect the index floor had when it asserted `-gt 0`.
-    if [ "$erss_kb" -lt 1024 ]; then
-      echo "FAIL: engine idle RSS read as ${erss_kb} kB, which is not a measurement" >&2
+    # comfortably under any ceiling. An engine reporting no memory of its own is
+    # a failed measurement, not a lean engine, and it must not report green.
+    # This is the same defect the index floor had when it asserted `-gt 0`.
+    if [ "$eanon_kb" -lt 1024 ]; then
+      echo "FAIL: engine idle RssAnon read as ${eanon_kb} kB, which is not a measurement" >&2
       echo "      /proc/$engine_pid/status was unreadable, or the engine exited." >&2
       exit 1
     fi
-    if [ "$engine_mb" -ge "$ENGINE_RSS_CEILING_MB" ]; then
-      echo "FAIL: engine idle RSS is ${engine_mb} MB, at or over the ${ENGINE_RSS_CEILING_MB} MB ceiling" >&2
-      echo "      (measured at 9-10 MB when this ceiling was set; the #13 SLA is 30 MB)" >&2
+    if [ "$engine_mb" -ge "$ENGINE_ANON_CEILING_MB" ]; then
+      echo "FAIL: engine idle RssAnon+RssShmem is ${engine_mb} MB, at or over the ${ENGINE_ANON_CEILING_MB} MB ceiling" >&2
+      echo "      (10.6 MB in run 42131817713, when the ceiling moved to it in #345; the #13 SLA is 30 MB)" >&2
       echo "      Find what grew. Do not raise the ceiling to fit." >&2
       exit 1
     fi
-    printf '  engine   %s MB — under the %s MB ceiling (SLA 30 MB)\n' \
-      "$engine_mb" "$ENGINE_RSS_CEILING_MB"
+    printf '  engine   %s MB of its own — under the %s MB ceiling (SLA 30 MB);\n' \
+      "$engine_mb" "$ENGINE_ANON_CEILING_MB"
+    printf '           VmRSS %s MB is judged against the nightly series\n' "$((erss_kb / 1024))"
     ;;
 
   # Harvest a real desktop-entry corpus from this Bluefin box.
@@ -1812,7 +1862,18 @@ PY
   # fine, and the read-back is then trivially true. So this stays correct if a
   # later GNOME stops opening the overview at login, rather than becoming a step
   # that fails because it had nothing to do.
+  #
+  # But only once the shell has finished starting (#345). Before that the
+  # overview is closed because the startup animation has not opened it YET, and
+  # it opens after this has returned: run 42074769175 read false here, did
+  # nothing, and had the overview on screen for every frame after. So this
+  # refuses to run early rather than succeed at nothing.
   overview-dismiss)
+    if ! started="$(shell_started)"; then
+      echo "refusing to dismiss the overview: $started" >&2
+      exit 1
+    fi
+    echo "$started"
     u="$(uid)"
     shell_prop() {
       local method="$1"; shift
@@ -1836,17 +1897,26 @@ PY
 
     # Read back, rather than trusting the write. The property is set on the
     # shell's side of an async animation, so the value can be false while the
-    # overview is still on its way out; the poll covers the first and the sleep
-    # covers the second. If the frame is still mid-animation the run does not
-    # silently pass on it -- step 0d compares this desktop against the one taken
-    # after the engine starts and requires them identical, which a moving
-    # overview cannot be.
+    # overview is still on its way out. The poll covers the first. The second
+    # is launcher.sh's to wait out, by screenshots until the frame holds still
+    # (await_still): a fixed pause here could only guess how long llvmpipe
+    # takes to draw the animation, and step 0d is judged against that frame.
     if ! wait_for "the overview to report itself closed" 30 overview_closed; then
       echo "OverviewActive is still: $(shell_prop Get 2>&1 || echo '(unreadable)')" >&2
       exit 1
     fi
-    sleep 2
     echo "OverviewActive now: $(shell_prop Get 2>&1 || echo '(unreadable)')"
+    ;;
+
+  # Has the session's GNOME Shell finished starting? (#345)
+  #
+  # Read-only, and polled by launcher.sh before it looks at the screen at all.
+  # Exits 0 and prints the shell's own line once it has; exits 1, saying so,
+  # until then.
+  shell-started)
+    if ! shell_started; then
+      exit 1
+    fi
     ;;
 
   # Did the engine actually find any applications? (#95)

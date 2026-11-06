@@ -455,6 +455,12 @@ jobs:
     needs: flatpak
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+    # `actions: read` lets perf-gate.py fetch the series from earlier nightly
+    # runs' artifacts. A job-level block replaces the workflow default, so
+    # `contents: read` is restated for the checkout.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -516,12 +522,10 @@ jobs:
           scripts/vmtest/launcher.sh vmtest-out launcher 2>&1 \
             | tee vmtest-out/launcher-driver.log
 
-      # The `launcher-rss` figures as perf points (#307), kept for 90 days so a
-      # series exists when someone sets a window budget. Recorded, not gated:
-      # this tier does not run on pushes to `main`, and the window's figure here
-      # is llvmpipe's, so it must never become the hardware baseline -- the
-      # `renderer` key is what stops that. The engine figure is already held to
-      # its 20 MB ceiling inside `launcher-rss`.
+      # The `launcher-rss` figures as perf points (#307), kept for 90 days. The
+      # window's figure here is llvmpipe's, so it must never become the
+      # hardware baseline -- the `renderer` key is what stops that -- and it is
+      # recorded only. The engine's two are judged below.
       - name: Record the idle RSS figures as perf points
         run: |
           python3 scripts/ci/perf-gate.py extract vmtest-out/launcher-driver.log \
@@ -540,6 +544,44 @@ jobs:
           path: perf-points/vm-rss.jsonl
           if-no-files-found: error
           retention-days: 90
+
+      # THE ENGINE'S VmRSS IS JUDGED AGAINST THIS TIER'S OWN SERIES (#345).
+      #
+      # It used to be held to a fixed 20 MB inside `launcher-rss`, and has read
+      # 43-45 MB on every nightly since 2026-09-26. Most of that is clean pages
+      # of the binary the engine shares with the window, whose count follows
+      # the binary's size and the kernel's fault-around rather than anything
+      # the engine allocates (the breakdown is in `launcher-rss` and
+      # PERF-GATES.md). So VmRSS is judged as #339 judges the per-commit
+      # figure: against the last 30 compatible points from this workflow's
+      # runs on `main`, in this environment. The engine's own memory
+      # (`engine.idle_anon_kb`) keeps its fixed ceiling in `launcher-rss` and
+      # is judged here as well.
+      #
+      # Blocking on the nightly, which is how this tier measures `main` -- it
+      # has no push trigger. Every other event reports. Until an environment
+      # has 30 points the gate reports the count and does not judge.
+      - name: Judge the engine's idle RSS against the nightly series
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BLOCKING: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
+        run: |
+          set -o pipefail
+          grep -F '"metric": "engine.' perf-points/vm-rss.jsonl > "$RUNNER_TEMP/vm-engine.jsonl"
+          python3 scripts/ci/perf-gate.py fetch \
+            --repo "${{ github.repository }}" \
+            --workflow vm-tier.yaml \
+            --exclude-run "${{ github.run_id }}" \
+            --dest vm-perf-baseline
+          mode=()
+          if [ "$BLOCKING" = true ]; then mode=(--blocking); fi
+          python3 scripts/ci/perf-gate.py compare "${mode[@]}" \
+            --current "$RUNNER_TEMP/vm-engine.jsonl" \
+            --baseline vm-perf-baseline \
+            --resets scripts/ci/perf-resets.json \
+            --expect engine.idle_rss_kb \
+            --expect engine.idle_anon_kb \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: What the boot reported
         if: always()
