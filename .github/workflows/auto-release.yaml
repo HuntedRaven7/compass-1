@@ -1,0 +1,101 @@
+name: Auto release
+
+# Cuts a release when main has shipped something since the last one, so new
+# work reaches the Flatpak remote and the GitHub release without anyone
+# remembering `make bump-patch`. Once a day, batching the day's merges, and
+# only when main's own CI passed on the commit it would release.
+#
+# What it does is what a person would: scripts/bump_version.sh writes the
+# version everywhere and commits it, the commit goes onto main, and the
+# existing workflows take over. Pushed with the workflow token, that commit
+# starts no workflow by itself, so this dispatches the two that a merged bump
+# starts: release.yml (tag, GitHub release, AppImage, Homebrew checksum PR)
+# and flatpak.yaml (whose green run publish-flatpak.yaml publishes).
+#
+# scripts/ci/release-due.py decides whether a release is due and how big;
+# CONTRIBUTING.md ("Releasing") says what counts.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: auto reads the commits; a level forces a release of that size
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Self-test the decision
+        run: python3 scripts/ci/release-due.py --selftest
+
+      - name: Is a release due?
+        id: due
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: python3 scripts/ci/release-due.py --bump "$BUMP"
+
+      - name: Did main's CI pass on this commit?
+        id: green
+        if: steps.due.outputs.bump != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow rust.yaml \
+            --commit "$sha" --event push --limit 1 --json conclusion --jq '.[0].conclusion // ""')
+          echo "Rust CI on ${sha}: ${conclusion:-not run}"
+          if [[ "$conclusion" != "success" ]]; then
+            echo "::warning::not releasing ${sha}: its Rust CI is '${conclusion:-not run}', not success"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # master
+        if: steps.green.outputs.ok == 'true'
+        with:
+          # bump_version.sh refreshes Cargo.lock with `cargo metadata`; the
+          # pinned toolchain in rust-toolchain.toml is installed on first use.
+          toolchain: stable
+
+      - name: Bump, push to main and start the release
+        if: steps.green.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ steps.due.outputs.bump }}
+          REASON: ${{ steps.due.outputs.reason }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./scripts/bump_version.sh "$BUMP"
+          tag=$(sed -n 's/^  tag: "\(.*\)"$/\1/p' manifest.yaml)
+          # Fast-forward only: if main moved since checkout, this fails and
+          # tomorrow's run releases the newer commit instead.
+          git push origin HEAD:main
+          echo "### Released ${tag} (${BUMP})" >> "$GITHUB_STEP_SUMMARY"
+          echo "${REASON}" >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run flatpak.yaml --repo "$GITHUB_REPOSITORY" --ref main

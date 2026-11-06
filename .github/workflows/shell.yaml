@@ -184,3 +184,8 @@ jobs:
       # compositor, client and bus.
       - name: The headless spike bounds its probes and notices a dead compositor
         run: python3 scripts/tier2/spike-selftest.py
+
+      # What auto-release.yaml counts as shipped and how big a bump it makes:
+      # checked on every PR rather than first at 04:00 on main.
+      - name: The release decision still counts what ships
+        run: python3 scripts/ci/release-due.py --selftest
