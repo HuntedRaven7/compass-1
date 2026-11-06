@@ -1,4 +1,6 @@
-FROM quay.io/fedora/fedora:44@sha256:a47ee3c7d6ee0a66e0e6e1d637b856cb42ed0093edc971fb67a42e57eaa48b65
+# quay.io deletes a tag's superseded digests, so "manifest unknown" on this line means
+# the pin is stale: repin to the tag's current manifest-list digest.
+FROM quay.io/fedora/fedora:44@sha256:d86cfa65ed3ac64009cb7039eea74657365733819806a41fec0510aa1fccc314
 RUN dnf install -y --setopt=install_weak_deps=False rustup gcc gcc-c++ make pkgconf-pkg-config openssl-devel libxkbcommon-devel libX11-devel libxcb-devel fontconfig-devel freetype-devel python3 xorg-x11-server-Xvfb xdotool mesa-dri-drivers mesa-vulkan-drivers vulkan-loader libXcursor libXi libXrandr libXinerama libXrender libxkbcommon-x11 xcb-util-cursor xcb-util-keysyms dbus-libs alsa-lib tar gzip findutils git ca-certificates
 RUN /usr/bin/rustup-init -y --no-modify-path --default-toolchain 1.94.1 --profile minimal
 ENV PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

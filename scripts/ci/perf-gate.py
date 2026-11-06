@@ -6,10 +6,17 @@ Run:
   perf-gate.py extract LOG --profile P --renderer R --out OUT.jsonl
   perf-gate.py measure-rss --pid PID --metric M --renderer R --profile P --out OUT.jsonl
   perf-gate.py fetch --repo OWNER/NAME --dest DIR [--limit N] [--exclude-run ID]
+                     [--pattern GLOB]
   perf-gate.py compare --current CUR.jsonl --baseline DIR_OR_FILE... [--blocking]
                        [--expect METRIC]... [--resets FILE]
+  perf-gate.py versus --current CUR.jsonl --report REPORT.json --baseline DIR_OR_FILE...
+                      [--blocking] [--expect METRIC]... [--resets FILE]
   perf-gate.py analyse SERIES.jsonl... [--k K] [--window N]
   perf-gate.py --selftest
+
+`versus` judges scripts/bench/compare.py's points: Compass against upstream
+Vicinae, measured in the same run, with the tolerance taken from the spread of
+their ratio on `main` (#310). Its section below says how.
 
 WHY THIS EXISTS
 
@@ -292,11 +299,11 @@ def judge(current: dict, baseline: list[dict], resets: list[dict]) -> dict:
                       "tolerance": allowed}
 
 
-def differing_fields(env: dict, other: tuple) -> str:
+def differing_fields(env: dict, other: tuple, fields: tuple = KEY_FIELDS) -> str:
     """What separates this run's environment from a baseline's, field by field."""
     return ", ".join(
         f"{field} is {theirs} there and {env[field]} here"
-        for field, theirs in zip(KEY_FIELDS, other)
+        for field, theirs in zip(fields, other)
         if theirs != env[field]
     )
 
@@ -363,6 +370,147 @@ def compare(current: list[dict], baseline: list[dict], resets: list[dict],
 
 
 # --------------------------------------------------------------------------
+# Against upstream Vicinae (#310)
+
+# A `versus` point is one comparable action from `scripts/bench/compare.py`:
+# `value` is Compass's median and `upstream.value` upstream's, both from the same
+# run on the same machine. Beyond KEY_FIELDS, a series shares the conditions both
+# engines ran under -- whether they had a network (upstream fetches currency rates
+# at start when it can) and the desktop-entry corpus both index -- and the exact
+# upstream artifact, so that bumping baseline.json starts a new series.
+VERSUS_FIELDS = KEY_FIELDS + ("network", "corpus", "upstream")
+UPSTREAM_REQUIRED = ("repository", "tag", "commit", "sha256", "value")
+
+STATUS_BEHIND = "behind"
+
+
+def validate_versus(point: dict) -> None:
+    """Raise PointError unless the point also says which upstream it was measured against."""
+    validate(point)
+    upstream = point.get("upstream")
+    if not isinstance(upstream, dict):
+        raise PointError(f"point for {point['metric']} has no upstream figure")
+    missing = [f"upstream.{field}" for field in UPSTREAM_REQUIRED if upstream.get(field) in (None, "")]
+    missing += [f"env.{field}" for field in ("network", "corpus") if not point["env"].get(field)]
+    if missing:
+        raise PointError(f"point for {point['metric']} lacks {', '.join(missing)}")
+    if not isinstance(upstream["value"], (int, float)) or upstream["value"] <= 0:
+        raise PointError(f"point for {point['metric']} has upstream value {upstream['value']!r}")
+
+
+def versus_identity(point: dict) -> dict:
+    return {field: point["env"].get(field) for field in VERSUS_FIELDS[:-1]} | {
+        "upstream": f"{point['upstream']['tag']} sha256={point['upstream']['sha256']}"}
+
+
+def versus_key(point: dict) -> tuple:
+    return tuple(versus_identity(point).values())
+
+
+def ratio(point: dict) -> float:
+    """Compass's median over upstream's, from one run: below 1 is ahead of upstream."""
+    return point["value"] / point["upstream"]["value"]
+
+
+def judge_versus(current: dict, baseline: list[dict], resets: list[dict]) -> dict:
+    """Whether Compass is no worse than upstream, give or take the measured spread.
+
+    The limit is a ratio of 1 + max(K x the relative scaled MAD of the ratio over the
+    last WINDOW compatible runs on `main`, MIN_RELATIVE). The ratio pairs both engines
+    within one run, so a slower machine slows both sides and drops out of it; what is
+    left in its spread is the noise of the comparison itself.
+    """
+    metric = current["metric"]
+    same_metric = [
+        point
+        for point in baseline
+        if point["metric"] == metric
+        and point["statistic"] == current["statistic"]
+        and point["unit"] == current["unit"]
+        and point["sha"] != current["sha"]
+    ]
+    after = reset_after(resets, metric)
+    if after is not None:
+        same_metric = [point for point in same_metric if point["recorded_at"] >= after]
+
+    verdict = {"metric": metric, "value": current["value"], "unit": current["unit"],
+               "upstream": current["upstream"]["value"], "ratio": ratio(current),
+               "identity": versus_identity(current)}
+    if not same_metric:
+        return verdict | {"status": STATUS_NO_BASELINE}
+
+    compatible = [point for point in same_metric if versus_key(point) == versus_key(current)]
+    if not compatible:
+        others = sorted({versus_key(point) for point in same_metric}, key=str)
+        return verdict | {"status": STATUS_INCOMPATIBLE, "others": others}
+
+    compatible.sort(key=lambda point: point["recorded_at"])
+    window = [ratio(point) for point in compatible[-WINDOW:]]
+    if len(window) < MIN_POINTS:
+        return verdict | {"status": STATUS_INSUFFICIENT, "n": len(window)}
+
+    allowed = max(K * scaled_mad(window) / statistics.median(window), MIN_RELATIVE)
+    status = STATUS_BEHIND if verdict["ratio"] > 1 + allowed else STATUS_OK
+    return verdict | {"status": status, "n": len(window), "tolerance": allowed}
+
+
+def render_versus(verdicts: list[dict], report: dict, blocking: bool) -> list[str]:
+    mode = "blocking (push to main)" if blocking else "informational (not a push to main)"
+    upstream, compass = report["upstream"], report["compass"]
+    lines = [
+        (f"Upstream gate, {mode}. Each action passes when Compass's median is at most "
+         f"{upstream['tag']}'s median from the same run times (1 + tolerance). The tolerance is "
+         f"{K:g} x the relative scaled MAD of the Compass/upstream ratio over the last {WINDOW} "
+         f"compatible `main` runs, at least {MIN_RELATIVE:.0%}; docs/rust-engine/PERF-GATES.md "
+         "says why."),
+        "",
+        f"| action | Compass | Vicinae {upstream['tag']} | ratio | limit (n) | verdict |",
+        "|---|---|---|---|---|---|",
+    ]
+    notes = []
+    for verdict in verdicts:
+        unit = verdict["unit"]
+        row = (f"| {verdict['metric']} | {verdict['value']:,.1f} {unit} "
+               f"| {verdict['upstream']:,.1f} {unit} | {verdict['ratio']:.3f} ")
+        status = verdict["status"]
+        if status in (STATUS_OK, STATUS_BEHIND):
+            mark = "✅ no worse than upstream" if status == STATUS_OK else "❌ behind upstream"
+            lines.append(row + f"| {1 + verdict['tolerance']:.3f} ({verdict['n']}) | {mark} |")
+        elif status == STATUS_INSUFFICIENT:
+            lines.append(row + f"| {verdict['n']} of {MIN_POINTS} runs "
+                         "| ⚠️ not judged: too few compatible runs to measure the spread |")
+        elif status == STATUS_NO_BASELINE:
+            lines.append(row + "| none | ⚠️ not judged: no `main` run has recorded this action yet |")
+        else:
+            lines.append(row + "| other environments only "
+                         "| ⛔ refused: the only series is from another environment |")
+            for other in verdict["others"]:
+                notes.append(f"  * {verdict['metric']}: a series exists where "
+                             f"{differing_fields(verdict['identity'], other, VERSUS_FIELDS)}.")
+    machine, method = report["machine"], report["method"]
+    dirty = " with uncommitted changes" if compass.get("dirty") else ""
+    lines += [
+        "",
+        (f"Compass: commit {compass['commit']}{dirty}, `{compass['version']}`, "
+         f"built by {compass['toolchain']}, binary sha256 {compass['sha256']}."),
+        (f"Vicinae: {upstream['repository']}@{upstream['commit']} ({upstream['tag']}, unmodified), "
+         f"AppImage sha256 {upstream['appimage_sha256']}."),
+        (f"Both measured on: {machine['cpu']}, {machine['cpus']} cores, {machine['arch']}, "
+         f"{machine['os']}, kernel {machine['kernel']}; {method['compositor']} ({method['sway']}); "
+         f"network {method['network']}; {method['corpus_entries']} desktop entries, corpus "
+         f"sha256 {method['corpus_sha256']}; {method['runs']} alternating runs each."),
+    ]
+    if verdicts:
+        lines.append("Series key: " + ", ".join(
+            f"{field}={value}" for field, value in verdicts[0]["identity"].items()) + ".")
+    if notes:
+        lines += ["", "Not compared, because a series from another environment is not a baseline:"]
+        lines += notes
+    lines += ["", "Not gated, and why:"]
+    lines += [f"  * {entry['comparison']}: {entry['reason']}" for entry in report["gate"]["excluded"]]
+    return lines
+
+# --------------------------------------------------------------------------
 # Fetching the series from previous runs on `main`
 
 # The events whose runs on `main` measure `main` itself. A pull request from a
@@ -371,8 +519,9 @@ def compare(current: list[dict], baseline: list[dict], resets: list[dict],
 SERIES_EVENTS = ("push", "schedule")
 
 
-def fetch(repo: str, workflow: str, dest: pathlib.Path, limit: int, exclude: str) -> int:
-    """Download `perf-points-*` artifacts from recent runs on `main`."""
+def fetch(repo: str, workflow: str, dest: pathlib.Path, limit: int, exclude: str,
+          pattern: str = "perf-points-*") -> int:
+    """Download the artifacts named by `pattern` from recent runs on `main`."""
     listed = subprocess.run(
         ["gh", "run", "list", "--repo", repo, "--workflow", workflow, "--branch", "main",
          "--status", "completed", "--limit", str(limit),
@@ -403,14 +552,14 @@ def fetch(repo: str, workflow: str, dest: pathlib.Path, limit: int, exclude: str
         # Runs from before the gate existed have no such artifact, so a failed
         # download is expected and only counted.
         return subprocess.run(
-            ["gh", "run", "download", run, "--repo", repo, "--pattern", "perf-points-*",
+            ["gh", "run", "download", run, "--repo", repo, "--pattern", pattern,
              "--dir", str(dest / run)],
             check=False, capture_output=True, text=True,
         ).returncode == 0
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         fetched = sum(pool.map(download, runs))
-    print(f"Fetched perf points from {fetched} of {len(runs)} recent runs on main.")
+    print(f"Fetched {pattern} from {fetched} of {len(runs)} recent runs on main.")
     return 0
 
 
@@ -419,7 +568,11 @@ def fetch(repo: str, workflow: str, dest: pathlib.Path, limit: int, exclude: str
 
 
 def analyse(points: list[dict], k: float = K, window: int = WINDOW) -> list[str]:
-    """Replay each series as the gate would have seen it, one point at a time."""
+    """Replay each series as the gate would have seen it, one point at a time.
+
+    A `versus` point's series is its Compass/upstream ratio, flagged as `versus`
+    would flag it: above 1 plus the tolerance, not above the series' own median.
+    """
     lines = [
         f"Replay with K = {k:g}, judging each point once {window} earlier points exist.",
         "",
@@ -429,23 +582,29 @@ def analyse(points: list[dict], k: float = K, window: int = WINDOW) -> list[str]
     ]
     series: dict[tuple, list[dict]] = {}
     for point in points:
-        series.setdefault((point["metric"], key_of(point)), []).append(point)
+        key = versus_key(point) if "upstream" in point else key_of(point)
+        series.setdefault((point["metric"], key), []).append(point)
     for (metric, key), members in sorted(series.items()):
+        versus = "upstream" in members[0]
         members.sort(key=lambda point: point["recorded_at"])
-        values = [point["value"] for point in members]
+        values = [ratio(point) if versus else point["value"] for point in members]
         flagged, relative = [], []
         for index in range(window, len(values)):
             centre, allowed = tolerance(values[max(0, index - window):index], k)
             relative.append(allowed / centre)
-            if values[index] > centre + allowed:
-                flagged.append(f"{(values[index] - centre) / centre:+.1%}")
+            limit = 1 + allowed / centre if versus else centre + allowed
+            if values[index] > limit:
+                flagged.append(f"{values[index]:.3f}" if versus
+                               else f"{(values[index] - centre) / centre:+.1%}")
         centre = statistics.median(values)
         spread = (
             f"{min(relative):.1%} / {statistics.median(relative):.1%}" if relative else "—"
         )
+        fields = VERSUS_FIELDS if versus else KEY_FIELDS
+        median = f"{centre:,.3f}" if versus else f"{centre:,.1f}"
         lines.append(
-            f"| {metric} | {describe_env(dict(zip(KEY_FIELDS, key)))} | {len(values)} "
-            f"| {centre:,.1f} | {scaled_mad(values) / centre:.2%} | {spread} "
+            f"| {metric} | {', '.join(f'{f}={v}' for f, v in zip(fields, key))} | {len(values)} "
+            f"| {median} | {scaled_mad(values) / centre:.2%} | {spread} "
             f"| {len(flagged)} of {len(relative)}"
             f"{': ' + ', '.join(flagged) if flagged else ''} |"
         )
@@ -492,6 +651,8 @@ def main(argv: list[str]) -> int:
     # replay in PERF-GATES.md saw it on 36 of 122 runs, so 150 runs hold ~44.
     fetch_cmd.add_argument("--limit", type=int, default=150)
     fetch_cmd.add_argument("--exclude-run", default="")
+    fetch_cmd.add_argument("--pattern", default="perf-points-*",
+                           help="the artifacts to download: `upstream-points-*` for `versus`")
 
     compare_cmd = commands.add_parser("compare", help="judge this run against the series")
     compare_cmd.add_argument("--current", required=True, nargs="+", type=pathlib.Path)
@@ -499,6 +660,15 @@ def main(argv: list[str]) -> int:
     compare_cmd.add_argument("--expect", action="append", default=[])
     compare_cmd.add_argument("--resets", type=pathlib.Path)
     compare_cmd.add_argument("--blocking", action="store_true")
+
+    versus_cmd = commands.add_parser("versus", help="judge Compass against upstream Vicinae")
+    versus_cmd.add_argument("--current", required=True, nargs="+", type=pathlib.Path)
+    versus_cmd.add_argument("--report", required=True, type=pathlib.Path,
+                            help="the report.json scripts/bench/compare.py wrote with the points")
+    versus_cmd.add_argument("--baseline", required=True, nargs="+", type=pathlib.Path)
+    versus_cmd.add_argument("--expect", action="append", default=[])
+    versus_cmd.add_argument("--resets", type=pathlib.Path)
+    versus_cmd.add_argument("--blocking", action="store_true")
 
     analyse_cmd = commands.add_parser("analyse", help="replay a series to calibrate the gate")
     analyse_cmd.add_argument("series", nargs="+", type=pathlib.Path)
@@ -552,7 +722,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "fetch":
-        return fetch(args.repo, args.workflow, args.dest, args.limit, args.exclude_run)
+        return fetch(args.repo, args.workflow, args.dest, args.limit, args.exclude_run,
+                     args.pattern)
 
     if args.command == "analyse":
         print("\n".join(analyse(load_points(args.series), args.k, args.window)))
@@ -566,8 +737,17 @@ def run(args: argparse.Namespace) -> int:
         # of why, which is the thing this file exists to prevent.
         if not all(reset.get(field) for field in ("metric", "after", "reason")):
             raise PointError(f"{args.resets}: reset {reset!r} needs a metric, an after and a reason")
-    verdicts, missing = compare(current, baseline, resets, args.expect)
-    print("\n".join(render(verdicts, args.blocking)))
+    if args.command == "versus":
+        for point in current + baseline:
+            validate_versus(point)
+        verdicts = [judge_versus(point, baseline, resets) for point in current]
+        missing = [metric for metric in args.expect if metric not in {v["metric"] for v in verdicts}]
+        print("\n".join(render_versus(verdicts, json.loads(args.report.read_text()), args.blocking)))
+        failing, failure = STATUS_BEHIND, "is behind upstream Vicinae by more than the measured spread."
+    else:
+        verdicts, missing = compare(current, baseline, resets, args.expect)
+        print("\n".join(render(verdicts, args.blocking)))
+        failing, failure = STATUS_REGRESSED, "regressed beyond the spread measured on main."
     if missing:
         print(
             f"error: this run produced no figure for {', '.join(missing)}. The measuring step "
@@ -576,11 +756,11 @@ def run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    regressed = [verdict["metric"] for verdict in verdicts if verdict["status"] == STATUS_REGRESSED]
-    for metric in regressed:
+    failed = [verdict["metric"] for verdict in verdicts if verdict["status"] == failing]
+    for metric in failed:
         level = "error" if args.blocking else "warning"
-        print(f"::{level}::{metric} regressed beyond the spread measured on main.")
-    return 1 if regressed and args.blocking else 0
+        print(f"::{level}::{metric} {failure}")
+    return 1 if failed and args.blocking else 0
 
 
 # --------------------------------------------------------------------------
@@ -684,6 +864,7 @@ def selftest() -> int:
     stamped = stamp({"metric": "m", "statistic": "median", "unit": "ns", "value": 1.0,
                      "env": {"profile": "bench", "renderer": "none"}}, "local", "abc")
     checks["stamping fills every key field"] = all(stamped["env"].get(f) for f in KEY_FIELDS)
+    checks.update(selftest_versus(env))
 
     failed = [name for name, passed in checks.items() if not passed]
     for name in failed:
@@ -692,6 +873,104 @@ def selftest() -> int:
         return 1
     print(f"selftest: ok ({len(checks)} checks)")
     return 0
+
+
+def selftest_versus(env: dict) -> dict[str, bool]:
+    """The upstream gate: paired ratios, the upstream and workload identity, and exit codes."""
+    workload = {"network": "host", "corpus": "c0ffee"}
+    pinned = {"repository": "vicinaehq/vicinae", "tag": "v0.29.0", "commit": "c3415a3",
+              "sha256": "4d32f758"}
+
+    def point(ours: float, theirs: float, day: int, sha: str = "", upstream: dict | None = None,
+              **changes) -> dict:
+        return {"metric": "versus.ping", "statistic": "median", "unit": "ns", "value": ours,
+                "upstream": (upstream or pinned) | {"value": theirs}, "sha": sha or f"sha{day}",
+                "recorded_at": f"2026-11-{day:02d}T00:00:00Z", "env": env | workload | changes}
+
+    # Compass at about half of upstream: the ratio's median is 0.5 and its MAD 0.005,
+    # so the tolerance is K x 1.4826 x 1% and the limit a ratio of about 1.059.
+    series = [point(500 + offset, 1000, day) for day, offset in
+              enumerate([-10, -5, 5, 0, -5, 0, 10, 0, 5, 0] * 3, start=1)]
+    limit = 1 + K * MAD_TO_SIGMA * 0.005 / 0.5
+
+    def status(current: dict, baseline: list[dict]) -> str:
+        return judge_versus(current, baseline, [])["status"]
+
+    checks = {
+        "versus: Compass ahead of upstream passes":
+            status(point(500, 1000, 40, "new"), series) == STATUS_OK,
+        "versus: Compass behind upstream within the measured spread passes":
+            status(point(1000 * (limit - 0.01), 1000, 40, "new"), series) == STATUS_OK,
+        "versus: Compass behind upstream beyond the measured spread fails":
+            status(point(1000 * (limit + 0.01), 1000, 40, "new"), series) == STATUS_BEHIND,
+        "versus: a machine that slows both engines does not count against Compass":
+            status(point(1000, 1900, 40, "new"), series) == STATUS_OK,
+        "versus: a series against another upstream artifact is refused":
+            status(point(9e9, 1, 40, "new", pinned | {"sha256": "0ther"}), series)
+            == STATUS_INCOMPATIBLE,
+        "versus: a series run with another network is refused":
+            status(point(9e9, 1, 40, "new", network="none"), series) == STATUS_INCOMPATIBLE,
+        "versus: a series over another corpus is refused":
+            status(point(9e9, 1, 40, "new", corpus="beef"), series) == STATUS_INCOMPATIBLE,
+        "versus: a series on another CPU is refused":
+            status(point(9e9, 1, 40, "new", cpu="Intel Xeon 8370C"), series)
+            == STATUS_INCOMPATIBLE,
+        "versus: too few compatible runs are reported, not judged":
+            status(point(9e9, 1, 40, "new"), series[: MIN_POINTS - 1]) == STATUS_INSUFFICIENT,
+        "versus: no run at all is reported, not judged":
+            status(point(9e9, 1, 40, "new"), []) == STATUS_NO_BASELINE,
+        "versus: a zero-spread series still allows the minimum tolerance":
+            status(point(1000 * (1 + MIN_RELATIVE) - 1, 1000, 40, "new"),
+                   [point(500, 1000, day) for day in range(1, WINDOW + 1)]) == STATUS_OK,
+    }
+
+    try:
+        validate_versus(point(500, 1000, 1) | {"upstream": {"value": 1000.0}})
+    except PointError:
+        checks["versus: a point that does not name its upstream is rejected"] = True
+    else:
+        checks["versus: a point that does not name its upstream is rejected"] = False
+
+    report = {
+        "compass": {"commit": "f00dfeed", "dirty": False, "version": "compass 0.28.3",
+                    "toolchain": "rustc 1.94.1", "sha256": "ab12"},
+        "upstream": {"repository": "vicinaehq/vicinae", "tag": "v0.29.0", "commit": "c3415a3",
+                     "appimage_sha256": "4d32f758"},
+        "machine": {"cpu": "AMD EPYC 7763", "cpus": 4, "arch": "x86_64", "os": "Ubuntu 24.04",
+                    "kernel": "6.8.0"},
+        "method": {"compositor": "sway headless, pixman, 1280x800", "sway": "sway version 1.9",
+                   "network": "the host's", "corpus_entries": 738, "corpus_sha256": "c0ffee",
+                   "runs": 5},
+        "gate": {"excluded": [{"comparison": "search over IPC",
+                               "reason": "Unmodified Vicinae v0.29.0 has no Ipc/rootQuery."}]},
+    }
+    with tempfile.TemporaryDirectory() as scratch:
+        root = pathlib.Path(scratch)
+        write_points(root / "base" / "run" / "points.jsonl", series)
+        write_points(root / "ok.jsonl", [point(500, 1000, 40, "new")])
+        write_points(root / "behind.jsonl", [point(1000 * (limit + 0.01), 1000, 40, "new")])
+        (root / "report.json").write_text(json.dumps(report))
+
+        def cli(*extra: str) -> tuple[int, str]:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = main(["perf-gate.py", "versus", "--report", str(root / "report.json"),
+                             "--baseline", str(root / "base"), *extra])
+            return code, out.getvalue()
+
+        behind = ("--current", str(root / "behind.jsonl"))
+        checks["versus: behind upstream fails a blocking run"] = cli(*behind, "--blocking")[0] == 1
+        checks["versus: behind upstream does not fail an informational run"] = cli(*behind)[0] == 0
+        code, text = cli("--current", str(root / "ok.jsonl"), "--blocking")
+        checks["versus: no worse than upstream passes a blocking run"] = code == 0
+        checks["versus: a run missing an expected action fails"] = cli(
+            "--current", str(root / "ok.jsonl"), "--expect", "versus.idle_rss")[0] == 1
+        checks["versus: the report names both sides' versions and the environment"] = all(
+            needle in text for needle in ("f00dfeed", "rustc 1.94.1", "vicinaehq/vicinae@c3415a3",
+                                          "4d32f758", "AMD EPYC 7763", "sway version 1.9"))
+        checks["versus: the report lists what is not gated, and why"] = (
+            "search over IPC: Unmodified Vicinae v0.29.0 has no Ipc/rootQuery." in text)
+    return checks
 
 
 if __name__ == "__main__":

@@ -2,7 +2,11 @@
 
 > For the user-facing comparison the README quotes (cold start, first frame, typing latency,
 > memory, scorer throughput and size, on headless Sway), see [BENCHMARKS.md](./BENCHMARKS.md)
-> and `just bench-compare`. This page covers the containerised IPC harness.
+> and `just bench-compare`. This page covers the containerised IPC harness. `just bench-compare`
+> also runs this page's `head-to-head` binary for its warm ping, and `perf.yaml` gates its
+> comparable actions against upstream ([PERF-GATES.md](./PERF-GATES.md#against-upstream-vicinae)).
+> The exclusions on this page still apply to that gate: search over IPC is not compared, and idle
+> RSS that is no worse than upstream's is not a whole-launcher memory-efficiency verdict.
 
 The selected baseline is **Vicinae v0.29.0**, upstream commit
 `c3415a3ed56676d2960d90975ab319ae8a7aba6e`:
@@ -143,8 +147,10 @@ and miss queries; a single sentinel verifies readiness, not ranking parity.
 ## Remaining Suite 4b work
 
 This harness covers persistent ping, instrumented query and process-tree RSS/PSS.
-It does **not** yet cover launch, show/hide reply latency, first-frame latency,
-peak memory with extensions, or the equivalent visible Flatpak workload. Those
-remain required by PLAN §8.5b/#117. Cold start and GPU timing must not be inferred
+It does **not** cover launch, show/hide reply latency, first-frame latency,
+peak memory with extensions, or the equivalent visible Flatpak workload. `just bench-compare`
+now covers cold launch and first frame on headless Sway, and the upstream gate judges them. Show/hide
+latency, peak memory with extensions and the Flatpak workload are still required by PLAN
+§8.5b/#117. Cold start and GPU timing must not be inferred
 from an IPC reply. The first report is evidence, not completion of the port or
 proof that it is faster and more memory efficient overall.

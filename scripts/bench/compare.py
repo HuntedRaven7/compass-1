@@ -4,6 +4,7 @@
 Run through scripts/bench/compare.sh, which builds the inputs. Direct use:
 
   compare.py --compass target/release/compass --upstream squashfs-root/AppRun \
+             --upstream-appimage Vicinae.AppImage --head-to-head target/release/head-to-head \
              --cpp-rank cpp-rank --fuzzy-throughput target/release/fuzzy-throughput \
              --out DIR [--runs 5]
 
@@ -19,15 +20,24 @@ headless Sway (pixman renderer, no GPU, 1280x800):
   type_ms        `wtype` of a query -> first changed screenshot
   after_search   the same process-tree figures once the typed frame settles
 
-plus the fuzzy scorer head-to-head (same haystack, same queries) and on-disk
-sizes. Everything runs under throwaway HOME/XDG directories, a private D-Bus
-session bus and a private compositor; nothing touches the caller's session.
-Process trees are found by an environment tag every descendant inherits, so
-detached helpers are counted too; the compositor and D-Bus daemon are not.
+then, with both engines running at once and idle, the warm IPC ping as
+`head-to-head` (crates/compass-testkit) times it: one client, persistent
+sockets, alternating AB/BA, once per --runs. Then comes the fuzzy scorer
+head-to-head (same haystack, same queries) and on-disk sizes.
+
+Besides report.json it writes points.jsonl: one figure per action that the
+upstream gate judges (GATED), for `scripts/ci/perf-gate.py stamp` and
+`perf-gate.py versus`. EXCLUDED says what is left out of that gate, and why;
+both lists are copied into the report. Everything runs under throwaway HOME/XDG
+directories, a private D-Bus session bus and a private compositor; nothing
+touches the caller's session. Process trees are found by an environment tag
+every descendant inherits, so detached helpers are counted too; the compositor
+and D-Bus daemon are not.
 """
 
 import argparse
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -52,6 +62,45 @@ DEADLINE_S = 60.0
 TYPED_QUERY = "fire"
 FUZZY_QUERIES = ["ed", "fire", "sysmon", "calc pro", "q", "zzzz"]
 FUZZY_ITEMS = 10_000
+PING_SAMPLES = 1000
+PING_WARMUP = 100
+BASELINE = ROOT / "scripts/bench/baseline.json"
+
+# The `renderer` of the gate's points. Sway draws with pixman and there is no GPU,
+# so both engines fall back to software rendering; the compositor's renderer names that.
+RENDERER = "sway-pixman"
+
+# The actions the upstream gate (#310, docs/rust-engine/PERF-GATES.md) judges:
+# (metric, key in each engine's summary, unit). Each one is measured the same way
+# for both engines, in one session, in alternating order, so their medians can be
+# compared directly. Lower is better for all of them.
+GATED = (
+    ("versus.ping", "ping_ns", "ns"),
+    ("versus.query_keystroke", "type_ms", "ms"),
+    ("versus.launch_first_frame", "first_frame_ms", "ms"),
+    ("versus.launch_populated", "complete_ms", "ms"),
+    ("versus.idle_rss", "idle_rss_kib", "KiB"),
+)
+
+# What the gate leaves out, and why. HEAD-TO-HEAD.md and BENCHMARKS.md give the
+# longer story; keep the reasons here true when either changes.
+EXCLUDED = (
+    ("engine ready (ready_ms)",
+     "The readiness probes differ. Upstream answers an Ipc/ping on a socket this script holds, "
+     "and Compass is polled through `compass ping`, which spawns a process on every poll."),
+    ("search over IPC",
+     "Unmodified Vicinae v0.29.0 has no Ipc/rootQuery, so search is compared only through the "
+     "keystroke-to-frame action."),
+    ("fuzzy scorer throughput",
+     "The scorers accept different match sets (1,450 matches against 500 for `ed`), so they do "
+     "unequal work. It is reported and not gated."),
+    ("memory after a search, PSS, threads, processes and shared objects",
+     "They are reported and not gated. The engines' feature sets differ, so none of them is a "
+     "like-for-like efficiency verdict, and the gate holds idle RSS only."),
+    ("summon latency, peak memory with extensions, a GPU and GNOME",
+     "This script does not measure them. It cold-starts both engines without extensions on "
+     "headless Sway."),
+)
 
 
 def log(*parts):
@@ -191,6 +240,13 @@ def kill_tag(tag):
     raise RuntimeError(f"processes tagged {tag} survived SIGKILL")
 
 
+def tail(logfile, lines=20):
+    """The end of an engine's log, so a CI failure shows why it exited, not only where to look."""
+    logfile.flush()
+    text = pathlib.Path(logfile.name).read_text(errors="replace").splitlines()[-lines:]
+    return "".join(f"\n  | {line}" for line in text)
+
+
 # --- compositor ------------------------------------------------------------
 
 class Screen:
@@ -283,6 +339,13 @@ def profile(base, name, wayland, bus):
     return env
 
 
+@functools.cache
+def network_isolated():
+    """Whether each engine can run with no network; upstream fetches rates at start otherwise."""
+    return bool(shutil.which("unshare")) and subprocess.run(
+        ["unshare", "--net", "true"], check=False, stderr=subprocess.DEVNULL).returncode == 0
+
+
 def launch(kind, args, base, run, wayland, bus):
     tag = f"{kind}-{run}-{os.getpid()}"
     env = profile(base, f"{kind}-{run}", wayland, bus)
@@ -305,24 +368,24 @@ def launch(kind, args, base, run, wayland, bus):
         ping = [str(args.compass), "--socket", str(sock), "ping"]
         ready = lambda: subprocess.run(ping, env=env, stdout=subprocess.DEVNULL,  # noqa: E731
                                        stderr=subprocess.DEVNULL, check=False).returncode == 0
-    if shutil.which("unshare") and subprocess.run(["unshare", "--net", "true"], check=False).returncode == 0:
+    if network_isolated():
         argv = ["unshare", "--net", *argv]  # both engines offline, as upstream fetches rates at start
     start = time.monotonic()
     child = subprocess.Popen(argv, env=env, stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True)
-    return tag, child, start, ready, logfile
+    return tag, child, start, ready, logfile, sock
 
 
 def measure_one(kind, args, base, run, screen, wayland, bus):
     if not screen.blank():
         raise RuntimeError("output not empty before launch")
-    tag, child, start, ready, logfile = launch(kind, args, base, run, wayland, bus)
+    tag, child, start, ready, logfile, _sock = launch(kind, args, base, run, wayland, bus)
     result = {"engine": kind, "run": run}
     try:
         seen_ready = seen_frame = None
         end = start + DEADLINE_S
         while (seen_ready is None or seen_frame is None) and time.monotonic() < end:
             if child.poll() is not None and not tagged(tag):
-                raise RuntimeError(f"{kind} exited {child.returncode}; see {logfile.name}")
+                raise RuntimeError(f"{kind} exited {child.returncode}; see {logfile.name}{tail(logfile)}")
             if seen_frame is None and not screen.blank():
                 seen_frame = time.monotonic()
             if seen_ready is None and ready():
@@ -363,6 +426,58 @@ def measure_one(kind, args, base, run, screen, wayland, bus):
     log(f"  {kind} run {run}: ready {result.get('ready_ms')} ms, frame {result.get('first_frame_ms')} ms, "
         f"idle PSS {result.get('idle', {}).get('pss_kib')} KiB")
     return result
+
+
+def warm_ping(args, base, out, screen, wayland, bus, identity):
+    """The warm IPC ping of both engines, each started once and left idle, per --runs round.
+
+    `head-to-head` times both: one client, persistent sockets, AB/BA order, so the
+    action is the same on both sides (encode, the engine's reply, decode) and no CLI
+    spawn or connect is inside the timed interval.
+    """
+    reports = out / "ping"
+    shutil.rmtree(reports, ignore_errors=True)
+    reports.mkdir()
+    started = []
+    try:
+        endpoints = {}
+        for kind in ("upstream", "compass"):
+            tag, child, _start, ready, logfile, sock = launch(kind, args, base, "warm", wayland, bus)
+            started.append((tag, child, logfile))
+
+            def answering(kind=kind, tag=tag, child=child, ready=ready):
+                if child.poll() is not None and not tagged(tag):
+                    raise RuntimeError(f"{kind} exited {child.returncode} before answering a ping; "
+                                       f"see {logfile.name}{tail(logfile)}")
+                return ready()
+
+            wait(answering, f"{kind} to answer pings")
+            endpoints[kind] = {"socket": str(sock), **identity[kind], "process_roots": tagged(tag)}
+        config = base / "ping-config.json"
+        config.write_text(json.dumps({
+            "cpp": endpoints["upstream"], "rust": endpoints["compass"],
+            "workload": (f"warm IPC ping only; both engines idle with their windows open on sway "
+                         f"headless pixman {WIDTH}x{HEIGHT}; no TypeScript extensions"),
+            "samples": PING_SAMPLES, "warmup": PING_WARMUP, "queries": [],
+        }))
+        rounds = []
+        for index in range(1, args.runs + 1):
+            report = reports / f"report-{index}.json"
+            with (base / "head-to-head.log").open("a") as output:
+                subprocess.run([str(args.head_to_head), str(config), str(report)],
+                               check=True, timeout=120, stdout=output, stderr=subprocess.STDOUT)
+            row = json.loads(report.read_text())["latency"][0]
+            rounds.append({"upstream": row["cpp"]["median"], "compass": row["rust"]["median"]})
+            log(f"  ping round {index}: upstream {rounds[-1]['upstream']} ns, "
+                f"compass {rounds[-1]['compass']} ns")
+        return rounds
+    finally:
+        for tag, child, logfile in started:
+            kill_tag(tag)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                child.wait(timeout=5)
+            logfile.close()
+        wait(screen.blank, "output empty after shutdown", deadline=15)
 
 
 @contextlib.contextmanager
@@ -418,11 +533,40 @@ def median_of(runs, *path):
     return statistics.median(values)
 
 
+def gate(summary, upstream, workload):
+    """This run's figures for the upstream gate, and the points that carry them into a series.
+
+    `upstream` identifies the pinned release and `workload` the conditions both engines ran
+    under (network, corpus); `perf-gate.py versus` compares only points that share both.
+    """
+    actions, points = [], []
+    for metric, key, unit in GATED:
+        ours, theirs = summary["compass"][key], summary["upstream"][key]
+        actions.append({"metric": metric, "unit": unit, "compass": ours, "upstream": theirs})
+        points.append({"metric": metric, "statistic": "median", "unit": unit, "value": ours,
+                       "upstream": dict(upstream, value=theirs),
+                       "env": {"profile": "release", "renderer": RENDERER, **workload}})
+    excluded = [{"comparison": name, "reason": reason} for name, reason in EXCLUDED]
+    return {"actions": actions, "excluded": excluded}, points
+
+
+def git_head():
+    """The checked-out commit, and whether the tree holds changes that commit does not."""
+    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=False).stdout.strip() or None
+    dirty = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", "HEAD"],
+                           check=False).returncode != 0
+    return head, dirty
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--compass", type=pathlib.Path, required=True)
     parser.add_argument("--upstream", type=pathlib.Path, required=True, help="extracted AppImage's AppRun")
-    parser.add_argument("--upstream-appimage", type=pathlib.Path)
+    parser.add_argument("--upstream-appimage", type=pathlib.Path, required=True,
+                        help="the AppImage AppRun came from, checked against baseline.json")
+    parser.add_argument("--head-to-head", type=pathlib.Path, required=True,
+                        help="crates/compass-testkit's head-to-head binary, which times the warm ping")
     parser.add_argument("--cpp-rank", type=pathlib.Path, required=True)
     parser.add_argument("--fuzzy-throughput", type=pathlib.Path, required=True)
     parser.add_argument("--out", type=pathlib.Path, required=True)
@@ -435,18 +579,29 @@ def main():
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
 
+    pinned = json.loads(BASELINE.read_text())
+    appimage_sha256 = sha256(args.upstream_appimage)
+    commit, dirty = git_head()
+    network = "none" if network_isolated() else "host"
     report = {
         "machine": {"kernel": platform.release(), "cpu": cpu_model(), "cpus": os.cpu_count(),
-                    "mem_kib": mem_total(), "os": os_release(),
+                    "arch": platform.machine(), "mem_kib": mem_total(), "os": os_release(),
                     "loadavg_start": pathlib.Path("/proc/loadavg").read_text().split()[:3]},
-        "compass": {"binary": str(args.compass), "sha256": sha256(args.compass),
-                    "version": subprocess.run([str(args.compass), "--version"], capture_output=True,
-                                              text=True).stdout.strip()},
-        "upstream": {"apprun": str(args.upstream),
-                     "appimage_sha256": sha256(args.upstream_appimage) if args.upstream_appimage else None},
+        "compass": {"binary": str(args.compass), "sha256": sha256(args.compass), "commit": commit,
+                    "dirty": dirty, "toolchain": first_line(["rustc", "--version"]),
+                    "version": first_line([str(args.compass), "--version"])},
+        "upstream": {"apprun": str(args.upstream), "repository": pinned["repository"],
+                     "tag": pinned["tag"], "commit": pinned["commit"],
+                     "appimage_sha256": appimage_sha256},
         "method": {"runs": args.runs, "idle_settle_s": IDLE_SETTLE_S, "typed_query": TYPED_QUERY,
-                   "compositor": f"sway headless, pixman, {WIDTH}x{HEIGHT}", "network": "none (unshare --net)", "corpus_entries": len(list(CORPUS.glob('*.desktop'))),
-                   "fuzzy_items": FUZZY_ITEMS, "fuzzy_iterations": args.fuzzy_iterations},
+                   "compositor": f"sway headless, pixman, {WIDTH}x{HEIGHT}",
+                   "sway": first_line(["sway", "--version"]),
+                   "network": ("none (unshare --net)" if network == "none"
+                               else "the host's, for both engines (unshare --net is not permitted)"),
+                   "corpus_entries": len(list(CORPUS.glob('*.desktop'))),
+                   "corpus_sha256": corpus_sha256(),
+                   "fuzzy_items": FUZZY_ITEMS, "fuzzy_iterations": args.fuzzy_iterations,
+                   "ping_samples": PING_SAMPLES, "ping_warmup": PING_WARMUP},
     }
     log("sizes...")
     report["sizes"] = sizes(args, out)
@@ -471,9 +626,19 @@ def main():
                 order = ("compass", "upstream") if run % 2 else ("upstream", "compass")
                 for kind in order:
                     runs[kind].append(measure_one(kind, args, base, run, screen, wayland, bus))
+            log("warm ping...")
+            identity = {
+                "upstream": {"revision": f"{pinned['repository']}@{pinned['commit']} ({pinned['tag']}, unmodified)",
+                             "build": f"release AppImage sha256={appimage_sha256}"},
+                "compass": {"revision": f"{commit}{' (dirty)' if dirty else ''}",
+                            "build": f"cargo --release, binary sha256={report['compass']['sha256']}"},
+            }
+            ping = warm_ping(args, base, out, screen, wayland, bus, identity)
         report["runs"] = runs
+        report["ping"] = ping
         report["summary"] = {
             kind: {
+                "ping_ns": statistics.median(round_[kind] for round_ in ping),
                 "ready_ms": median_of(rs, "ready_ms"),
                 "first_frame_ms": median_of(rs, "first_frame_ms"),
                 "complete_ms": median_of(rs, "complete_ms"),
@@ -494,12 +659,41 @@ def main():
             shutil.copy2(entry, logs / entry.name)
         shutil.rmtree(base, ignore_errors=True)
     report["machine"]["loadavg_end"] = pathlib.Path("/proc/loadavg").read_text().split()[:3]
+    upstream = {"repository": pinned["repository"], "tag": pinned["tag"], "commit": pinned["commit"],
+                "sha256": appimage_sha256}
+    workload = {"network": network, "corpus": report["method"]["corpus_sha256"]}
+    report["gate"], points = gate(report["summary"], upstream, workload)
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    gate_points = out / "points.jsonl"
+    gate_points.unlink(missing_ok=True)
+    if appimage_sha256 == pinned["sha256"]:
+        gate_points.write_text("".join(json.dumps(point, sort_keys=True) + "\n" for point in points))
+    else:
+        # Only the pinned artifact may enter a series: another build is another baseline.
+        log(f"not writing {gate_points}: the upstream AppImage is not the one baseline.json pins")
     print(json.dumps(report["summary"], indent=2))
 
 
 def sha256(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def first_line(argv):
+    """The first line a version command prints, or None when the tool is absent."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    lines = (done.stdout or done.stderr).splitlines()
+    return lines[0].strip() if lines else None
+
+
+def corpus_sha256():
+    """One digest over the corpus's file names and contents, as session.py takes it."""
+    digest = hashlib.sha256()
+    for entry in sorted(CORPUS.glob("*.desktop")):
+        digest.update(entry.name.encode() + b"\0" + entry.read_bytes() + b"\0")
+    return digest.hexdigest()
 
 
 def cpu_model():

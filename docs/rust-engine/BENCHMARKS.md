@@ -16,23 +16,28 @@ just bench-compare                 # or: scripts/bench/compare.sh [OUTPUT_DIR] [
 ```
 
 It needs the pinned Rust toolchain, a C++23 compiler, `python3`, `sway`, `grim`, `wtype`,
-`dbus-daemon` and binutils. No GPU and no running desktop are needed. The script:
+`dbus-daemon` and binutils. The upstream AppImage bundles Qt but loads GL dispatch, font and X client
+libraries from the host. On Ubuntu these are `libopengl0`, `libglx0`, `libegl1`, `libfontconfig1`,
+`libfreetype6` and `libx11-xcb1`, and the script names any that are missing before it builds
+anything. No GPU and no running desktop are needed. The script:
 
 1. Downloads the upstream **Vicinae v0.29.0** x86_64 AppImage named in
    [`scripts/bench/baseline.json`](../../scripts/bench/baseline.json) and refuses it unless its
    SHA-256 matches (`4d32f758…fe86bc`). It extracts the AppImage and does not mount it, so FUSE is
    not needed. The binary is unmodified.
-2. Builds `compass`, `compass-file-indexer`, `compass-sandbox-exec` and `fuzzy-throughput` in
-   release mode, and builds upstream's header-only fuzzy scorer into
+2. Builds `compass`, `compass-file-indexer`, `compass-sandbox-exec`, `fuzzy-throughput` and
+   `head-to-head` in release mode, and builds upstream's header-only fuzzy scorer into
    [`scripts/bench/fuzzy/cpp_rank.cpp`](../../scripts/bench/fuzzy/cpp_rank.cpp) with `-O2`.
 3. Runs [`scripts/bench/compare.py`](../../scripts/bench/compare.py). It starts a private
    headless Sway (pixman renderer, 1280×800), a private D-Bus bus with no activatable services,
-   and throwaway `HOME`/`XDG_*` directories. Each engine runs under `unshare --net`, because
-   upstream fetches currency rates at startup. It indexes the 738-entry real-host desktop corpus
-   (`crates/compass-testkit/corpus/desktop-entries/real`). Nothing touches the caller's session,
-   bus, home or input devices.
-4. Writes `report.json` (every run, every sample and the machine details), `versions.txt` and
-   per-run logs and screenshots.
+   and throwaway `HOME`/`XDG_*` directories. Each engine runs under `unshare --net` where the
+   machine permits it, because upstream fetches currency rates at startup. Where it does not, as on
+   a hosted CI runner, both engines have the host's network and the report says so. It indexes the
+   738-entry real-host desktop corpus (`crates/compass-testkit/corpus/desktop-entries/real`).
+   Nothing touches the caller's session, bus, home or input devices.
+4. Writes `report.json` (every run, every sample, both sides' versions and SHA-256s, and the machine
+   details), `points.jsonl` for the upstream gate, `versions.txt`, the warm-ping reports under
+   `ping/`, and per-run logs and screenshots.
 
 Each run cold-starts one engine with its window open: `compass start` for Compass and
 `AppRun server --open --no-extension-runtime` for upstream, with onboarding marked complete. Neither
@@ -46,8 +51,15 @@ engine runs TypeScript extensions. The measurements are:
 | Keystroke to frame | `wtype fire` until the first changed screenshot outside those rows |
 | Idle / after-search memory | the summed `smaps_rollup` RSS and PSS of every process carrying the run's environment tag, so detached helpers count. Taken 5 s after the first frame, and again 1 s after the typed frame settles |
 | Threads, processes, shared objects | from `/proc` at idle, over the same process set |
+| Warm IPC ping | after the cold starts, both engines are started once and left idle, and `head-to-head` (`compass-testkit`) pings both over persistent sockets: 1,000 samples after 100 warm-ups, alternating AB/BA, once per run. Its median excludes connection setup and process spawn |
 
 One screenshot takes a median of 16 ms, so that is the time resolution of the frame metrics.
+
+`perf.yaml` runs this on a hosted runner for every pull request, every push to `main` and every six
+hours. Its `upstream-gate` job holds five of these actions to no worse than upstream: the warm ping,
+keystroke to frame, first frame, launcher populated and idle RSS. The tolerance comes from the
+measured spread of earlier runs. [PERF-GATES.md](./PERF-GATES.md#against-upstream-vicinae) explains
+the rule and lists what is excluded and why.
 
 ## Results: 2026-09-25
 

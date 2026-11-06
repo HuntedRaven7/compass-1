@@ -34,8 +34,19 @@ rm -rf "$out/upstream"
 mkdir -p "$out/upstream"
 (cd "$out/upstream" && "$appimage" --appimage-extract >/dev/null)
 
+# The AppImage bundles Qt but takes GL dispatch, font and X client libraries from the
+# host. Name the missing ones here, not as an exit 127 in the middle of the first run.
+server="$out/upstream/squashfs-root/usr/bin/vicinae-server"
+missing=$(LD_LIBRARY_PATH="$out/upstream/squashfs-root/usr/lib" ldd "$server" | awk '/not found/ {print $1}' | sort -u)
+if [ -n "$missing" ]; then
+  echo "upstream's vicinae-server needs host libraries this machine lacks: ${missing//$'\n'/ }" >&2
+  echo "On Debian or Ubuntu: apt install libopengl0 libglx0 libegl1 libfontconfig1 libfreetype6 libx11-xcb1" >&2
+  exit 1
+fi
+
 cargo build --release --locked -p compass -p compass-testkit -p compass-sandbox \
-  --bin compass --bin compass-file-indexer --bin fuzzy-throughput --bin compass-sandbox-exec
+  --bin compass --bin compass-file-indexer --bin fuzzy-throughput --bin compass-sandbox-exec \
+  --bin head-to-head
 target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 
 c++ -std=c++23 -O2 -I"$root/scripts/bench/upstream/fuzzy/include" -o "$out/cpp-rank" "$root/scripts/bench/fuzzy/cpp_rank.cpp"
@@ -51,8 +62,10 @@ python3 "$root/scripts/bench/compare.py" \
   --compass "$target/release/compass" \
   --upstream "$out/upstream/squashfs-root/AppRun" \
   --upstream-appimage "$appimage" \
+  --head-to-head "$target/release/head-to-head" \
   --cpp-rank "$out/cpp-rank" \
   --fuzzy-throughput "$target/release/fuzzy-throughput" \
   --out "$out" --runs "$runs"
 
 echo "report: $out/report.json" >&2
+echo "upstream gate points: $out/points.jsonl" >&2
