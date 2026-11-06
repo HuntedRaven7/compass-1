@@ -109,19 +109,31 @@ pub trait SecretStore {
     fn locked(&self) -> impl Future<Output = bool> + Send;
 }
 
+/// Held while the master key is looked up and, on a miss, made and stored.
+///
+/// The engine asks for the key from several tasks at once (clipboard history
+/// as it starts, and extension storage for each command, the calculator and
+/// Rhai scripts), each with its own connection to the keyring. Two that both
+/// miss would each store a key of their own: the keyring then holds two
+/// entries, and which one a later lookup finds decides whether a database made
+/// under the other opens at all.
+static KEY_LOOKUP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Returns the master key, creating and storing one on first use.
 ///
 /// An entry of the wrong length is an error and is **not** replaced: the only
 /// way it exists is that something else wrote it, and overwriting it could
 /// orphan a history encrypted under it. Nor is a key created while the
 /// keyring is locked: storing one would ask the user to unlock it, and a
-/// retry loop must not do that again and again.
+/// retry loop must not do that again and again. Callers in this process are
+/// served one at a time, so a first run makes exactly one key.
 ///
 /// # Errors
 ///
 /// [`Error::Keyring`] when the store fails or is locked, [`Error::MalformedKey`]
 /// as above, [`Error::Randomness`] when no key can be generated.
 pub async fn master_key<S: SecretStore>(store: &S) -> Result<[u8; KEY_SIZE], Error> {
+    let _one_at_a_time = KEY_LOOKUP.lock().await;
     if let Some(existing) = store.lookup().await? {
         return <[u8; KEY_SIZE]>::try_from(existing.as_slice())
             .map_err(|_| Error::MalformedKey(existing.len()));
@@ -1287,19 +1299,24 @@ mod tests {
     }
 
     impl SecretStore for FakeStore {
+        // Every call is a round trip to the keyring, so it yields, as the
+        // real one does, and concurrent callers interleave.
         async fn lookup(&self) -> Result<Option<Vec<u8>>, Error> {
+            tokio::task::yield_now().await;
             if self.fail {
                 return Err(Error::Keyring("locked".into()));
             }
             Ok(self.held.lock().unwrap().clone())
         }
         async fn store(&self, secret: &[u8]) -> Result<(), Error> {
+            tokio::task::yield_now().await;
             self.stores
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *self.held.lock().unwrap() = Some(secret.to_vec());
             Ok(())
         }
         async fn locked(&self) -> bool {
+            tokio::task::yield_now().await;
             self.locked
         }
     }
@@ -1312,6 +1329,20 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(store.stores.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_ne!(first, [0; KEY_SIZE], "a real key, not zeroes");
+    }
+
+    #[tokio::test]
+    async fn callers_racing_on_a_first_run_make_one_key_and_all_get_it() {
+        // The engine's first moments: clipboard history and an extension's
+        // storage both ask while the keyring is still empty. Two keys would
+        // leave the extension database openable under only one of them.
+        let store = FakeStore::default();
+        let (first, second, third) =
+            tokio::join!(master_key(&store), master_key(&store), master_key(&store));
+        let first = first.expect("created");
+        assert_eq!(second.expect("shared"), first);
+        assert_eq!(third.expect("shared"), first);
+        assert_eq!(store.stores.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
