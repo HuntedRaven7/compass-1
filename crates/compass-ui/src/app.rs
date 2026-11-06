@@ -344,6 +344,10 @@ pub struct LauncherApp {
     results: Vec<RootRow>,
     /// The calculator's answer to the query, shown first when there is one.
     calculator: Option<compass_core::calculator::Answer>,
+    /// When this window last asked the engine for exchange rates, so a
+    /// currency expression typed while they are missing or stale asks once,
+    /// not on every keystroke.
+    rates_asked: Option<std::time::Instant>,
     /// A power command waiting on the person's yes.
     power_confirm: Option<&'static compass_core::power_commands::PowerCommand>,
     /// A question waiting on Enter or Escape before an action runs.
@@ -728,6 +732,7 @@ impl LauncherApp {
             query: String::new(),
             results: Vec::new(),
             calculator: None,
+            rates_asked: None,
             power_confirm: None,
             confirm: None,
             parked_clipboard: None,
@@ -903,6 +908,9 @@ impl LauncherApp {
             self.choosing_files = false;
         }
         let mut task = self.update_inner(message);
+        if let Some(rates) = self.rates_on_demand() {
+            task = Task::batch([task, rates]);
+        }
         // A form that has just opened puts the keyboard on its first field,
         // whichever of the many paths opened it.
         if let Page::Preferences(page) = &mut self.page

@@ -1337,17 +1337,20 @@ not the ECB's shape is refused by name. `RateCache` holds what was fetched and c
 the fetch as a closure, keeps and caches a good answer and leaves the rates in hand after a failed
 fetch or an unreadable answer. Rates are stale a day after they were fetched.
 
-**The engine** (`compass::exchange_rates::ExchangeRateService`). It reads the cache the first time
-the rates are asked for, fetches through the engine's HTTP client (`compass::stores::get`, the
-stores' `ureq` agent) at start when there are none or they are stale, and looks hourly after that,
-as the C++'s hourly timer; `COMPASS_DISABLE_AUTO_RATE_REFRESH` turns the automatic refresh off, as
-`Environment::isAutoRateRefreshDisabled`. `COMPASS_EXCHANGE_RATES_URL` points it at another copy
-of the file (tests, mirrors). It answers IPC v21 `Request::ExchangeRates` with what it holds and
-`Request::RefreshExchangeRates` with a fresh fetch or the reason it failed, both as
+**The engine** (`compass::exchange_rates::ExchangeRateService`). Nothing happens at start. The
+first `Request::ExchangeRates` reads the cache and, when there are no rates or they are a day old,
+fetches through the engine's HTTP client (`compass::stores::get`, the stores' `ureq` agent) before
+answering; asks that arrive together fetch once, and a failed fetch holds off the next for 15
+minutes. There is no hourly timer: the C++ loads at start and checks hourly, Compass fetches on
+demand (a declared divergence, below). `COMPASS_DISABLE_AUTO_RATE_REFRESH` turns the automatic
+fetch off, as `Environment::isAutoRateRefreshDisabled`. `COMPASS_EXCHANGE_RATES_URL` points it at
+another copy of the file (tests, mirrors). It answers IPC v21 `Request::ExchangeRates` with the
+rates and `Request::RefreshExchangeRates` with a fresh fetch or the reason it failed, both as
 `Response::ExchangeRates`.
 
-**The calculator** (`compass_core::calculator`). The launcher asks for the engine's rates each time
-its window opens and after Refresh Exchange Rates, and installs them (`set_exchange_rates`); every
+**The calculator** (`compass_core::calculator`). The launcher asks for the engine's rates when an
+evaluation wanted one and the rates it holds are missing or stale (`take_rates_wanted`,
+`LauncherApp::rates_on_demand`), and after Refresh Exchange Rates, and installs them (`set_exchange_rates`); every
 evaluation, in root search and in Calculator History's live result, hands them to fend through its
 exchange-rate handler (`ExchangeRateFnV2`), so `10 usd to eur`, `€5 in gbp` and `£8 to usd` are
 answered, and copied ones are remembered as conversions (`is_conversion`). Without rates a currency
@@ -1359,7 +1362,7 @@ refreshed" or the error.
 
 | Row | Flipped | Rust | Tests that would fail on a regression |
 |---|---|---|---|
-| `src/services/calculator-service` | `Rust ✓` 🟡 → ✅ | `compass_core::exchange_rates` (`parse_ecb`, `ExchangeRates`, `RateCache`, `cache_path`, `source_url`), `compass_core::calculator` (`set_exchange_rates`, `compute_with_rates`, `RateHandler`), `compass::exchange_rates` (`ExchangeRateService`, `run`), `compass_ui::app::calculator` (`exchange_rates_task`, `refresh_exchange_rates`), `CommandKind::RefreshExchangeRates` | `the_ecb_daily_file_is_read_with_its_date_and_the_euro`, `a_file_that_is_not_the_ecbs_is_refused_by_name`, `currency_expressions_are_answered_with_the_rates`, `a_currency_the_rates_do_not_list_answers_nothing`, `without_rates_currency_expressions_answer_nothing`, `the_fixture_s_rates_convert_through_the_euro`, `the_process_rates_reach_root_search`, `rates_go_stale_after_a_day_or_when_the_clock_goes_back`, `a_refresh_keeps_and_caches_the_rates_and_a_restart_reads_them_back`, `a_failed_refresh_keeps_the_rates_in_hand`, `an_unreadable_cache_is_no_rates` (`compass-core/tests/exchange_rates.rs`, over a checked-in ECB file and fake fetches); `the_engine_fetches_the_ecb_rates_at_start_caches_them_and_keeps_them_when_a_refresh_fails`, `an_offline_engine_answers_with_the_cached_rates_or_none` (a real engine against a local fake ECB); `refresh_exchange_rates_installs_the_fresh_rates_and_says_so_or_why_not` |
+| `src/services/calculator-service` | `Rust ✓` 🟡 → ✅ | `compass_core::exchange_rates` (`parse_ecb`, `ExchangeRates`, `RateCache`, `cache_path`, `source_url`), `compass_core::calculator` (`set_exchange_rates`, `compute_with_rates`, `RateHandler`, `take_rates_wanted`), `compass::exchange_rates` (`ExchangeRateService`, `wanted`), `compass_ui::app::calculator` (`rates_on_demand`, `exchange_rates_task`, `refresh_exchange_rates`), `CommandKind::RefreshExchangeRates` | `the_ecb_daily_file_is_read_with_its_date_and_the_euro`, `a_file_that_is_not_the_ecbs_is_refused_by_name`, `currency_expressions_are_answered_with_the_rates`, `a_currency_the_rates_do_not_list_answers_nothing`, `without_rates_currency_expressions_answer_nothing`, `only_an_expression_that_needs_a_rate_marks_the_rates_wanted`, `the_fixture_s_rates_convert_through_the_euro`, `the_process_rates_reach_root_search`, `rates_go_stale_after_a_day_or_when_the_clock_goes_back`, `a_refresh_keeps_and_caches_the_rates_and_a_restart_reads_them_back`, `a_failed_refresh_keeps_the_rates_in_hand`, `an_unreadable_cache_is_no_rates` (`compass-core/tests/exchange_rates.rs`, over a checked-in ECB file and fake fetches); `the_engine_fetches_the_ecb_rates_only_when_asked_caches_them_and_keeps_them_when_a_refresh_fails`, `an_offline_engine_answers_with_the_cached_rates_or_none` (a real engine against a local fake ECB); `refresh_exchange_rates_installs_the_fresh_rates_and_says_so_or_why_not`, `rates_are_asked_for_once_only_when_a_currency_expression_wants_them` |
 
 Declared differences:
 
@@ -1374,8 +1377,10 @@ Declared differences:
 - The C++ keeps the window open, clears the search text and shows toasts; Compass hides the window
   and shows the HUD, and a failure is also the launcher's error line when it next opens. Where the
   presentation has no HUD (GNOME's `xdg_toplevel`), only that error line says so.
-- The launcher computes, so it learns rates the engine fetched in the background the next time its
-  window opens.
+- Rates are fetched on demand, not at start and hourly: an evaluation that needs a rate marks it
+  (`calculator::take_rates_wanted`), and the launcher asks the engine once when its rates are
+  missing or stale; the answer re-evaluates the shown result, so a first conversion pops in a
+  moment after it is typed. Someone who never converts a currency never loads the TLS stack.
 - `€` before a number is moved after it before fend evaluates (`€5` is asked as `5€`), since fend
   reads `€5` as a word; the question remembered is the one typed.
 - `COMPASS_DISABLE_AUTO_RATE_REFRESH` set to the empty string does not disable the refresh (the C++

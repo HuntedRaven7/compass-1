@@ -720,11 +720,6 @@ pub async fn run(socket: &SocketPath, hotkey: bool) -> Result<()> {
         });
     }
 
-    // The calculator's exchange rates: fetched when stale, then daily.
-    tokio::spawn(crate::exchange_rates::run(Arc::clone(
-        &state.read().await.utilities.exchange_rates,
-    )));
-
     // Rhai scripts' hot reload.
     tokio::spawn(crate::rhai_scripts::watch(Arc::clone(&state)));
 

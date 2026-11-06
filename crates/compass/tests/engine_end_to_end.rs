@@ -7596,7 +7596,8 @@ fn exchange_rates(daemon: &Daemon) -> Option<compass_ipc::ExchangeRateTable> {
 }
 
 #[test]
-fn the_engine_fetches_the_ecb_rates_at_start_caches_them_and_keeps_them_when_a_refresh_fails() {
+fn the_engine_fetches_the_ecb_rates_only_when_asked_caches_them_and_keeps_them_when_a_refresh_fails()
+ {
     use std::sync::atomic::Ordering;
     let ecb = FakeEcb::start();
     let url = ecb.url.clone();
@@ -7607,17 +7608,38 @@ fn the_engine_fetches_the_ecb_rates_at_start_caches_them_and_keeps_them_when_a_r
         ]
     });
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let rates = loop {
-        if let Some(rates) = exchange_rates(&daemon) {
-            break rates;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the rates were never fetched at start"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+    // Started and serving, but nothing has wanted a rate yet.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        ecb.fetches.load(Ordering::SeqCst),
+        0,
+        "an engine nobody asked for rates fetches nothing"
+    );
+
+    // Two asks at once: the first fetches, the second waits for it.
+    let racing = {
+        let socket = daemon.socket.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let mut client = compass_ipc::Client::connect(&socket).await.unwrap();
+                client
+                    .request(compass_ipc::Request::ExchangeRates)
+                    .await
+                    .unwrap()
+            })
+        })
     };
+    let rates = exchange_rates(&daemon).expect("the rates, fetched on the first ask");
+    assert!(matches!(
+        racing.join().unwrap(),
+        compass_ipc::Response::ExchangeRates { rates: Some(_) }
+    ));
+    assert_eq!(
+        ecb.fetches.load(Ordering::SeqCst),
+        1,
+        "one fetch for both asks"
+    );
     assert_eq!(rates.date, "2026-09-24");
     assert!(
         rates
@@ -7633,6 +7655,12 @@ fn the_engine_fetches_the_ecb_rates_at_start_caches_them_and_keeps_them_when_a_r
         cache.is_file(),
         "the rates are cached under Compass's cache dir"
     );
+    exchange_rates(&daemon).expect("still held");
+    assert_eq!(
+        ecb.fetches.load(Ordering::SeqCst),
+        1,
+        "fresh rates are not fetched again"
+    );
 
     match daemon.request(compass_ipc::Request::RefreshExchangeRates) {
         compass_ipc::Response::ExchangeRates { rates: Some(fresh) } => {
@@ -7644,7 +7672,7 @@ fn the_engine_fetches_the_ecb_rates_at_start_caches_them_and_keeps_them_when_a_r
     assert_eq!(
         ecb.fetches.load(Ordering::SeqCst),
         2,
-        "start, then the forced refresh"
+        "the first ask, then the forced refresh"
     );
 
     ecb.failing.store(true, Ordering::SeqCst);

@@ -460,7 +460,7 @@ impl LauncherApp {
     }
 
     /// Puts the calculator's answer to the query first, when there is one.
-    fn apply_calculator(&mut self) {
+    pub(super) fn apply_calculator(&mut self) {
         self.results.retain(|row| *row != RootRow::Calculator);
         self.calculator = compass_core::calculator::evaluate(&self.query, !self.results.is_empty());
         if self.calculator.is_some() {

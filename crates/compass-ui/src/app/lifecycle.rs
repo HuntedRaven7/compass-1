@@ -137,7 +137,6 @@ impl LauncherApp {
                     self.refresh_subtitles_task(),
                     self.refresh_update_task(),
                     self.catalog_task(),
-                    self.exchange_rates_task(),
                     self.window_capabilities_task(),
                     self.apply_dmenu_size(),
                 ])

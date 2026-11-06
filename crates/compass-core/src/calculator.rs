@@ -59,9 +59,29 @@ pub fn exchange_rates() -> Option<Arc<ExchangeRates>> {
     RATES.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-/// fend's exchange-rate handler over one day's rates: fend asks for a
-/// currency's units per base currency, and the ECB's base is the euro.
-struct RateHandler(Arc<ExchangeRates>);
+thread_local! {
+    /// Whether an evaluation on this thread has needed a rate since
+    /// [`take_rates_wanted`] last looked. Per thread because evaluating is
+    /// synchronous: the caller that evaluated is the one that asks.
+    static RATES_WANTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether an evaluation on this thread needed an exchange rate since the
+/// last call, held or not; clears the mark.
+///
+/// Rates are fetched on demand rather than kept fresh in the background, so
+/// this is how a caller learns that a currency expression wants them: it
+/// fetches when this is true and its rates are missing or stale, then
+/// evaluates again.
+#[must_use]
+pub fn take_rates_wanted() -> bool {
+    RATES_WANTED.with(|wanted| wanted.replace(false))
+}
+
+/// fend's exchange-rate handler over one day's rates, or over none yet: fend
+/// asks for a currency's units per base currency, and the ECB's base is the
+/// euro. Either way the ask is recorded for [`take_rates_wanted`].
+struct RateHandler(Option<Arc<ExchangeRates>>);
 
 impl fend_core::ExchangeRateFnV2 for RateHandler {
     fn relative_to_base_currency(
@@ -69,7 +89,9 @@ impl fend_core::ExchangeRateFnV2 for RateHandler {
         currency: &str,
         _options: &fend_core::ExchangeRateFnV2Options,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync + 'static>> {
-        self.0
+        RATES_WANTED.with(|wanted| wanted.set(true));
+        let rates = self.0.as_ref().ok_or("no exchange rates yet")?;
+        rates
             .rate(currency)
             .ok_or_else(|| format!("no exchange rate for {currency}").into())
     }
@@ -152,9 +174,7 @@ pub fn compute_with_rates(question: &str, rates: Option<Arc<ExchangeRates>>) -> 
         return None;
     }
     let mut context = fend_core::Context::new();
-    if let Some(rates) = rates {
-        context.set_exchange_rate_handler_v2(RateHandler(rates));
-    }
+    context.set_exchange_rate_handler_v2(RateHandler(rates));
     let asked = euro_amounts_suffixed(question);
     let result =
         fend_core::evaluate_with_interrupt(&asked, &mut context, &Deadline::start()).ok()?;

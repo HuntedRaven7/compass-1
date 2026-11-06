@@ -58,12 +58,12 @@ kernel's settings, not on what the engine allocates. It grew when Compass became
 C++ engine was removed (#235). A fixed number cannot tell that apart from a leak. A series in one
 environment can.
 
-The libraries' share comes from a feature. At start, the engine fetches the exchange rates (#228)
-through ureq's native-tls agent. That loads OpenSSL, and the agent stays for the engine's lifetime.
-It costs 2.7 MB of anonymous memory and 3.7 MB of `libcrypto` pages. With
-`COMPASS_DISABLE_AUTO_RATE_REFRESH=1` the engine reads 33.9 MB. The per-commit test sets that
-variable and has no session bus, so its figure is not the session's. It also measures a debug
-build: 74 MB on the hosted runner in run 42128757578.
+The libraries' share came from a feature. At start, the engine fetched the exchange rates (#228)
+through ureq's native-tls agent, which loads OpenSSL for the engine's lifetime: 2.7 MB of
+anonymous memory and 3.7 MB of `libcrypto` pages (33.9 MB total with the fetch disabled). Rates
+are now fetched only when a currency expression asks for them, so an idle engine no longer pays
+this. The per-commit test has no session bus, so its figure is not the session's. It also
+measures a debug build: 74 MB on the hosted runner in run 42128757578.
 
 ## A point
 

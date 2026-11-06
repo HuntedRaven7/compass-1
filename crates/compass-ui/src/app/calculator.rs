@@ -59,17 +59,54 @@ pub fn rates_not_refreshed(reason: &str) -> crate::hud::Hud {
 
 const RATES_ICON: &str = "globe-01";
 
-/// Makes `rates` the ones the calculator converts currencies with. An
-/// engine never gives rates up once it has some, so "none" changes nothing.
-fn install_rates(rates: compass_core::exchange_rates::ExchangeRates) {
-    if compass_core::calculator::exchange_rates().is_none_or(|current| *current != rates) {
+/// How long after asking the engine for rates this window waits before
+/// asking again, when what came back was none or stale (offline, say).
+const RATES_ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Makes `rates` the ones the calculator converts currencies with, and
+/// says whether that changed anything. An engine never gives rates up once
+/// it has some, so "none" changes nothing.
+fn install_rates(rates: compass_core::exchange_rates::ExchangeRates) -> bool {
+    let changed =
+        compass_core::calculator::exchange_rates().is_none_or(|current| *current != rates);
+    if changed {
         compass_core::calculator::set_exchange_rates(Some(std::sync::Arc::new(rates)));
     }
+    changed
+}
+
+/// Seconds since the epoch, as the rates' `fetched_at`.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 impl LauncherApp {
-    /// Asks the engine for its exchange rates, as the window opens, so a
-    /// refresh the engine made meanwhile reaches the calculator.
+    /// Asks the engine for exchange rates when an evaluation since the last
+    /// update wanted one and the rates in hand are missing or stale. The
+    /// engine fetches them then, so rates cost nothing until a currency
+    /// expression is typed; their answer re-evaluates what is shown.
+    pub(super) fn rates_on_demand(&mut self) -> Option<Task<Message>> {
+        if !compass_core::calculator::take_rates_wanted() {
+            return None;
+        }
+        let current = compass_core::calculator::exchange_rates()
+            .is_some_and(|rates| !rates.is_stale(now_secs()));
+        let asked_lately = self
+            .rates_asked
+            .is_some_and(|at| at.elapsed() < RATES_ASK_AGAIN);
+        if current || asked_lately || self.backend.is_none() {
+            return None;
+        }
+        self.rates_asked = Some(std::time::Instant::now());
+        Some(self.exchange_rates_task())
+    }
+
+    /// Asks the engine for its exchange rates, which it fetches first when
+    /// it has none or they are a day old.
     pub(super) fn exchange_rates_task(&self) -> Task<Message> {
         let Some(backend) = self.backend.clone() else {
             return Task::none();
@@ -78,6 +115,15 @@ impl LauncherApp {
             async move { backend.exchange_rates().await },
             Message::ExchangeRatesLoaded,
         )
+    }
+
+    /// Evaluates again what the calculator shows, now that the rates moved.
+    fn rates_changed(&mut self) {
+        match &mut self.page {
+            Page::Root => self.apply_calculator(),
+            Page::Calculator(page) => page.recompute_live(),
+            _ => {}
+        }
     }
 
     /// Refresh Exchange Rates, as `CalculatorRefreshRatesCommand`: the
@@ -382,7 +428,11 @@ impl LauncherApp {
             }
             Message::ExchangeRatesLoaded(result) => {
                 match result {
-                    Ok(Some(rates)) => install_rates(rates),
+                    Ok(Some(rates)) => {
+                        if install_rates(rates) {
+                            self.rates_changed();
+                        }
+                    }
                     Ok(None) => {}
                     Err(error) => tracing::debug!(%error, "no exchange rates from the engine"),
                 }
@@ -391,7 +441,9 @@ impl LauncherApp {
             Message::ExchangeRatesRefreshed(result) => {
                 let hud = match result {
                     Ok(rates) => {
-                        install_rates(rates);
+                        if install_rates(rates) {
+                            self.rates_changed();
+                        }
                         rates_refreshed()
                     }
                     Err(reason) => {
@@ -665,6 +717,29 @@ mod tests {
         assert_eq!(
             app.error.as_deref(),
             Some("Could not refresh the exchange rates: offline")
+        );
+    }
+
+    #[test]
+    fn rates_are_asked_for_once_only_when_a_currency_expression_wants_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(Arc::new(TestBackend::default()));
+        let _ = compass_core::calculator::take_rates_wanted();
+
+        let _ = compass_core::calculator::compute("2 + 2");
+        assert!(app.rates_on_demand().is_none(), "arithmetic wants no rates");
+
+        // No test installs rates fresher than a day, so these are missing or stale.
+        let _ = compass_core::calculator::compute("10 usd to eur");
+        assert!(
+            app.rates_on_demand().is_some(),
+            "a currency expression asks"
+        );
+        let _ = compass_core::calculator::compute("20 usd to eur");
+        assert!(
+            app.rates_on_demand().is_none(),
+            "the next keystroke does not ask again"
         );
     }
 

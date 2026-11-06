@@ -1,17 +1,21 @@
 //! The calculator's exchange rates, engine side: the ECB's daily reference
 //! rates fetched through the engine's HTTP client, cached under Compass's
-//! cache directory, refreshed daily and on Refresh Exchange Rates (IPC v21).
+//! cache directory, and refreshed on Refresh Exchange Rates (IPC v21).
 //!
-//! Ports what `NumenVicinaeCurrencyProvider` and `NumenCalculatorBackend`
-//! do with rates — load the cache at start, fetch when it is stale, refresh
-//! on a timer and on demand — over a different source: the ECB rather than
-//! the Vicinae API (`compass_core::exchange_rates`). The launcher computes,
-//! so it asks for the rates ([`compass_ipc::Request::ExchangeRates`]) each
-//! time its window opens.
+//! # On demand, not in the background
+//!
+//! Upstream loads the rates at start and checks them hourly. Compass fetches
+//! only when a currency expression asks: the launcher evaluates, notices the
+//! expression wanted a rate ([`compass_core::calculator::take_rates_wanted`]),
+//! and sends [`compass_ipc::Request::ExchangeRates`]. That request reads the
+//! cache file and, when the rates are missing or a day old, fetches them
+//! before answering. Someone who never converts a currency never pays for
+//! the cache read, the TLS stack or the timer.
+//!
+//! The rates come from the ECB rather than the Vicinae API
+//! (`compass_core::exchange_rates`).
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 
 use compass_core::exchange_rates::{self, ExchangeRates, RateCache};
 use compass_ipc::{ErrorKind, ExchangeRateTable, ProtocolError, Request, Response};
@@ -19,10 +23,9 @@ use compass_ipc::{ErrorKind, ExchangeRateTable, ProtocolError, Request, Response
 /// The largest rates file accepted. The ECB's is under two kilobytes.
 const MAX_BYTES: u64 = 256 * 1024;
 
-/// How often the engine looks whether the rates are due, as the C++'s
-/// hourly `m_rateRefreshTimer`; they are fetched once a day
-/// ([`exchange_rates::MAX_AGE_SECS`]).
-const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
+/// How long a failed on-demand fetch holds off the next one, so typing a
+/// currency expression offline does not try the network on every request.
+const RETRY_AFTER_FAILURE_SECS: i64 = 15 * 60;
 
 /// Where the rates come from and what is held.
 #[derive(Debug, Default)]
@@ -31,6 +34,14 @@ pub struct ExchangeRateService {
     url: Option<String>,
     cache: tokio::sync::Mutex<Option<RateCache>>,
     cache_path: Option<PathBuf>,
+    /// Held across an on-demand fetch, so requests that arrive together
+    /// fetch once.
+    fetching: tokio::sync::Mutex<()>,
+    /// When the last on-demand fetch failed.
+    failed_at: std::sync::Mutex<Option<i64>>,
+    /// Whether rates are only fetched when asked to refresh; see
+    /// [`exchange_rates::DISABLE_AUTO_REFRESH_ENV`].
+    auto_refresh_disabled: bool,
 }
 
 /// Seconds since the epoch.
@@ -61,12 +72,18 @@ impl ExchangeRateService {
     /// `$XDG_CACHE_HOME/compass`.
     #[must_use]
     pub fn from_environment() -> Self {
-        Self::new(
+        let mut service = Self::new(
             Some(exchange_rates::source_url(
                 std::env::var(exchange_rates::URL_ENV).ok().as_deref(),
             )),
             compass_core::xdg_dirs::cache_home().map(|home| exchange_rates::cache_path(&home)),
-        )
+        );
+        // Anything but the empty string, as the C++'s
+        // `isAutoRateRefreshDisabled` (which counts the empty string too).
+        service.auto_refresh_disabled =
+            compass_xdg::brand::env_var_os(exchange_rates::DISABLE_AUTO_REFRESH_ENV)
+                .is_some_and(|value| !value.is_empty());
+        service
     }
 
     /// Rates fetched from `url` and cached in `cache_path`. Nothing is read
@@ -75,8 +92,8 @@ impl ExchangeRateService {
     pub fn new(url: Option<String>, cache_path: Option<PathBuf>) -> Self {
         Self {
             url,
-            cache: tokio::sync::Mutex::default(),
             cache_path,
+            ..Self::default()
         }
     }
 
@@ -100,8 +117,39 @@ impl ExchangeRateService {
         self.with_cache(|cache| cache.current().cloned()).await
     }
 
-    /// Whether the rates are due at `now`.
-    pub async fn needs_refresh(&self, now: i64) -> bool {
+    /// The rates, fetched first when they are missing or stale, unless
+    /// automatic fetching is off or a fetch failed in the last 15 minutes.
+    /// A failed fetch answers with what is held.
+    pub async fn wanted(&self) -> Option<ExchangeRates> {
+        if self.auto_refresh_disabled || !self.due(now()).await {
+            return self.current().await;
+        }
+        let _one = self.fetching.lock().await;
+        // Whoever held the lock may have fetched already.
+        if self.due(now()).await {
+            match self.refresh().await {
+                Ok(rates) => tracing::info!(date = %rates.date, "fetched the exchange rates"),
+                Err(error) => {
+                    tracing::warn!(%error, "could not fetch the exchange rates");
+                    *self
+                        .failed_at
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(now());
+                }
+            }
+        }
+        self.current().await
+    }
+
+    /// Whether an on-demand fetch should run at `now`.
+    async fn due(&self, now: i64) -> bool {
+        let failed_at = *self
+            .failed_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if failed_at.is_some_and(|at| now - at < RETRY_AFTER_FAILURE_SECS) {
+            return false;
+        }
         self.with_cache(|cache| cache.needs_refresh(now)).await
     }
 
@@ -135,31 +183,8 @@ impl ExchangeRateService {
                 )),
             },
             _ => Response::ExchangeRates {
-                rates: self.current().await.as_ref().map(table),
+                rates: self.wanted().await.as_ref().map(table),
             },
         }
-    }
-}
-
-/// Keeps the rates fresh for as long as the engine runs: fetched at start
-/// when there are none or they are stale, then looked at hourly. Nothing is
-/// done when [`exchange_rates::DISABLE_AUTO_REFRESH_ENV`] is set to anything
-/// but the empty string, as the C++'s `isAutoRateRefreshDisabled` (which
-/// counts the empty string as set too).
-pub async fn run(service: Arc<ExchangeRateService>) {
-    if compass_xdg::brand::env_var_os(exchange_rates::DISABLE_AUTO_REFRESH_ENV)
-        .is_some_and(|value| !value.is_empty())
-    {
-        tracing::info!("automatic exchange rate refresh is disabled");
-        return;
-    }
-    loop {
-        if service.needs_refresh(now()).await {
-            match service.refresh().await {
-                Ok(rates) => tracing::info!(date = %rates.date, "fetched the exchange rates"),
-                Err(error) => tracing::warn!(%error, "could not fetch the exchange rates"),
-            }
-        }
-        tokio::time::sleep(CHECK_EVERY).await;
     }
 }

@@ -57,19 +57,31 @@ pub struct CalculatorPage {
     pub generation: u64,
 }
 
+/// The live result for `query`, by the C++ rule (`live_calc`: three
+/// characters, or a leading `=`).
+fn live_answer(query: &str) -> Option<compass_core::calculator::Answer> {
+    match compass_core::calculator_history::live_calc(query) {
+        compass_core::calculator_history::LiveCalc::Compute(question) => {
+            compass_core::calculator::compute(&question)
+        }
+        compass_core::calculator_history::LiveCalc::None => None,
+    }
+}
+
 impl CalculatorPage {
     /// Sets the query and its live result, by the C++ rule
     /// (`live_calc`: three characters, or a leading `=`).
     pub fn set_query(&mut self, query: String) {
-        self.live = match compass_core::calculator_history::live_calc(&query) {
-            compass_core::calculator_history::LiveCalc::Compute(question) => {
-                compass_core::calculator::compute(&question)
-            }
-            compass_core::calculator_history::LiveCalc::None => None,
-        };
+        self.live = live_answer(&query);
         self.query = query;
         self.selected = 0;
         self.generation += 1;
+    }
+
+    /// Evaluates the live result again for the same query, as when exchange
+    /// rates arrive; the history request in flight stays current.
+    pub fn recompute_live(&mut self) {
+        self.live = live_answer(&self.query);
     }
 
     /// Takes the engine's answer for `generation`, keeping the selection's

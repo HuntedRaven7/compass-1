@@ -110,6 +110,27 @@ fn without_rates_currency_expressions_answer_nothing() {
 }
 
 #[test]
+fn only_an_expression_that_needs_a_rate_marks_the_rates_wanted() {
+    let _ = calculator::take_rates_wanted();
+    let _ = answer("5 ft to m", None);
+    let _ = answer("2 + 2", None);
+    assert!(
+        !calculator::take_rates_wanted(),
+        "units and arithmetic need none"
+    );
+
+    let _ = answer("10 usd to eur", None);
+    assert!(calculator::take_rates_wanted(), "asked with no rates held");
+    assert!(!calculator::take_rates_wanted(), "taking clears the mark");
+
+    let _ = answer("10 usd to eur", Some(fixed_rates()));
+    assert!(
+        calculator::take_rates_wanted(),
+        "asked with rates held too, so stale ones can be replaced"
+    );
+}
+
+#[test]
 fn the_fixture_s_rates_convert_through_the_euro() {
     let rates = Arc::new(parse_ecb(FIXTURE, 0).unwrap());
     let got = answer("100 eur to usd", Some(Arc::clone(&rates))).unwrap();

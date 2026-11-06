@@ -326,9 +326,10 @@ Compass sends no telemetry. On its own, it makes two kinds of request:
   this off with **Check for updates** in Settings, or `launcher.check_for_updates` in the
   configuration file.
 - For the calculator's currency conversions, it downloads the European Central Bank's daily
-  exchange rates from `www.ecb.europa.eu`, once a day while it runs. To stop this, set
-  `COMPASS_DISABLE_AUTO_RATE_REFRESH=1` in Compass's environment; currency conversions then use
-  the last rates downloaded, if any.
+  exchange rates from `www.ecb.europa.eu` the first time you convert a currency, and again when
+  you convert one and the rates are a day old. Nothing is downloaded if you never convert a
+  currency. To stop it entirely, set `COMPASS_DISABLE_AUTO_RATE_REFRESH=1` in Compass's
+  environment; conversions then use the last rates downloaded, if any.
 
 Everything else happens only when you ask for it, such as browsing the Vicinae Store or the
 Raycast Store and installing an extension. What an installed extension does is up to it.
