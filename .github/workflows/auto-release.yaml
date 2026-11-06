@@ -10,7 +10,9 @@ name: Auto release
 # existing workflows take over. Pushed with the workflow token, that commit
 # starts no workflow by itself, so this dispatches the two that a merged bump
 # starts: release.yml (tag, GitHub release, AppImage, Homebrew checksum PR)
-# and flatpak.yaml (whose green run publish-flatpak.yaml publishes).
+# and flatpak.yaml. A run the workflow token started does not fire
+# publish-flatpak.yaml's `workflow_run` either, so this waits for the Flatpak
+# build and dispatches the publish on that run itself.
 #
 # scripts/ci/release-due.py decides whether a release is due and how big;
 # CONTRIBUTING.md ("Releasing") says what counts.
@@ -35,7 +37,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The Flatpak build (both architectures) is waited for: about 20 minutes.
+    timeout-minutes: 90
     permissions:
       contents: write
       actions: write
@@ -99,3 +102,28 @@ jobs:
           echo "${REASON}" >> "$GITHUB_STEP_SUMMARY"
           gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main
           gh workflow run flatpak.yaml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "pushed=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        id: bump
+
+      - name: Publish the release's Flatpak
+        if: steps.bump.outputs.pushed != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.bump.outputs.pushed }}
+        run: |
+          set -euo pipefail
+          run=""
+          for _ in $(seq 1 30); do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow flatpak.yaml \
+              --commit "$SHA" --event workflow_dispatch --limit 1 \
+              --json databaseId --jq '.[0].databaseId // ""')
+            [[ -n "$run" ]] && break
+            sleep 10
+          done
+          if [[ -z "$run" ]]; then
+            echo "::error::the Flatpak build for ${SHA} never started"
+            exit 1
+          fi
+          gh run watch "$run" --repo "$GITHUB_REPOSITORY" --interval 60 --exit-status
+          gh workflow run publish-flatpak.yaml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f run-id="$run"
