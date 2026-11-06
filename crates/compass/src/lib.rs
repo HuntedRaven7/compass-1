@@ -15,6 +15,7 @@ pub mod appearance;
 pub mod catalog_watch;
 pub mod cli;
 pub mod cli_commands;
+pub mod clipboard_cmd;
 pub mod clipboard_service;
 pub mod config_cmd;
 pub mod config_watch;
@@ -790,6 +791,8 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Config(config_cmd) => config_cmd::run(config_cmd),
 
         Command::Data(data_cmd) => data_cmd::run(&socket, data_cmd).await,
+
+        Command::Clipboard(clipboard) => clipboard_cmd::run(&socket, clipboard).await,
 
         // Handled in `run`, before the runtime exists.
         Command::Ui | Command::Start { .. } | Command::LauncherChild { .. } => {

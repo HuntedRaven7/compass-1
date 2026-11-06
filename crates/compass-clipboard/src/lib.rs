@@ -12,6 +12,8 @@
 //! * [`crate::write`] — inserts, indexing, deletion and eviction.
 //! * [`ingest`] — recording one observed copy, as delivered by the GNOME
 //!   helper extension's `ClipboardChanged` signal.
+//! * [`files`] — the history's files on disk: measuring them, reading them
+//!   without writing, and resetting them.
 //!
 //! Still on the C++ side: the monitoring loop and multi-offer sanitising in
 //! `clipboard-service.cpp`, which the daemon wiring will need. See
@@ -22,6 +24,7 @@
 
 #![deny(missing_docs)]
 
+pub mod files;
 pub mod history_view;
 pub mod ingest;
 pub mod kind;

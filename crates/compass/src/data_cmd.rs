@@ -64,7 +64,7 @@ async fn remove(socket: &SocketPath, yes: bool, include_vicinae: bool) -> Result
 
 /// Whether an engine answers on `socket`. One that accepts the connection but
 /// does not answer in time counts as running.
-async fn engine_answers(socket: &SocketPath) -> bool {
+pub(crate) async fn engine_answers(socket: &SocketPath) -> bool {
     match tokio::time::timeout(PING_TIMEOUT, ipc::send(socket, Request::Ping)).await {
         Ok(Ok(Response::Pong { .. })) | Err(_) => true,
         Ok(_) => false,

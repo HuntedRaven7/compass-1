@@ -75,6 +75,8 @@ pub struct Inputs<'a, B: BusProbe, F: FsProbe> {
     /// The file-search index's measurements; `None` without a cache
     /// directory to find it in.
     pub file_index: Option<&'a compass_db::index_stats::IndexStats>,
+    /// Clipboard history on disk, its key, and what the engine says of it.
+    pub clipboard: &'a checks::ClipboardFacts,
 }
 
 /// Runs every check, in report order.
@@ -92,6 +94,7 @@ pub async fn run<B: BusProbe, F: FsProbe>(inputs: &Inputs<'_, B, F>) -> Report {
         config,
         declared_extensions,
         file_index,
+        clipboard,
     } = *inputs;
 
     let checks = vec![
@@ -112,8 +115,9 @@ pub async fn run<B: BusProbe, F: FsProbe>(inputs: &Inputs<'_, B, F>) -> Report {
         checks::shell_extension(env, bus).await,
         checks::kwin(env, bus).await,
         checks::wlroots(env, wayland.as_ref(), bus).await,
-        checks::clipboard_history(env, wayland.as_ref()),
+        checks::clipboard_history(env, wayland.as_ref(), clipboard.engine.as_ref()),
         checks::keyring(env, bus).await,
+        checks::clipboard_storage(clipboard),
         checks::flatpak(fs),
         checks::input_server(fs, input_server),
         checks::declared_extensions(declared_extensions),
@@ -161,6 +165,7 @@ pub async fn run_on_this_machine(socket: &SocketPath, engine: Engine) -> Report 
         .await
         .ok()
         .flatten();
+    let clipboard = gather_clipboard(socket, daemon_listening).await;
     let inputs = Inputs {
         env: &env,
         fs: &fs,
@@ -173,6 +178,7 @@ pub async fn run_on_this_machine(socket: &SocketPath, engine: Engine) -> Report 
         config: &config,
         declared_extensions: &declared_extensions,
         file_index: file_index.as_ref(),
+        clipboard: &clipboard,
         wayland: tokio::task::spawn_blocking(probe_wayland)
             .await
             .ok()
@@ -212,6 +218,28 @@ pub fn gather_file_index() -> Option<compass_db::index_stats::IndexStats> {
     Some(compass_db::index_stats::inspect(
         &crate::indexer_service::database_path(&cache),
     ))
+}
+
+/// Reads the clipboard history and its key without changing either, and asks
+/// a running engine what it is doing with them.
+pub async fn gather_clipboard(
+    socket: &SocketPath,
+    daemon_listening: bool,
+) -> checks::ClipboardFacts {
+    let engine = if daemon_listening {
+        match crate::ipc::send(socket, compass_ipc::Request::ClipboardStatus).await {
+            Ok(compass_ipc::Response::ClipboardStatus(status)) => Some(status),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    checks::ClipboardFacts {
+        inspection: crate::clipboard_service::inspect()
+            .await
+            .map_err(|err| err.to_string()),
+        engine,
+    }
 }
 
 /// Reads `compass.json` and checks it, as the engine does when it starts.
@@ -388,6 +416,24 @@ mod tests {
             }
         });
 
+    /// No clipboard history yet, and no engine asked about it.
+    static HEALTHY_CLIPBOARD: std::sync::LazyLock<checks::ClipboardFacts> =
+        std::sync::LazyLock::new(|| {
+            let dir = std::path::PathBuf::from("/home/tester/.local/share/compass");
+            checks::ClipboardFacts {
+                inspection: Ok(crate::clipboard_service::Inspection {
+                    survey: Ok(compass_clipboard::files::Survey {
+                        dir: dir.clone(),
+                        parts: Vec::new(),
+                    }),
+                    dir,
+                    key: crate::clipboard_service::KeyState::Missing,
+                    read: None,
+                }),
+                engine: None,
+            }
+        });
+
     fn inputs<'a>(
         env: &'a Env,
         fs: &'a FakeFs,
@@ -407,6 +453,7 @@ mod tests {
             config: &CLEAN_CONFIG,
             declared_extensions: &NOTHING_DECLARED,
             file_index: Some(&NO_INDEX),
+            clipboard: &HEALTHY_CLIPBOARD,
             // The healthy machine is GNOME; the barren one has no display.
             wayland: env.get("WAYLAND_DISPLAY").map(|_| checks::WaylandFindings {
                 family: compass_wayland::compositor::Family::Gnome,
@@ -507,7 +554,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "duplicate check names");
-        assert_eq!(count, 20);
+        assert_eq!(count, 21);
         assert!(
             report
                 .checks

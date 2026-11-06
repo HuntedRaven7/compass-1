@@ -224,3 +224,57 @@ fn the_pragmas_are_applied() {
         "expected a SQLCipher 4.x file format, got {cipher:?}"
     );
 }
+
+#[test]
+fn a_read_only_open_reads_without_creating_or_writing() {
+    let (dir, path) = scratch("ro.db");
+    assert!(
+        compass_sqlcipher_sys::open_read_only(&path, KEY, true).is_err(),
+        "a missing database is not created"
+    );
+    assert!(!path.exists());
+    {
+        let db = open(&path, KEY).expect("open");
+        db.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('a')")
+            .expect("create");
+    }
+    // The writer closed cleanly, so the sidecars went with it.
+    let sidecars = |dir: &std::path::Path| {
+        std::fs::read_dir(dir)
+            .expect("list")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name() != "ro.db")
+            .count()
+    };
+    assert_eq!(sidecars(dir.path()), 0);
+    let before = std::fs::read(&path).expect("read");
+
+    let db = compass_sqlcipher_sys::open_read_only(&path, KEY, true).expect("read-only open");
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 1);
+    assert!(
+        db.execute_batch("INSERT INTO t VALUES ('b')").is_err(),
+        "the connection cannot write"
+    );
+    drop(db);
+    assert_eq!(sidecars(dir.path()), 0, "no -wal or -shm was created");
+    assert_eq!(std::fs::read(&path).expect("read"), before);
+
+    assert!(
+        compass_sqlcipher_sys::open_read_only(&path, &[0x17; 32], true).is_err(),
+        "the wrong key is refused at open"
+    );
+}
+
+#[test]
+fn a_read_only_open_survives_a_path_a_uri_would_misread() {
+    let (_dir, path) = scratch("odd ?#% name.db");
+    {
+        let db = open(&path, KEY).expect("open");
+        db.execute_batch("CREATE TABLE t (v TEXT)").expect("create");
+    }
+    compass_sqlcipher_sys::open_read_only(&path, KEY, true)
+        .expect("the escaped URI names the same file");
+}

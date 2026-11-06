@@ -95,6 +95,51 @@ pub fn open(path: &Path, key: &[u8]) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// Open an existing database at `path` for reading only, keyed with `key`,
+/// with `fuzzy_trigram` registered — for diagnostics that must not change the
+/// file.
+///
+/// Unlike [`open`] this never creates the file and applies none of the
+/// clipboard pragmas: switching the journal mode is a write. With `immutable`
+/// set SQLite takes no locks and neither reads nor creates the `-wal` and
+/// `-shm` sidecars; that is only right while no writer has the file open,
+/// which a caller knows from the sidecars being absent. Without it, an existing
+/// `-shm` may be updated for reader coordination, as any reader does.
+///
+/// # Errors
+///
+/// As [`open`]; a missing file is `SQLITE_CANTOPEN`.
+pub fn open_read_only(path: &Path, key: &[u8], immutable: bool) -> rusqlite::Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = if immutable {
+        Connection::open_with_flags(immutable_uri(path), flags | OpenFlags::SQLITE_OPEN_URI)?
+    } else {
+        Connection::open_with_flags(path, flags)?
+    };
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    if !key.is_empty() {
+        set_key(&conn, key)?;
+    }
+    register_tokenizer(&conn)?;
+    Ok(conn)
+}
+
+/// Every byte a `file:` URI path may not hold as it is: all but the unreserved
+/// characters and `/`.
+const URI_PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'/')
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// `path` as a `file:` URI with `immutable=1`, percent-encoded so that `?`,
+/// `#` and `%` in a name, and a non-UTF-8 path, reach SQLite intact.
+fn immutable_uri(path: &Path) -> String {
+    let encoded = percent_encoding::percent_encode(path.as_os_str().as_encoded_bytes(), URI_PATH);
+    format!("file:{encoded}?immutable=1")
+}
+
 /// Set the SQLCipher key from raw bytes.
 ///
 /// `PRAGMA` does not accept bound parameters, so the key has to be part of the

@@ -3862,6 +3862,40 @@ be installed beside Compass. The rules are in `packaging/README.md` ("Upgrades a
 `removal_stops_each_users_engine_through_their_own_manager_or_socket`,
 `an_upgrade_restarts_the_service_and_tells_everyone_else`, `the_script_never_deletes_or_signals`).
 
+### Clipboard diagnostics and `compass clipboard reset` — a Compass addition, with no C++ counterpart
+
+The C++ CLI has no clipboard diagnostics or reset, and until this change the Rust engine logged a
+keyring or database failure once and left clipboard history off for the session. Compass now
+reports it and offers a way out (#322, phase 3):
+
+- The engine answers `ClipboardStatus` (IPC v26): the backend in use (data-control and its
+  protocol, or the GNOME Shell extension), whether it delivers copies, the monitoring switch, and
+  whether the history is open, waiting for the keyring, or failed. `compass doctor` reports it in
+  `clipboard.history`, and guesses from the session when no engine answers, naming an X11 session
+  as unsupported. There is no portal or X11 backend.
+- A locked or absent keyring is waited for with the Shell extension's capped backoff (2 s doubling
+  to 60 s), instead of leaving history off for the session. Only the first attempt asks to unlock
+  the keyring, and no key is created while it is locked, so the retries never prompt. A
+  data-control connection that ends is reopened the same way; before, recording stopped for the
+  session.
+- A database the key does not open (`SQLITE_NOTADB`) is now its own error, not retried, and named
+  in the status, as is a keyring entry that is not a key.
+- `compass doctor`'s `clipboard.storage` reads the history read-only (`immutable=1` when no
+  sidecar exists, so none is created): whether it opens with the key in the keyring, its entry
+  count, and the database, WAL and payload sizes. It never creates a key or unlocks the keyring.
+- `compass clipboard reset` lists what it does and changes nothing without `--yes`, which is
+  refused while an engine answers. A history the key opens is deleted. One it does not open, or
+  whose key is missing, is moved into `compass-clipboard-backup-<unix time>` beside it, since the
+  key may be in a keyring that comes back. A keyring entry that is not a key is removed. A locked or
+  unreachable keyring is refused, since then neither case can be told apart.
+
+(`a_key_mismatch_fails_and_names_the_reset`, `a_running_engine_reports_the_backend_it_actually_uses`,
+`a_history_the_key_does_not_open_is_kept_as_a_backup`, `a_keyring_that_cannot_say_is_refused_not_guessed_at`,
+`a_reset_that_backs_up_keeps_the_history_whole_beside_it`,
+`the_survey_measures_every_part_and_the_count_reads_without_writing`,
+`no_key_is_made_while_the_keyring_is_locked`, `only_a_keyring_that_may_yet_answer_is_waited_for`,
+`a_read_only_open_reads_without_creating_or_writing`.)
+
 ### Extension Store and Raycast Store — what the port does not have yet
 
 Both stores run end to end (IPC v14: `StoreBrowse`, `StoreExtension`, `StoreInstall`,

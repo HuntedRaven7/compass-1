@@ -284,6 +284,10 @@ pub enum Command {
     #[command(subcommand)]
     Data(DataCommand),
 
+    /// Clipboard history: starting it again when it cannot be opened.
+    #[command(subcommand)]
+    Clipboard(ClipboardCommand),
+
     /// One-off experiments that answer a question the code cannot.
     ///
     /// Hidden: these are addressed to whoever is answering the question — CI,
@@ -577,6 +581,26 @@ pub enum ConfigCommand {
 
     /// Print out the default config: every setting at its default.
     Default,
+}
+
+/// `compass clipboard` subcommands.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum ClipboardCommand {
+    /// Start a new, empty clipboard history, listing first what that does.
+    ///
+    /// Without `--yes` nothing changes: the files are listed with what would
+    /// happen to each. A history the key in the keyring opens is deleted,
+    /// pinned entries included. One it does not open, because the key was
+    /// lost or the keyring entry is not a key, is moved into a
+    /// `compass-clipboard-backup-<time>` directory beside it instead, and a
+    /// keyring entry that is not a key is removed. Refuses while the keyring is
+    /// locked or unreachable, since it then cannot tell which applies, and
+    /// refuses `--yes` while Compass is running.
+    Reset {
+        /// Make the listed changes instead of only listing them.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 /// `compass data` subcommands.
@@ -1184,6 +1208,18 @@ mod tests {
                 yes: true,
                 include_vicinae: true
             })
+        );
+    }
+
+    #[test]
+    fn clipboard_reset_is_a_dry_run_unless_told_otherwise() {
+        assert_eq!(
+            parse(&["compass", "clipboard", "reset"]).command,
+            Command::Clipboard(ClipboardCommand::Reset { yes: false })
+        );
+        assert_eq!(
+            parse(&["compass", "clipboard", "reset", "--yes"]).command,
+            Command::Clipboard(ClipboardCommand::Reset { yes: true })
         );
     }
 }

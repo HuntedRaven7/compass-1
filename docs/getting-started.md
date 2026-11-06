@@ -339,3 +339,24 @@ measurements, not a performance comparison or a recommendation to compact.
 
 The command exits 1 when required measurements are unavailable and 0 when they
 are available. Optional FTS-footprint unavailability does not fail the command.
+
+### Clipboard history
+
+`compass doctor` reports clipboard history in two checks. `clipboard.history` says how copies
+reach it: over the compositor's data-control protocol, or through the Compass GNOME Shell
+extension on GNOME. `clipboard.storage` says whether the history opens with the key kept in your
+keyring, how many entries it holds and how much space it takes. Neither check creates, changes or
+unlocks anything.
+
+A locked keyring is waited for: once you unlock it, a running Compass opens the history by itself.
+If the keyring was reset or replaced, the key that encrypted the history is gone and the history
+cannot be read. `compass doctor` then fails `clipboard.storage` and suggests the reset:
+
+```sh
+compass clipboard reset        # lists what would happen
+compass clipboard reset --yes  # does it; quit Compass first
+```
+
+A history the key still opens is deleted, pinned entries included. One it cannot open is moved
+into a `compass-clipboard-backup-<time>` folder beside it rather than deleted, in case the old
+keyring comes back. The next time Compass starts, it begins a new, empty history.

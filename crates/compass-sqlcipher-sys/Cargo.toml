@@ -33,6 +33,7 @@ rusqlite.workspace = true
 # `DEP_SQLITE3_INCLUDE` and compiles the tokenizer against the headers of the
 # SQLite that is actually linked.
 libsqlite3-sys.workspace = true
+percent-encoding.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

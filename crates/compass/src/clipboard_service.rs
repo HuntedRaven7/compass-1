@@ -21,26 +21,36 @@
 //! the keyring already holds something. That logic is [`master_key`], and it is
 //! tested against [`SecretStore`] fakes; the `oo7` implementation is a thin
 //! adapter with nothing to decide.
+//!
+//! # Status and recovery
+//!
+//! What the service is doing is kept in [`Control`] and answered to
+//! `compass doctor` as a [`ClipboardStatus`]: the backend chosen, whether it
+//! delivers copies, and the history database's state. A keyring that is
+//! locked or not running yet is waited for, with the same capped backoff as the
+//! Shell extension, and without asking to unlock it again after the first
+//! attempt. A database the key does not open, or a keyring entry that is not a
+//! key, is not retried: only `compass clipboard reset` (`crate::clipboard_cmd`)
+//! gets out of that, so the status says so. A data-control connection that
+//! ends is reopened with the same backoff.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use compass_clipboard::files::{self, DATABASE_FILE_NAME, PAYLOAD_DIR_NAME, ReadError, Survey};
 use compass_clipboard::ingest::{self, Decision, Incoming};
 use compass_clipboard::kind::OfferKind;
 use compass_clipboard::store::{self, ListSettings};
 use compass_crypto::KEY_SIZE;
-use compass_ipc::{ClipboardDetail, ClipboardEntry, ClipboardKind};
+use compass_ipc::{
+    ClipboardBackend, ClipboardDetail, ClipboardEntry, ClipboardKind, ClipboardStatus,
+    ClipboardStorage,
+};
 use compass_sqlcipher_sys::rusqlite::{Connection, named_params};
 use tokio::sync::RwLock;
 
 use crate::serve::EngineState;
-
-/// The history database's file name, in the Vicinae data directory.
-pub const DATABASE_FILE_NAME: &str = "compass-clipboard.db";
-
-/// Directory, beside the database, holding encrypted payloads.
-pub const PAYLOAD_DIR_NAME: &str = "compass-clipboard";
 
 /// Attributes identifying Compass's master key in the keyring.
 ///
@@ -51,7 +61,8 @@ pub const KEYRING_ATTRIBUTES: [(&str, &str); 2] = [
     ("purpose", "clipboard-master-key"),
 ];
 
-const KEYRING_LABEL: &str = "Compass clipboard history key";
+/// The keyring entry's label, which is what a keyring manager shows.
+pub const KEYRING_LABEL: &str = "Compass clipboard history key";
 
 /// Why clipboard history is unavailable.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +83,13 @@ pub enum Error {
     /// The database would not open or migrate.
     #[error("clipboard database: {0}")]
     Database(String),
+    /// The database exists but the key does not open it: it was made under a
+    /// key that is no longer in the keyring, or it is damaged.
+    #[error(
+        "the clipboard history cannot be read with the key in the keyring ({0}); \
+         run `compass clipboard reset` to move it into a backup and start a new one"
+    )]
+    Unreadable(String),
     /// A query or write failed.
     #[error("clipboard store: {0}")]
     Store(String),
@@ -86,22 +104,30 @@ pub trait SecretStore {
     fn lookup(&self) -> impl Future<Output = Result<Option<Vec<u8>>, Error>> + Send;
     /// Store `secret`, replacing nothing (it is only called after a miss).
     fn store(&self, secret: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
+    /// Whether the keyring is locked, so that storing would ask the user to
+    /// unlock it. `false` when that cannot be told.
+    fn locked(&self) -> impl Future<Output = bool> + Send;
 }
 
 /// Returns the master key, creating and storing one on first use.
 ///
 /// An entry of the wrong length is an error and is **not** replaced: the only
 /// way it exists is that something else wrote it, and overwriting it could
-/// orphan a history encrypted under it.
+/// orphan a history encrypted under it. Nor is a key created while the
+/// keyring is locked: storing one would ask the user to unlock it, and a
+/// retry loop must not do that again and again.
 ///
 /// # Errors
 ///
-/// [`Error::Keyring`] when the store fails, [`Error::MalformedKey`] as above,
-/// [`Error::Randomness`] when no key can be generated.
+/// [`Error::Keyring`] when the store fails or is locked, [`Error::MalformedKey`]
+/// as above, [`Error::Randomness`] when no key can be generated.
 pub async fn master_key<S: SecretStore>(store: &S) -> Result<[u8; KEY_SIZE], Error> {
     if let Some(existing) = store.lookup().await? {
         return <[u8; KEY_SIZE]>::try_from(existing.as_slice())
             .map_err(|_| Error::MalformedKey(existing.len()));
+    }
+    if store.locked().await {
+        return Err(Error::Keyring("the keyring is locked".to_owned()));
     }
     let key = compass_crypto::generate_key()?;
     store.store(&key).await?;
@@ -121,20 +147,46 @@ impl std::fmt::Debug for Oo7Store {
 }
 
 impl Oo7Store {
-    /// Connects to whichever keyring this process can reach.
+    /// Connects to whichever keyring this process can reach, asking the user
+    /// to unlock it if it is locked.
     ///
     /// # Errors
     ///
     /// [`Error::Keyring`] when neither backend is available.
     pub async fn connect() -> Result<Self, Error> {
-        let keyring = oo7::Keyring::new()
-            .await
-            .map_err(|err| Error::Keyring(err.to_string()))?;
-        keyring
+        let store = Self::connect_quietly().await?;
+        store
+            .keyring
             .unlock()
             .await
             .map_err(|err| Error::Keyring(err.to_string()))?;
+        Ok(store)
+    }
+
+    /// Connects without asking to unlock anything: for retries, and for
+    /// diagnostics that only look.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Keyring`] when neither backend is available.
+    pub async fn connect_quietly() -> Result<Self, Error> {
+        let keyring = oo7::Keyring::new()
+            .await
+            .map_err(|err| Error::Keyring(err.to_string()))?;
         Ok(Self { keyring })
+    }
+
+    /// Removes Compass's clipboard key from the keyring, and nothing else:
+    /// only the entries with [`KEYRING_ATTRIBUTES`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Keyring`] when the keyring refuses.
+    pub async fn delete_key(&self) -> Result<(), Error> {
+        self.keyring
+            .delete(&Self::attributes())
+            .await
+            .map_err(|err| Error::Keyring(err.to_string()))
     }
 
     fn attributes() -> std::collections::HashMap<&'static str, &'static str> {
@@ -196,6 +248,131 @@ impl SecretStore for Oo7Store {
             .await
             .map_err(|err| Error::Keyring(err.to_string()))
     }
+
+    async fn locked(&self) -> bool {
+        // Inside a sandbox oo7 keeps secrets in a file unlocked through the
+        // Secret portal, which has no lock; only the host's Secret Service
+        // collection can be locked.
+        if oo7::ashpd::is_sandboxed().await {
+            return false;
+        }
+        let Ok(service) = oo7::dbus::Service::new().await else {
+            return false;
+        };
+        let Ok(collection) = service.default_collection().await else {
+            return false;
+        };
+        collection.is_locked().await.unwrap_or(false)
+    }
+}
+
+/// What the keyring holds for clipboard history, found without asking to
+/// unlock anything or writing anything.
+#[derive(Clone, PartialEq, Eq)]
+pub enum KeyState {
+    /// A key of the right size.
+    Found([u8; KEY_SIZE]),
+    /// No entry.
+    Missing,
+    /// An entry that is not a key Compass wrote, by its length.
+    Malformed(usize),
+    /// The keyring is locked, so the entry could not be read.
+    Locked,
+    /// No keyring answered.
+    Unavailable(String),
+}
+
+impl std::fmt::Debug for KeyState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the key itself: this ends up in logs and test output.
+        match self {
+            Self::Found(_) => f.write_str("Found(..)"),
+            Self::Missing => f.write_str("Missing"),
+            Self::Malformed(len) => f.debug_tuple("Malformed").field(len).finish(),
+            Self::Locked => f.write_str("Locked"),
+            Self::Unavailable(reason) => f.debug_tuple("Unavailable").field(reason).finish(),
+        }
+    }
+}
+
+/// Reads the key from `store` as [`master_key`] would, but makes none.
+pub async fn key_state<S: SecretStore>(store: &S) -> KeyState {
+    match store.lookup().await {
+        Ok(Some(bytes)) => <[u8; KEY_SIZE]>::try_from(bytes.as_slice())
+            .map_or(KeyState::Malformed(bytes.len()), KeyState::Found),
+        // A locked keyring can hide the entry as well as refuse to read it.
+        Ok(None) | Err(_) if store.locked().await => KeyState::Locked,
+        Ok(None) => KeyState::Missing,
+        Err(err) => KeyState::Unavailable(err.to_string()),
+    }
+}
+
+/// How long the keyring has to answer a diagnostic: a Secret Service that
+/// D-Bus activates but that never starts would otherwise hold it for the bus's
+/// own, much longer, timeout.
+const KEYRING_PATIENCE: Duration = Duration::from_secs(5);
+
+/// The history on disk and its key, as `compass doctor` and
+/// `compass clipboard reset` see them.
+#[derive(Debug)]
+pub struct Inspection {
+    /// Where the history lives.
+    pub dir: PathBuf,
+    /// What is there, or why it could not be listed.
+    pub survey: Result<Survey, String>,
+    /// What the keyring holds.
+    pub key: KeyState,
+    /// The entry count, when there is a database and a key to try it with.
+    pub read: Option<Result<u64, ReadError>>,
+}
+
+/// Looks at the history and its key without creating, migrating or
+/// unlocking anything.
+///
+/// # Errors
+///
+/// [`Error::NoDataDir`] when there is nowhere the history could be.
+pub async fn inspect() -> Result<Inspection, Error> {
+    let dir = data_dir()?;
+    let key = tokio::time::timeout(KEYRING_PATIENCE, async {
+        match Oo7Store::connect_quietly().await {
+            Ok(store) => key_state(&store).await,
+            Err(err) => KeyState::Unavailable(err.to_string()),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| KeyState::Unavailable("the keyring did not answer in time".to_owned()));
+    let master = match &key {
+        KeyState::Found(master) => Some(*master),
+        _ => None,
+    };
+    let surveyed = dir.clone();
+    let (survey, read) =
+        tokio::task::spawn_blocking(move || inspect_files(&surveyed, master.as_ref()))
+            .await
+            .map_err(|err| Error::Store(err.to_string()))?;
+    Ok(Inspection {
+        dir,
+        survey,
+        key,
+        read,
+    })
+}
+
+/// The files half of [`inspect`]: what is in `dir`, and how many entries
+/// `master` reads from it. Blocking.
+pub fn inspect_files(
+    dir: &Path,
+    master: Option<&[u8; KEY_SIZE]>,
+) -> (Result<Survey, String>, Option<Result<u64, ReadError>>) {
+    let survey = files::survey(dir).map_err(|err| err.to_string());
+    let read = match (&survey, master) {
+        (Ok(survey), Some(master)) if survey.part(files::PartKind::Database).is_some() => {
+            Some(files::count_entries(survey, master))
+        }
+        _ => None,
+    };
+    (survey, read)
 }
 
 /// The open history.
@@ -221,13 +398,22 @@ impl ClipboardStore {
     ///
     /// # Errors
     ///
-    /// [`Error::Database`] when the file cannot be opened, is keyed
-    /// differently, or will not migrate.
+    /// [`Error::Unreadable`] when the file exists and SQLCipher refuses the
+    /// key, [`Error::Database`] when it cannot be opened otherwise or will not
+    /// migrate.
     pub fn open(dir: &Path, master: &[u8; KEY_SIZE]) -> Result<Self, Error> {
         std::fs::create_dir_all(dir).map_err(|err| Error::Database(err.to_string()))?;
         let keys = compass_crypto::keys::derive_all(master);
-        let db = compass_sqlcipher_sys::open(&dir.join(DATABASE_FILE_NAME), &keys.database)
-            .map_err(|err| Error::Database(err.to_string()))?;
+        let path = dir.join(DATABASE_FILE_NAME);
+        let existed = path.exists();
+        let db = compass_sqlcipher_sys::open(&path, &keys.database).map_err(|err| {
+            match err.sqlite_error_code() {
+                Some(compass_sqlcipher_sys::rusqlite::ErrorCode::NotADatabase) if existed => {
+                    Error::Unreadable(err.to_string())
+                }
+                _ => Error::Database(err.to_string()),
+            }
+        })?;
         compass_clipboard::schema::run(&db).map_err(|err| Error::Database(err.to_string()))?;
         Ok(Self {
             db: Mutex::new(db),
@@ -574,6 +760,17 @@ pub struct Control {
     /// Woken after each copy is recorded, so an idle eviction timer re-arms
     /// (`armEvictionTimer(now)` in the C++'s insert handler).
     inserted: tokio::sync::Notify,
+    /// What `compass doctor` is told.
+    health: Mutex<Health>,
+}
+
+/// The service's state beyond the switches, as [`ClipboardStatus`] reports it.
+#[derive(Debug, Default)]
+struct Health {
+    backend: Option<ClipboardBackend>,
+    capture_problem: Option<String>,
+    /// `None` while the history is still being opened.
+    storage: Option<ClipboardStorage>,
 }
 
 impl Control {
@@ -631,6 +828,38 @@ impl Control {
     pub fn preserve_tagged(&self) -> bool {
         self.preserve_tagged
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// What the service is doing, for `compass doctor`.
+    #[must_use]
+    pub fn status(&self) -> ClipboardStatus {
+        let health = self.health();
+        ClipboardStatus {
+            backend: health.backend.clone(),
+            capturing: self.supported(),
+            monitoring: self.monitoring(),
+            capture_problem: health.capture_problem.clone(),
+            storage: health.storage.clone().unwrap_or(ClipboardStorage::Opening),
+        }
+    }
+
+    fn health(&self) -> std::sync::MutexGuard<'_, Health> {
+        // Plain assignments under the lock cannot leave it half-written.
+        self.health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn set_storage(&self, storage: ClipboardStorage) {
+        self.health().storage = Some(storage);
+    }
+
+    /// Notes the backend in use and why it is not delivering copies, if it
+    /// is not.
+    fn set_capture(&self, backend: ClipboardBackend, problem: Option<String>) {
+        let mut health = self.health();
+        health.backend = Some(backend);
+        health.capture_problem = problem;
     }
 }
 
@@ -732,16 +961,18 @@ fn data_dir() -> Result<PathBuf, Error> {
         .ok_or(Error::NoDataDir)
 }
 
-/// How long to wait before asking for the extension again.
+/// How long to wait before asking for the extension, the keyring or the
+/// compositor again; the wait doubles up to [`RETRY_MAX`].
 const RETRY_INITIAL: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Opens the history and records copies for the life of the engine.
 ///
 /// Spawned, never awaited: a keyring that is slow to answer or absent must
-/// not hold up the socket. Every failure is logged once and leaves clipboard
-/// history unavailable (the request then says so) rather than stopping the
-/// engine.
+/// not hold up the socket. A keyring that is locked or absent is waited for;
+/// any other failure is logged once and leaves clipboard history unavailable
+/// (the request then says so, as does [`Control::status`]) rather than
+/// stopping the engine.
 pub async fn run(state: Arc<RwLock<EngineState>>) {
     // Read when the service starts, as `initialized` and
     // `preferenceValuesChanged` read them.
@@ -752,14 +983,12 @@ pub async fn run(state: Arc<RwLock<EngineState>>) {
     );
     let control = state.read().await.clipboard_control();
     control.apply(&settings);
-    let (store, dir, keyring) = match open_from_environment().await {
-        Ok((store, dir, keyring)) => (Arc::new(store), dir, keyring),
-        Err(err) => {
-            tracing::warn!(error = %err, "clipboard history unavailable");
-            return;
-        }
+    let Some((store, dir, keyring)) = open_until_ready(&control).await else {
+        return;
     };
+    let store = Arc::new(store);
     tracing::info!("clipboard history open");
+    control.set_storage(ClipboardStorage::Open);
     state.write().await.set_clipboard(Arc::clone(&store));
     import_from_vicinae(Arc::clone(&store), dir, &keyring).await;
     if settings.erase_on_startup {
@@ -786,30 +1015,118 @@ pub async fn run(state: Arc<RwLock<EngineState>>) {
     }
 }
 
+/// Opens the history, waiting out a locked or absent keyring.
+///
+/// Only the first attempt may ask the user to unlock the keyring; the retries
+/// look quietly, so a dismissed prompt is not shown again every minute. `None`
+/// once a failure no retry can fix has been recorded in `control`.
+async fn open_until_ready(control: &Control) -> Option<(ClipboardStore, PathBuf, Oo7Store)> {
+    let mut delay = RETRY_INITIAL;
+    let mut reported: Option<String> = None;
+    let mut ask_to_unlock = true;
+    loop {
+        match open_from_environment(ask_to_unlock).await {
+            Ok(opened) => return Some(opened),
+            Err(err) => {
+                let storage = storage_after(&err);
+                if matches!(storage, ClipboardStorage::Failed { .. }) {
+                    tracing::warn!(error = %err, "clipboard history unavailable");
+                    control.set_storage(storage);
+                    return None;
+                }
+                // Said once per reason, as the Shell extension's absence is.
+                let reason = err.to_string();
+                if reported.as_deref() != Some(reason.as_str()) {
+                    tracing::info!(error = %err, "clipboard history waits for the keyring");
+                    reported = Some(reason);
+                }
+                control.set_storage(storage);
+            }
+        }
+        ask_to_unlock = false;
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(RETRY_MAX);
+    }
+}
+
+/// What a failure to open the history means for its status: a keyring that
+/// may yet answer is waited for; the rest need someone to act, and two of
+/// them are what `compass clipboard reset` is for.
+fn storage_after(err: &Error) -> ClipboardStorage {
+    match err {
+        Error::Keyring(reason) => ClipboardStorage::Waiting {
+            reason: reason.clone(),
+        },
+        Error::MalformedKey(_) | Error::Unreadable(_) => ClipboardStorage::Failed {
+            reason: err.to_string(),
+            reset: true,
+        },
+        Error::Randomness(_) | Error::Database(_) | Error::Store(_) | Error::NoDataDir => {
+            ClipboardStorage::Failed {
+                reason: err.to_string(),
+                reset: false,
+            }
+        }
+    }
+}
+
 /// Follows the selection over `ext-data-control-v1` / `wlr-data-control` —
-/// the wlroots path, where there is no Shell extension and none is needed.
+/// the wlroots path, where there is no Shell extension and none is needed —
+/// reconnecting with backoff when the compositor cannot be reached or stops.
 ///
 /// A selection a password manager marked (`x-kde-passwordManagerHint`, or
 /// our own `vicinae/concealed`) is not recorded while `ignorePasswords` is
 /// on, and nothing is recorded while monitoring is off.
 async fn record_from_data_control(store: Arc<ClipboardStore>, control: Arc<Control>) {
-    let (tx, mut changes) = tokio::sync::mpsc::unbounded_channel();
-    let watcher = tokio::task::spawn_blocking(move || compass_wayland::clipboard::watch(tx)).await;
-    match watcher {
-        Ok(Ok(watcher)) => tracing::info!(
-            protocol = watcher.protocol(),
-            "recording clipboard changes over data-control"
-        ),
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "clipboard changes will not be recorded");
-            return;
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "the data-control task failed");
-            return;
-        }
+    let mut delay = RETRY_INITIAL;
+    let mut reported_absent = false;
+    let mut backend = ClipboardBackend::DataControl { protocol: None };
+    loop {
+        let (tx, changes) = tokio::sync::mpsc::unbounded_channel();
+        let watcher =
+            tokio::task::spawn_blocking(move || compass_wayland::clipboard::watch(tx)).await;
+        let problem = match watcher {
+            Ok(Ok(watcher)) => {
+                tracing::info!(
+                    protocol = watcher.protocol(),
+                    "recording clipboard changes over data-control"
+                );
+                backend = ClipboardBackend::DataControl {
+                    protocol: Some(watcher.protocol().to_owned()),
+                };
+                control.set_capture(backend.clone(), None);
+                control.set_supported(true);
+                reported_absent = false;
+                delay = RETRY_INITIAL;
+                record_data_control_changes(&store, &control, changes).await;
+                control.set_supported(false);
+                tracing::info!("the compositor stopped sending clipboard changes; will retry");
+                "the compositor stopped sending clipboard changes".to_owned()
+            }
+            Ok(Err(err)) => {
+                if !reported_absent {
+                    tracing::warn!(error = %err, "clipboard changes unavailable; will retry");
+                    reported_absent = true;
+                }
+                err.to_string()
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "the data-control task failed");
+                err.to_string()
+            }
+        };
+        control.set_capture(backend.clone(), Some(problem));
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(RETRY_MAX);
     }
-    control.set_supported(true);
+}
+
+/// Records what one data-control connection delivers until it ends.
+async fn record_data_control_changes(
+    store: &Arc<ClipboardStore>,
+    control: &Arc<Control>,
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<compass_wayland::clipboard::SelectionChange>,
+) {
     while let Some(change) = changes.recv().await {
         if change.concealed() && control.ignore_passwords() {
             tracing::debug!("a concealed selection was not recorded");
@@ -818,8 +1135,8 @@ async fn record_from_data_control(store: Arc<ClipboardStore>, control: Arc<Contr
         let Some(offer) = change.preferred().cloned() else {
             continue;
         };
-        let store = Arc::clone(&store);
-        let control = Arc::clone(&control);
+        let store = Arc::clone(store);
+        let control = Arc::clone(control);
         let recorded = tokio::task::spawn_blocking(move || {
             record_if_monitoring(&store, &control, &offer.data, &offer.mime_type, None)
         })
@@ -831,13 +1148,19 @@ async fn record_from_data_control(store: Arc<ClipboardStore>, control: Arc<Contr
             Err(err) => tracing::warn!(error = %err, "clipboard recording task failed"),
         }
     }
-    control.set_supported(false);
-    tracing::info!("the compositor stopped sending clipboard changes");
 }
 
-async fn open_from_environment() -> Result<(ClipboardStore, PathBuf, Oo7Store), Error> {
+/// Connects to the keyring — asking to unlock it only when `ask_to_unlock` —
+/// takes or makes the key, and opens the history.
+async fn open_from_environment(
+    ask_to_unlock: bool,
+) -> Result<(ClipboardStore, PathBuf, Oo7Store), Error> {
     let dir = data_dir()?;
-    let keyring = Oo7Store::connect().await?;
+    let keyring = if ask_to_unlock {
+        Oo7Store::connect().await?
+    } else {
+        Oo7Store::connect_quietly().await?
+    };
     let key = master_key(&keyring).await?;
     let opened = dir.clone();
     let store = tokio::task::spawn_blocking(move || ClipboardStore::open(&opened, &key))
@@ -886,6 +1209,7 @@ async fn record_from_shell(store: Arc<ClipboardStore>, control: Arc<Control>) {
         Ok(client) => client,
         Err(err) => {
             tracing::warn!(error = %err, "no session bus; clipboard changes will not be recorded");
+            control.set_capture(ClipboardBackend::ShellExtension, Some(err.to_string()));
             return;
         }
     };
@@ -895,6 +1219,7 @@ async fn record_from_shell(store: Arc<ClipboardStore>, control: Arc<Control>) {
         match client.clipboard_changes().await {
             Ok(mut changes) => {
                 tracing::info!("recording clipboard changes from the Shell extension");
+                control.set_capture(ClipboardBackend::ShellExtension, None);
                 control.set_supported(true);
                 reported_absent = false;
                 delay = RETRY_INITIAL;
@@ -929,6 +1254,10 @@ async fn record_from_shell(store: Arc<ClipboardStore>, control: Arc<Control>) {
                 }
                 control.set_supported(false);
                 tracing::info!("the Shell extension stopped sending clipboard changes");
+                control.set_capture(
+                    ClipboardBackend::ShellExtension,
+                    Some("the Shell extension stopped sending clipboard changes".to_owned()),
+                );
             }
             Err(err) => {
                 // Said once per absence: an extension that is simply not
@@ -937,6 +1266,7 @@ async fn record_from_shell(store: Arc<ClipboardStore>, control: Arc<Control>) {
                     tracing::info!(error = %err, "clipboard changes unavailable; will retry");
                     reported_absent = true;
                 }
+                control.set_capture(ClipboardBackend::ShellExtension, Some(err.to_string()));
             }
         }
         tokio::time::sleep(delay).await;
@@ -953,6 +1283,7 @@ mod tests {
         held: std::sync::Mutex<Option<Vec<u8>>>,
         stores: std::sync::atomic::AtomicUsize,
         fail: bool,
+        locked: bool,
     }
 
     impl SecretStore for FakeStore {
@@ -967,6 +1298,9 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *self.held.lock().unwrap() = Some(secret.to_vec());
             Ok(())
+        }
+        async fn locked(&self) -> bool {
+            self.locked
         }
     }
 
@@ -1003,6 +1337,90 @@ mod tests {
         };
         assert!(matches!(master_key(&store).await, Err(Error::Keyring(_))));
         assert_eq!(store.stores.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn no_key_is_made_while_the_keyring_is_locked() {
+        // Making one would ask the user to unlock the keyring, from a retry
+        // loop that must not keep asking.
+        let store = FakeStore {
+            locked: true,
+            ..FakeStore::default()
+        };
+        assert!(matches!(master_key(&store).await, Err(Error::Keyring(_))));
+        assert_eq!(store.stores.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn the_key_state_tells_every_case_apart_and_creates_nothing() {
+        let found = FakeStore {
+            held: std::sync::Mutex::new(Some(vec![4; KEY_SIZE])),
+            ..FakeStore::default()
+        };
+        assert_eq!(key_state(&found).await, KeyState::Found([4; KEY_SIZE]));
+        let malformed = FakeStore {
+            held: std::sync::Mutex::new(Some(vec![1, 2, 3])),
+            ..FakeStore::default()
+        };
+        assert_eq!(key_state(&malformed).await, KeyState::Malformed(3));
+        let missing = FakeStore::default();
+        assert_eq!(key_state(&missing).await, KeyState::Missing);
+        assert_eq!(missing.stores.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let locked = FakeStore {
+            locked: true,
+            ..FakeStore::default()
+        };
+        assert_eq!(key_state(&locked).await, KeyState::Locked);
+        let unreachable = FakeStore {
+            fail: true,
+            ..FakeStore::default()
+        };
+        assert!(matches!(
+            key_state(&unreachable).await,
+            KeyState::Unavailable(_)
+        ));
+        assert_eq!(
+            format!("{:?}", KeyState::Found([4; KEY_SIZE])),
+            "Found(..)",
+            "the key never reaches a log"
+        );
+    }
+
+    #[test]
+    fn only_a_keyring_that_may_yet_answer_is_waited_for() {
+        assert!(matches!(
+            storage_after(&Error::Keyring("locked".into())),
+            ClipboardStorage::Waiting { .. }
+        ));
+        for needs_reset in [Error::Unreadable("x".into()), Error::MalformedKey(3)] {
+            assert!(matches!(
+                storage_after(&needs_reset),
+                ClipboardStorage::Failed { reset: true, .. }
+            ));
+        }
+        assert!(matches!(
+            storage_after(&Error::NoDataDir),
+            ClipboardStorage::Failed { reset: false, .. }
+        ));
+    }
+
+    #[test]
+    fn the_status_reports_what_the_service_last_noted() {
+        let control = Control::new(&Settings::default());
+        let status = control.status();
+        assert_eq!(status.storage, ClipboardStorage::Opening);
+        assert_eq!(status.backend, None);
+        assert!(status.monitoring);
+        assert!(!status.capturing);
+
+        control.set_storage(ClipboardStorage::Open);
+        control.set_capture(ClipboardBackend::ShellExtension, None);
+        control.set_supported(true);
+        let status = control.status();
+        assert_eq!(status.storage, ClipboardStorage::Open);
+        assert_eq!(status.backend, Some(ClipboardBackend::ShellExtension));
+        assert!(status.capturing);
+        assert_eq!(status.capture_problem, None);
     }
 
     const MASTER: [u8; KEY_SIZE] = [7; KEY_SIZE];
@@ -1061,9 +1479,46 @@ mod tests {
 
         let wrong = ClipboardStore::open(dir.path(), &[8; KEY_SIZE]);
         assert!(
-            matches!(wrong, Err(Error::Database(_))),
-            "encrypted at rest: another key cannot read it"
+            matches!(wrong, Err(Error::Unreadable(_))),
+            "encrypted at rest: another key cannot read it, and that is told apart"
         );
+        assert!(matches!(
+            storage_after(&wrong.expect_err("refused")),
+            ClipboardStorage::Failed { reset: true, .. }
+        ));
+    }
+
+    #[test]
+    fn a_new_database_that_cannot_be_made_is_not_called_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A directory where the database file should be: no key could open it,
+        // but nor is there a history to set aside.
+        std::fs::create_dir(dir.path().join(DATABASE_FILE_NAME)).expect("mkdir");
+        let err = ClipboardStore::open(dir.path(), &MASTER).expect_err("not a file");
+        assert!(!matches!(err, Error::Unreadable(_)), "{err}");
+    }
+
+    #[test]
+    fn inspecting_counts_entries_and_tells_a_lost_key_apart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (survey, read) = inspect_files(dir.path(), Some(&MASTER));
+        assert!(survey.expect("survey").is_empty());
+        assert_eq!(read, None, "no database, nothing to read");
+        assert!(
+            !dir.path().join(DATABASE_FILE_NAME).exists(),
+            "none created"
+        );
+        {
+            let store = ClipboardStore::open(dir.path(), &MASTER).expect("open");
+            store.record(b"one", "text/plain", None).expect("recorded");
+            store.record(b"two", "text/plain", None).expect("recorded");
+        }
+        assert_eq!(inspect_files(dir.path(), Some(&MASTER)).1, Some(Ok(2)));
+        assert_eq!(
+            inspect_files(dir.path(), Some(&[8; KEY_SIZE])).1,
+            Some(Err(ReadError::Unreadable))
+        );
+        assert_eq!(inspect_files(dir.path(), None).1, None);
     }
 
     #[test]

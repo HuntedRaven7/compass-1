@@ -179,6 +179,13 @@ async fn echo_handler(request: Request) -> Response {
             state: compass_ipc::LoginStartState::Off,
             unit: None,
         },
+        Request::ClipboardStatus => Response::ClipboardStatus(compass_ipc::ClipboardStatus {
+            backend: None,
+            capturing: false,
+            monitoring: true,
+            capture_problem: None,
+            storage: compass_ipc::ClipboardStorage::Opening,
+        }),
         Request::TrayItems => Response::TrayItems { items: vec![] },
         Request::TrayMenu { .. } => Response::TrayMenu { entries: vec![] },
         Request::FileActions { .. } => {

@@ -220,6 +220,7 @@ fn describe(request: &Request) -> &'static str {
         Request::CopyText { .. } => "CopyText",
         Request::LauncherShortcut { .. } => "LauncherShortcut",
         Request::LoginStart { .. } => "LoginStart",
+        Request::ClipboardStatus => "ClipboardStatus",
     }
 }
 

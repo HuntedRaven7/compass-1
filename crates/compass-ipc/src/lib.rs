@@ -58,17 +58,18 @@ pub use codec::{FrameCodec, LENGTH_PREFIX_LEN, MAX_FRAME_LEN};
 pub use error::{Error, Result};
 pub use path::{SocketPath, ensure_private_dir};
 pub use protocol::{
-    CalculatorEdit, CalculatorGroup, CalculatorRecord, ClipboardDetail, ClipboardEntry,
-    ClipboardKind, CommandInfo, DefaultAppEntry, DefaultAppKind, DmenuSpec, DoctorCheck,
-    DoctorStatus, EXTENSION_VIEW_HOLD, ErrorKind, ExchangeRateTable, ExtensionAlert,
-    ExtensionToast, ExtensionToastStyle, FileActionInfo, FileHit, FontEntry, InputServerStatus,
-    LONG_POLL_MARGIN, LauncherShortcutState, LocalStorageEntry, LoginStartState, LoginStartUnit,
-    MediaPlayerAction, MediaPlayerEntry, OAuthTokenSetEntry, OpenerEntry, PROTOCOL_VERSION,
-    PreferenceField, PreferenceFieldKind, ProtocolError, QueryHit, Request, RequestEnvelope,
-    Response, ResponseEnvelope, RhaiScriptEntry, RootItemEdit, ScriptArgumentEntry, ScriptEntry,
-    ScriptGrantEntry, ShortcutEntry, SnippetEntry, StoreDetail, StoreEntry, StoreKind,
-    TrayItemInfo, TrayMenuEntry, UpdateOffer, WindowCommand, WindowInfo, WindowManagerCapabilities,
-    WindowOutcome, WindowToggle, WorkspaceApp, WorkspaceEntry, long_poll_deadline,
+    CalculatorEdit, CalculatorGroup, CalculatorRecord, ClipboardBackend, ClipboardDetail,
+    ClipboardEntry, ClipboardKind, ClipboardStatus, ClipboardStorage, CommandInfo, DefaultAppEntry,
+    DefaultAppKind, DmenuSpec, DoctorCheck, DoctorStatus, EXTENSION_VIEW_HOLD, ErrorKind,
+    ExchangeRateTable, ExtensionAlert, ExtensionToast, ExtensionToastStyle, FileActionInfo,
+    FileHit, FontEntry, InputServerStatus, LONG_POLL_MARGIN, LauncherShortcutState,
+    LocalStorageEntry, LoginStartState, LoginStartUnit, MediaPlayerAction, MediaPlayerEntry,
+    OAuthTokenSetEntry, OpenerEntry, PROTOCOL_VERSION, PreferenceField, PreferenceFieldKind,
+    ProtocolError, QueryHit, Request, RequestEnvelope, Response, ResponseEnvelope, RhaiScriptEntry,
+    RootItemEdit, ScriptArgumentEntry, ScriptEntry, ScriptGrantEntry, ShortcutEntry, SnippetEntry,
+    StoreDetail, StoreEntry, StoreKind, TrayItemInfo, TrayMenuEntry, UpdateOffer, WindowCommand,
+    WindowInfo, WindowManagerCapabilities, WindowOutcome, WindowToggle, WorkspaceApp,
+    WorkspaceEntry, long_poll_deadline,
 };
 pub use transport::{
     Client, Listener, WindowClient, WindowLink, is_listening, serve_connection,

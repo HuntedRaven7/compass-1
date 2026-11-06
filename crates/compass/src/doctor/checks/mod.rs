@@ -25,7 +25,7 @@
 //! * [`input`] — the input server behind snippet keyword expansion.
 //! * [`a11y`] — whether a screen reader is on, and what of the launcher it can read.
 //! * [`wlroots`](mod@wlroots) — the wlroots protocols and compositor IPC this session has.
-//! * [`clipboard`] — clipboard history and the keyring its key is kept in.
+//! * [`clipboard`] — clipboard history, the keyring its key is kept in, and its database.
 //! * [`config`](mod@config) — whether `compass.json` reads as its author meant.
 //! * [`extensions`] — whether the extensions `compass.json` declares are installed.
 //! * [`files`] — the file-search index's size, and what it is made of.
@@ -48,8 +48,8 @@ pub mod wlroots;
 
 pub use a11y::{A11Y_BUS_NAME, A11Y_OBJECT_PATH, A11Y_STATUS_INTERFACE, screen_reader};
 pub use clipboard::{
-    COLLECTION_INTERFACE, DEFAULT_COLLECTION_PATH, SECRET_SERVICE_BUS_NAME, clipboard_history,
-    keyring,
+    COLLECTION_INTERFACE, ClipboardFacts, DEFAULT_COLLECTION_PATH, SECRET_SERVICE_BUS_NAME,
+    clipboard_history, clipboard_storage, keyring,
 };
 pub use config::{ConfigFacts, config_file};
 pub use desktop::{

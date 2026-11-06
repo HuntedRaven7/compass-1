@@ -3511,6 +3511,9 @@ pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Respo
         }
         Request::PasteText { text } => paste_text(state, text).await,
         Request::CopyText { text } => copy_text(state, text).await,
+        Request::ClipboardStatus => {
+            Response::ClipboardStatus(state.read().await.clipboard_control().status())
+        }
         Request::ExpandShortcut { id, arguments } => {
             match expand_shortcut(state, &id, &arguments).await {
                 Ok((_, expanded)) => Response::Text { text: expanded },

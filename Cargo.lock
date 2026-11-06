@@ -1331,6 +1331,7 @@ version = "0.28.3"
 dependencies = [
  "cc",
  "libsqlite3-sys",
+ "percent-encoding",
  "rusqlite",
  "tempfile",
 ]

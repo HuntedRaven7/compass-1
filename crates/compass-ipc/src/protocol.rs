@@ -105,8 +105,10 @@ use serde::{Deserialize, Serialize};
 /// on the engine's long-lived clipboard rather than the window's, which goes
 /// when the window hides ([`Request::CopyText`]); version 25, the first-run
 /// flow's launcher hotkey and login start ([`Request::LauncherShortcut`],
-/// [`Request::LoginStart`]).
-pub const PROTOCOL_VERSION: u16 = 25;
+/// [`Request::LoginStart`]); version 26, how clipboard history captures and
+/// stores copies, and why it does not ([`Request::ClipboardStatus`],
+/// [`Response::ClipboardStatus`]).
+pub const PROTOCOL_VERSION: u16 = 26;
 
 /// How long the engine holds an [`Request::ExtensionView`] open waiting for a
 /// change before it answers with the version it has.
@@ -1103,6 +1105,9 @@ pub enum Request {
         /// On, off, or only report.
         enable: Option<bool>,
     },
+    /// How clipboard history is capturing and storing copies, and why not
+    /// when it is not. Answered with [`Response::ClipboardStatus`]. (v26.)
+    ClipboardStatus,
 }
 
 /// A newer Compass release, in a [`Response::UpdateStatus`]. (v21.)
@@ -1639,6 +1644,8 @@ pub enum Response {
         /// The packaged systemd user unit, when it is installed.
         unit: Option<LoginStartUnit>,
     },
+    /// Answer to [`Request::ClipboardStatus`]. (v26.)
+    ClipboardStatus(ClipboardStatus),
 }
 
 /// The launcher hotkey's state with the desktop, in a
@@ -1697,6 +1704,59 @@ pub enum LoginStartUnit {
     Installed,
     /// Enabled.
     Enabled,
+}
+
+/// Clipboard history as the running engine sees it, for `compass doctor`.
+/// (v26.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardStatus {
+    /// How copies reach the history; `None` until a backend has been chosen,
+    /// which waits for the history to open.
+    pub backend: Option<ClipboardBackend>,
+    /// Whether that backend is delivering copies now.
+    pub capturing: bool,
+    /// Whether recording is switched on (the clipboard's `monitoring`).
+    pub monitoring: bool,
+    /// Why the backend is not delivering copies, when it is not.
+    pub capture_problem: Option<String>,
+    /// Whether the history database is open.
+    pub storage: ClipboardStorage,
+}
+
+/// Where clipboard history's copies come from. (v26.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipboardBackend {
+    /// The compositor's data-control protocol, by interface name
+    /// (`ext_data_control_manager_v1`, `zwlr_data_control_manager_v1`).
+    DataControl {
+        /// The interface bound; `None` until a connection has bound one.
+        protocol: Option<String>,
+    },
+    /// The Compass GNOME Shell extension's `ClipboardChanged` signal.
+    ShellExtension,
+}
+
+/// The state of the history database in the running engine. (v26.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipboardStorage {
+    /// Still asking the keyring for its key.
+    Opening,
+    /// Open, and recording.
+    Open,
+    /// The keyring is locked or absent; the engine tries again by itself.
+    Waiting {
+        /// What the keyring said.
+        reason: String,
+    },
+    /// The engine has stopped trying.
+    Failed {
+        /// Why.
+        reason: String,
+        /// Whether `compass clipboard reset` is the way out: the key in the
+        /// keyring does not open the history, or the keyring entry is not a
+        /// key.
+        reset: bool,
+    },
 }
 
 /// One item of a [`Response::LocalStorageItems`]. (v19.)

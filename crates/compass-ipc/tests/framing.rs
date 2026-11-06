@@ -490,6 +490,7 @@ fn all_requests() -> Vec<Request> {
             terminal: true,
             hold: false,
         },
+        Request::ClipboardStatus,
     ]
 }
 
@@ -1076,6 +1077,41 @@ fn all_responses() -> Vec<Response> {
             terminal: None,
             default_action: "run".into(),
         },
+        Response::ClipboardStatus(compass_ipc::ClipboardStatus {
+            backend: Some(compass_ipc::ClipboardBackend::DataControl {
+                protocol: Some("ext_data_control_manager_v1".into()),
+            }),
+            capturing: true,
+            monitoring: true,
+            capture_problem: None,
+            storage: compass_ipc::ClipboardStorage::Open,
+        }),
+        Response::ClipboardStatus(compass_ipc::ClipboardStatus {
+            backend: Some(compass_ipc::ClipboardBackend::ShellExtension),
+            capturing: false,
+            monitoring: false,
+            capture_problem: Some("the extension is disabled — é".into()),
+            storage: compass_ipc::ClipboardStorage::Waiting {
+                reason: "the keyring is locked".into(),
+            },
+        }),
+        Response::ClipboardStatus(compass_ipc::ClipboardStatus {
+            backend: None,
+            capturing: false,
+            monitoring: true,
+            capture_problem: None,
+            storage: compass_ipc::ClipboardStorage::Failed {
+                reason: "file is not a database".into(),
+                reset: true,
+            },
+        }),
+        Response::ClipboardStatus(compass_ipc::ClipboardStatus {
+            backend: None,
+            capturing: false,
+            monitoring: true,
+            capture_problem: None,
+            storage: compass_ipc::ClipboardStorage::Opening,
+        }),
     ]
 }
 
@@ -1208,6 +1244,7 @@ fn request_variants_are_exhaustive() {
             | Request::CopyText { .. }
             | Request::LauncherShortcut { .. }
             | Request::LoginStart { .. }
+            | Request::ClipboardStatus
             | Request::WindowOutcome(_) => {}
         }
     }
@@ -1277,6 +1314,7 @@ fn response_variants_are_exhaustive() {
             | Response::ShortcutProbe { .. }
             | Response::LauncherShortcut { .. }
             | Response::LoginStart { .. }
+            | Response::ClipboardStatus(_)
             | Response::Window(_) => {}
         }
     }
