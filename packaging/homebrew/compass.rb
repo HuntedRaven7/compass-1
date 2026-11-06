@@ -3,8 +3,8 @@ class Compass < Formula
   homepage "https://github.com/tuna-os/compass"
   # Linux-only: the engine targets Linux sessions (Wayland, portals, logind);
   # there is no macOS or Windows backend (see ADR-0007 in the repo).
-  url "https://github.com/tuna-os/compass/archive/refs/tags/v0.28.3.tar.gz"
-  sha256 "e8bfe79bddfb369895a14dfbfb4fec825523ac907f013f2280f5e50a9bdb057b"
+  url "https://github.com/tuna-os/compass/archive/refs/tags/v0.28.4.tar.gz"
+  sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
   license "GPL-3.0-only"
   head "https://github.com/tuna-os/compass.git", branch: "main"
 

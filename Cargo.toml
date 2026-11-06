@@ -10,7 +10,7 @@ exclude = ["vendor/layershellev", "vendor/smithay-clipboard"]
 # tag, and crates/compass/tests/version_sync.rs fails while they disagree, so
 # `compass --version` (clap's `version`, i.e. CARGO_PKG_VERSION) always names
 # the release the binary came from.
-version = "0.28.3"
+version = "0.28.4"
 edition = "2024"
 # The minimum we support, not the version we develop on -- rust-toolchain.toml pins
 # that, and the two are deliberately different. This one is set by what the Flatpak

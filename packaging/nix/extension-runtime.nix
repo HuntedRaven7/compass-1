@@ -24,7 +24,7 @@
 in
   stdenv.mkDerivation {
     pname = "compass-extension-runtime";
-    version = "0.28.3";
+    version = "0.28.4";
     inherit src;
 
     strictDeps = true;
