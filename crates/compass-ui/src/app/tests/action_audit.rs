@@ -13,7 +13,13 @@
 //! until the inventory says so; `COMPASS_UPDATE_ACTION_AUDIT=1` rewrites it.
 
 use super::*;
+use crate::app::test_support::{
+    FakeClipboard, FakeWindows, RecordingLaunchTarget, TestBackend, clip_row, enable_commands,
+    file_row, index, opener, pressed, script_item, stored_shortcut, stored_snippet, window_row,
+    with_resident_hud,
+};
 use std::collections::BTreeMap;
+use std::fs;
 
 /// Fields of the recording fakes that a read fills rather than an action:
 /// a launch's ranking record, and the queries a view lists itself with.

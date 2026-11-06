@@ -101,6 +101,11 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{
+        TestBackend, extension_app, greeting_list, index, task_messages,
+    };
+    use crate::app::{Page, RootRow};
+    use std::sync::Arc;
 
     #[test]
     fn a_manifest_icon_is_a_builtin_icon_that_is_installed() {
@@ -121,6 +126,81 @@ mod tests {
         assert!(
             manifest_icon_in(dir.path(), "globe").is_none(),
             "a builtin name whose file is not installed"
+        );
+    }
+
+    #[test]
+    fn a_rhai_script_is_a_row_opens_as_an_extension_view_and_leaves_when_it_pops() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["rhai:script.hello".to_owned()],
+            view: Some(greeting_list(false)),
+            ..TestBackend::default()
+        });
+        let mut app = extension_app(dir.path(), backend.clone());
+        let _ = app.update(Message::RhaiScriptsLoaded(Ok(vec![
+            compass_core::rhai_scripts::RhaiScriptItem {
+                id: "script.hello".into(),
+                title: "Hello Script".into(),
+                description: Some("Says hello".into()),
+                icon: Some("globe".into()),
+                keywords: Vec::new(),
+            },
+        ])));
+        for message in task_messages(app.update(Message::QueryChanged("hello script".into()))) {
+            let _ = app.update(message);
+        }
+        assert_eq!(
+            app.selected_row(),
+            Some(RootRow::RhaiScript(0)),
+            "{}",
+            app.state_line()
+        );
+        assert!(app.state_line().contains("selected_title=\"Hello Script\""));
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(
+                ui.find("Says hello").is_ok(),
+                "the description is the subtitle"
+            );
+        }
+
+        // The fake draws the list on the first poll and ends on the second,
+        // as a script that popped itself does.
+        let mut drawn = false;
+        let mut pending = task_messages(app.update(Message::LaunchSelected));
+        while let Some(message) = pending.pop() {
+            pending.extend(task_messages(app.update(message)));
+            if let Page::Extension(page) = &app.page {
+                assert!(page.leaves_on_end);
+                drawn |= page.shown.len() == 2;
+            }
+        }
+        assert_eq!(
+            backend.ran.lock().unwrap().as_slice(),
+            ["rhai:script.hello"]
+        );
+        assert!(drawn, "the script's list was drawn");
+        assert!(matches!(app.page, Page::Root), "{}", app.state_line());
+        assert_eq!(backend.closed.lock().unwrap().as_slice(), [7]);
+    }
+
+    #[test]
+    fn a_rhai_script_row_draws_its_manifest_icon_when_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        let _ = app.update(Message::RhaiScriptsLoaded(Ok(vec![
+            compass_core::rhai_scripts::RhaiScriptItem {
+                id: "script.no-icon".into(),
+                title: "No Icon".into(),
+                description: None,
+                icon: Some("not-a-builtin".into()),
+                keywords: Vec::new(),
+            },
+        ])));
+        assert!(
+            app.rhai_icons.is_empty(),
+            "an unknown name draws the initial"
         );
     }
 }

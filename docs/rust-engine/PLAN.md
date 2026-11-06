@@ -1505,7 +1505,7 @@ rather than resolved. Both are now answered, and **the answers differ**.
   an input method — so a focused search field turns the IME on by itself;
 * `iced_core` carries `InputMethod` and `Preedit`.
 
-`app.rs`'s `ime_tests` drive `Event::InputMethod` through the real widget tree: a committed
+`app/view.rs`'s `ime_tests` drive `Event::InputMethod` through the real widget tree: a committed
 composition reaches the query, and an uncommitted pre-edit does not. **So ADR-0001 does not need
 revisiting on this axis.** The tests exist because that is a claim about libraries, and libraries
 change.

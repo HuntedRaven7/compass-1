@@ -695,3 +695,275 @@ pub(super) fn clock_text(format: &str, now: i64) -> String {
     };
     compass_core::qt_date::format(format, &broken)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::test_support::{
+        TestBackend, app, chord, extension_app, index, key_event, pressed, settle, shortcuts_app,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn the_root_panel_favourites_aliases_and_the_up_arrow_recalls_searches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = app(dir.path());
+        let history = dir.path().join("history").join("search-history.json");
+        app.search_history_path = Some(history.clone());
+
+        // Favouriting Firefox from its panel puts it first, under a heading.
+        let _ = app.update(Message::QueryChanged("firefox".into()));
+        let firefox = app.selected_row().expect("a row");
+        let id = app.root_id(firefox).expect("a root item");
+        let _ = app.update(Message::TogglePanel);
+        let favorite = app
+            .panel
+            .as_ref()
+            .and_then(|panel| panel.row_titled("Add to favorites"))
+            .expect("the panel offers to favourite");
+        let _ = app.update(Message::PanelClicked(favorite));
+        assert_eq!(app.root_config.favorites, std::slice::from_ref(&id));
+        let _ = app.update(Message::QueryChanged(String::new()));
+        assert_eq!(app.results.first(), Some(&firefox));
+        assert_eq!(app.root_heading_at(0), Some(FAVORITES_HEADING_FOR_TESTS));
+        assert_eq!(
+            app.results.iter().filter(|row| **row == firefox).count(),
+            1,
+            "a favourite is not suggested again"
+        );
+
+        // An alias through the form.
+        let _ = app.update(Message::TogglePanel);
+        let alias = app
+            .panel
+            .as_ref()
+            .and_then(|panel| panel.row_titled("Set alias"))
+            .expect("the panel offers an alias");
+        let _ = app.update(Message::PanelClicked(alias));
+        let _ = app.update(Message::PreferenceEdited(
+            0,
+            crate::preferences_page::FieldValue::Text("ff".into()),
+        ));
+        let _ = app.update(Message::PreferencesSubmit);
+        assert!(matches!(app.page, Page::Root), "{}", app.state_line());
+        assert_eq!(
+            app.app_index
+                .root(&id)
+                .and_then(|root| root.meta.alias.as_deref()),
+            Some("ff")
+        );
+
+        // Launching records the search; the up arrow at the top brings it back.
+        let _ = app.update(Message::QueryChanged("term".into()));
+        let _ = app.update(Message::LaunchSelected);
+        let _ = app.update(Message::QueryChanged(String::new()));
+        let _ = app.update(pressed(iced::keyboard::key::Named::ArrowUp));
+        assert_eq!(app.query, "term");
+        let stored = compass_core::root_view::SearchHistory::load_file(&history);
+        assert_eq!(stored.queries(), ["term"]);
+
+        // A query being typed is not lost to the up arrow: down brings it back.
+        let _ = app.update(Message::QueryChanged("zzz".into()));
+        let _ = app.update(pressed(iced::keyboard::key::Named::ArrowUp));
+        assert_eq!(app.query, "term");
+        let _ = app.update(pressed(iced::keyboard::key::Named::ArrowDown));
+        assert_eq!(app.query, "zzz", "{}", app.state_line());
+    }
+
+    const FAVORITES_HEADING_FOR_TESTS: &str = "Favorites";
+
+    #[test]
+    fn the_root_panel_records_an_items_shortcut_and_backspace_removes_it() {
+        use iced::keyboard::{Key, Modifiers, key::Named};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = app(dir.path());
+        let _ = app.update(Message::QueryChanged("firefox".into()));
+        let id = app.root_id(app.selected_row().unwrap()).unwrap();
+        let open_recorder = |app: &mut LauncherApp| {
+            let _ = app.update(Message::TogglePanel);
+            assert!(!app.shortcuts_inhibited(), "the panel alone takes nothing");
+            let row = app
+                .panel
+                .as_ref()
+                .and_then(|panel| panel.row_titled("Set global shortcut"))
+                .expect("the panel offers a shortcut");
+            let _ = app.update(Message::PanelClicked(row));
+            assert!(
+                app.panel.as_ref().is_some_and(|p| p.recorder.is_some()),
+                "the recorder takes the panel's place"
+            );
+            assert!(
+                app.shortcuts_inhibited(),
+                "the compositor's shortcuts reach the recorder"
+            );
+        };
+        open_recorder(&mut app);
+
+        // A bare letter is refused and typed nowhere; Control, then K.
+        let _ = app.update(key_event(
+            true,
+            Key::Character("k".into()),
+            Modifiers::empty(),
+        ));
+        let recorder = app
+            .panel
+            .as_ref()
+            .and_then(|p| p.recorder.as_ref())
+            .unwrap();
+        assert_eq!(recorder.status, compass_core::key_combo::MODIFIER_REQUIRED);
+        assert_eq!(app.query, "firefox");
+        let _ = app.update(key_event(true, Key::Named(Named::Control), Modifiers::CTRL));
+        let _ = app.update(key_event(true, Key::Character("k".into()), Modifiers::CTRL));
+        assert!(app.panel.is_none(), "an accepted shortcut closes the panel");
+        assert!(!app.shortcuts_inhibited(), "and gives the shortcuts back");
+        let shortcut = |app: &LauncherApp| {
+            app.app_index
+                .root(&id)
+                .and_then(|root| root.meta.shortcut.clone())
+        };
+        assert_eq!(shortcut(&app).as_deref(), Some("control+K"));
+        let (provider, entrypoint) = compass_core::root_items::split_entrypoint_id(&id).unwrap();
+        assert_eq!(
+            app.root_config.providers[provider].entrypoints[entrypoint]
+                .shortcut
+                .as_deref(),
+            Some("control+K")
+        );
+
+        // Escape goes back to the actions; Backspace removes the shortcut.
+        let _ = app.update(key_event(
+            false,
+            Key::Named(Named::Control),
+            Modifiers::empty(),
+        ));
+        open_recorder(&mut app);
+        let _ = app.update(key_event(
+            true,
+            Key::Named(Named::Escape),
+            Modifiers::empty(),
+        ));
+        assert!(app.panel.as_ref().is_some_and(|p| p.recorder.is_none()));
+        assert!(!app.shortcuts_inhibited(), "Escape gives them back");
+        let _ = app.update(Message::TogglePanel);
+        open_recorder(&mut app);
+        let _ = app.update(key_event(
+            true,
+            Key::Named(Named::Backspace),
+            Modifiers::empty(),
+        ));
+        assert!(app.panel.is_none());
+        assert_eq!(shortcut(&app), None);
+    }
+
+    #[test]
+    fn a_launch_deeplink_to_a_provider_searches_its_items_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = extension_app(dir.path(), Arc::new(TestBackend::default()));
+
+        let task = app.open_deeplink("vicinae://launch/@someone/hello?fallbackText=wri");
+        settle(&mut app, task);
+        assert_eq!(app.search_field().0, "Search Hello");
+        assert_eq!(app.query, "wri");
+        assert_eq!(app.results, [RootRow::Extension(0)], "{}", app.state_line());
+
+        // The empty query lists every item of the provider, and nothing else:
+        // no favourites, no calculator, no fallbacks.
+        let task = app.open_deeplink("vicinae://launch/applications/");
+        settle(&mut app, task);
+        assert_eq!(app.search_field().0, "Search Applications");
+        assert_eq!(app.results.len(), 3, "{}", app.state_line());
+        assert!(app.results.iter().all(|row| matches!(row, RootRow::App(_))));
+        let _ = app.update(Message::QueryChanged("fire".into()));
+        assert!(
+            app.results.iter().all(|row| matches!(row, RootRow::App(_))),
+            "{}",
+            app.state_line()
+        );
+        assert_eq!(app.results.len(), 1);
+
+        // Leaving closes it: the next summon is the root again.
+        let _ = app.update(Message::Dismiss);
+        assert_eq!(app.provider_scope, None);
+        assert_eq!(app.search_field().0, "Search…");
+
+        let _ = app.open_deeplink("compass://launch/nothing");
+        assert_eq!(
+            app.error.as_deref(),
+            Some(compass_core::root_items::INVALID_LAUNCH_LINK)
+        );
+    }
+
+    #[test]
+    fn a_launch_deeplink_to_an_item_launches_it_with_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = extension_app(dir.path(), backend.clone());
+        let task = app.open_deeplink("vicinae://launch/@someone/hello/write?fallbackText=hi+there");
+        settle(&mut app, task);
+        assert_eq!(
+            backend.launched.lock().unwrap().as_slice(),
+            [(
+                "@someone/hello:write".to_owned(),
+                Some("hi there".to_owned())
+            )]
+        );
+        assert_eq!(app.provider_scope, None);
+    }
+
+    #[test]
+    fn an_alias_and_a_space_open_an_items_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = shortcuts_app(dir.path());
+        compass_core::root_items::apply_edit(
+            &mut app.root_config,
+            "shortcuts:sct-docs",
+            &compass_core::root_items::RootEdit::Alias("cd".into()),
+        );
+        app.app_index.apply_root_config(&app.root_config);
+        app.query = "cd".into();
+        app.search();
+        assert!(
+            matches!(app.selected_row(), Some(RootRow::Shortcut(_))),
+            "{}",
+            app.state_line()
+        );
+        let task = app.update(Message::QueryChanged("cd ".into()));
+        settle(&mut app, task);
+        assert!(
+            matches!(&app.page, Page::Preferences(form)
+                if form.purpose == crate::preferences_page::Purpose::ShortcutArguments),
+            "the space opens the arguments rather than being typed: {}",
+            app.state_line()
+        );
+        assert_eq!(app.query, "cd");
+        assert!(backend.opened_shortcuts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ctrl_shift_c_copies_a_root_rows_deeplink_without_opening_the_panel() {
+        use iced::keyboard::Modifiers;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        open_builtin_row(&mut app, "clipboard history");
+        assert!(app.panel.is_none());
+        let task = app.update(chord("C", Modifiers::CTRL | Modifiers::SHIFT));
+        assert_eq!(
+            settle(&mut app, task),
+            ["compass://launch/commands/clipboard-history"]
+        );
+        assert!(app.panel.is_none(), "no panel the person never opened");
+        // A chord no action claims leaves the panel shut and the list alone.
+        let selected = app.selected;
+        let task = app.update(chord("y", Modifiers::CTRL | Modifiers::SHIFT));
+        settle(&mut app, task);
+        assert!(app.panel.is_none());
+        assert_eq!(app.selected, selected);
+    }
+
+    /// Searches root for `query`, leaving its first row selected.
+    fn open_builtin_row(app: &mut LauncherApp, query: &str) {
+        app.query = query.into();
+        app.search();
+        assert!(app.selected_row().is_some(), "{}", app.state_line());
+    }
+}

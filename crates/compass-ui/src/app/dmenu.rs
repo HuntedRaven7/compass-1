@@ -323,7 +323,11 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, pressed, settle};
+    use crate::resident::UiCommand;
     use crate::semantics::Body;
+    use iced::window;
+    use std::sync::Arc;
 
     #[test]
     fn the_entries_are_a_list_under_their_heading_with_the_file_preview_beside_them() {
@@ -364,5 +368,83 @@ mod tests {
             semantics.status.as_deref(),
             Some("No entries match. Enter passes the search text.")
         );
+    }
+
+    fn dmenu_app(dir: &std::path::Path) -> (LauncherApp, Arc<TestBackend>) {
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir));
+        app.backend = Some(backend.clone());
+        // Already open, so the summon focuses it rather than opening one,
+        // which only a running event loop could answer.
+        app.window = Some(window::Id::unique());
+        let task = app.update(Message::Command(UiCommand::Dmenu(5)));
+        settle(&mut app, task);
+        (app, backend)
+    }
+
+    #[test]
+    fn a_pushed_dmenu_list_is_shown_filtered_and_answered_with_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = dmenu_app(dir.path());
+        let Page::Dmenu(page) = &app.page else {
+            panic!("no dmenu view: {}", app.state_line());
+        };
+        assert_eq!(page.entries, ["alpha", "beta", "gamma"]);
+        assert_eq!(page.heading().as_deref(), Some("Pick (3)"));
+
+        let _ = app.update(Message::DmenuQueryChanged("gama".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.dmenu_answers.lock().unwrap().as_slice(),
+            [(5, Some("gamma".to_owned()))]
+        );
+        assert!(
+            matches!(app.page, Page::Root),
+            "choosing hides the launcher"
+        );
+    }
+
+    #[test]
+    fn escape_dismisses_a_dmenu_list_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = dmenu_app(dir.path());
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        let task = app.update(Message::Dismiss);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.dmenu_answers.lock().unwrap().as_slice(),
+            [(5, None)],
+            "one dismissal, however the view went away"
+        );
+    }
+
+    #[test]
+    fn a_dmenu_size_resizes_the_window_until_a_list_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = dmenu_app(dir.path());
+        assert_eq!(app.dmenu_card_size(), None);
+        assert_eq!(app.resized_to, None);
+        if let Page::Dmenu(page) = &mut app.page {
+            page.list.width = Some(400);
+            page.list.navigation_title = Some("Pick one".into());
+        }
+        let _ = app.apply_dmenu_size();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        if let Page::Dmenu(page) = &mut app.page {
+            page.entries.push(file.to_string_lossy().into_owned());
+            page.query = "notes".into();
+            page.refilter();
+            assert!(page.preview.is_some(), "quick look reads the file");
+        }
+        let _ = app.view();
+        let size = Some((400, u32::from(GEOMETRY.card_max_height)));
+        assert_eq!(app.dmenu_card_size(), size);
+        assert_eq!(app.resized_to, size);
+        let task = app.update(Message::Command(UiCommand::Dmenu(5)));
+        settle(&mut app, task);
+        assert_eq!(app.resized_to, None, "the next list puts the size back");
     }
 }

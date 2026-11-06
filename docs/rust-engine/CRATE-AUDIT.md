@@ -6,7 +6,7 @@ would regress documented behaviour, and record behaviour differences in `PARITY.
 
 The workspace (~97k lines) already leans on crates where they fit: `nucleo-matcher`, `fend-core`,
 `ignore`, `mime_guess`, `aes-gcm`/`hkdf`, `oo7`, `ashpd`, `landlock`/`seccompiler`, `roxmltree`,
-`strsim`/`fst`, and iced's Markdown and SVG support. Most large modules (`compass-ui/app.rs`, the
+`strsim`/`fst`, and iced's Markdown and SVG support. Most large modules (`compass-ui`'s `app/`, the
 indexer, the worker host) are project logic no crate covers. What a crate *can* replace is below,
 with the decision taken and why.
 

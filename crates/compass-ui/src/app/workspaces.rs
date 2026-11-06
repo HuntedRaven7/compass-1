@@ -267,8 +267,12 @@ fn workspace_apps(workspace: &crate::backend::WorkspaceRow) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::RootRow;
+    use crate::app::test_support::{FakeWindows, choose, panel_titles, settle, windows_app};
     use crate::backend::WorkspaceRow;
+    use crate::resident::UiCommand;
     use crate::semantics::Body;
+    use std::sync::Arc;
 
     fn workspace(id: &str, name: &str, apps: &[&str]) -> WorkspaceRow {
         WorkspaceRow {
@@ -314,5 +318,114 @@ mod tests {
         let semantics = app.semantics();
         assert_eq!(semantics.body, Body::Empty);
         assert_eq!(semantics.status.as_deref(), Some("No workspaces match"));
+    }
+
+    #[test]
+    fn workspaces_and_the_toggles_are_offered_where_the_compositor_has_them() {
+        use compass_core::window_switcher::Capabilities;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = |id: &str, name: &str, apps: &[&str]| crate::backend::WorkspaceRow {
+            id: id.into(),
+            name: name.into(),
+            monitor: Some("DP-1".into()),
+            window_count: apps.len(),
+            apps: apps.iter().map(|a| ((*a).to_owned(), None)).collect(),
+            active: false,
+        };
+        let windows = Arc::new(FakeWindows {
+            caps: Capabilities {
+                workspaces: true,
+                fullscreen: true,
+                toggle_floating: true,
+                ..Capabilities::default()
+            },
+            workspaces: vec![
+                workspace("1", "1", &["Firefox"]),
+                workspace("3", "music", &["Spotify"]),
+            ],
+            ..FakeWindows::default()
+        });
+        let (mut app, _) = windows_app(dir.path(), Some(windows.clone()));
+        let is_command = |app: &LauncherApp, entrypoint: &str| matches!(app.selected_row(), Some(RootRow::Command(c)) if c.entrypoint == entrypoint);
+
+        // Until the engine says what the compositor can do, none is offered.
+        app.query = "switch workspaces".into();
+        app.search();
+        assert!(
+            !is_command(&app, "switch-workspaces"),
+            "{}",
+            app.state_line()
+        );
+        let task = app.window_capabilities_task();
+        settle(&mut app, task);
+        app.search();
+        assert!(
+            is_command(&app, "switch-workspaces"),
+            "{}",
+            app.state_line()
+        );
+        app.query = "toggle overview".into();
+        app.search();
+        assert!(
+            !is_command(&app, "toggle-overview"),
+            "no overview on this compositor"
+        );
+
+        // Switch Workspaces lists them, filters by an application on one,
+        // and Enter switches to it, then hides.
+        app.query = "switch workspaces".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        let Page::Workspaces(page) = &app.page else {
+            panic!("not on Switch Workspaces: {}", app.state_line());
+        };
+        assert_eq!(page.shown.len(), 2);
+        let _ = app.update(Message::WorkspacesQueryChanged("spotify".into()));
+        let _ = app.update(Message::TogglePanel);
+        assert_eq!(panel_titles(&app), ["Switch to workspace"]);
+        let task = choose(&mut app, "Switch to workspace");
+        settle(&mut app, task);
+        assert_eq!(windows.focused_workspaces.lock().unwrap().as_slice(), ["3"]);
+        assert!(
+            !matches!(app.page, Page::Workspaces(_)),
+            "hidden, and back at the root next time"
+        );
+
+        // A toggle runs from root search.
+        let _ = app.update(Message::Command(UiCommand::Show));
+        app.query = "toggle floating".into();
+        app.search();
+        assert!(is_command(&app, "toggle-floating"));
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(
+            windows.toggles.lock().unwrap().as_slice(),
+            [crate::backend::WindowToggle::Floating]
+        );
+    }
+
+    #[test]
+    fn a_refused_toggle_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let windows = Arc::new(FakeWindows {
+            caps: compass_core::window_switcher::Capabilities {
+                fullscreen: true,
+                ..Default::default()
+            },
+            toggle_refusal: Some("Active window is not on the current workspace"),
+            ..FakeWindows::default()
+        });
+        let (mut app, _) = windows_app(dir.path(), Some(windows));
+        let task = app.window_capabilities_task();
+        settle(&mut app, task);
+        app.query = "toggle fullscreen".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Active window is not on the current workspace")
+        );
     }
 }

@@ -183,8 +183,10 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, open_builtin, pressed, settle};
     use crate::backend::ScriptGrant;
     use crate::semantics::Body;
+    use std::sync::Arc;
 
     #[test]
     fn the_scripts_are_a_list_saying_what_each_may_do() {
@@ -215,5 +217,51 @@ mod tests {
         );
         assert_eq!(list.selected, Some(0));
         assert_eq!(semantics.status.as_deref(), Some(grants_page::REVOKED));
+    }
+
+    #[test]
+    fn script_permissions_lists_what_was_allowed_and_revokes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        *backend.grants.lock().unwrap() = vec![
+            crate::backend::ScriptGrant {
+                id: "script.clip".into(),
+                title: "Clip Tool".into(),
+                capabilities: vec!["clipboard.write".into()],
+                descriptions: vec!["copy to the clipboard".into()],
+            },
+            crate::backend::ScriptGrant {
+                id: "script.notes".into(),
+                title: "Quick Notes".into(),
+                capabilities: vec!["storage.read".into()],
+                descriptions: vec!["read its saved data".into()],
+            },
+        ];
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        open_builtin(
+            &mut app,
+            "script permissions",
+            "commands:script-permissions",
+        );
+        let Page::Grants(page) = &app.page else {
+            panic!("not Script Permissions: {}", app.state_line());
+        };
+        assert_eq!(page.shown.len(), 2);
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Copy to the clipboard").is_ok());
+        }
+        let _ = app.update(Message::GrantsQueryChanged("notes".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::Grants(page) = &app.page else {
+            panic!("left Script Permissions");
+        };
+        assert_eq!(
+            page.all.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
+            ["script.clip"]
+        );
+        assert_eq!(page.notice.as_deref(), Some(crate::grants_page::REVOKED));
     }
 }

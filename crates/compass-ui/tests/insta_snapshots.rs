@@ -12,8 +12,8 @@
 //! # Structure, not pixels, and not strings
 //!
 //! `Simulator::snapshot` compares a committed PNG, which makes the assertion
-//! depend on the fonts the runner happens to ship; `app.rs` already rejects
-//! that for the same reason. So the snapshot here is the **layout order** of
+//! depend on the fonts the runner happens to ship; `app/view.rs`'s view tests
+//! already reject that for the same reason. So the snapshot here is the **layout order** of
 //! the labels the view puts on screen, read back out of the real Iced tree by
 //! selecting each one and taking its bounds. A row that disappears, a section
 //! that moves above another, or a branch of `view()` that stops rendering all

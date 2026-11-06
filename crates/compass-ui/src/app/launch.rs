@@ -171,3 +171,112 @@ impl LauncherApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::test_support::{TestBackend, extension_app, files_page, index, task_messages};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_command_line_launch_opens_the_builtin_and_types_its_fallback_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend);
+        let launch = crate::backend::ExtensionLaunch {
+            id: "commands:search-files".into(),
+            arguments: None,
+            preferences: false,
+            fallback_text: Some("report".into()),
+        };
+        // Not settled: the search waits out its debounce on a timer.
+        let _ = app.update(Message::LaunchFetched(Ok(launch)));
+        assert_eq!(files_page(&app).query, "report", "{}", app.state_line());
+
+        let launch = crate::backend::ExtensionLaunch {
+            id: "commands:manage-snippets".into(),
+            arguments: None,
+            preferences: false,
+            fallback_text: None,
+        };
+        let _ = app.update(Message::LaunchFetched(Ok(launch)));
+        assert!(
+            matches!(app.page, Page::Snippets(_)),
+            "{}",
+            app.state_line()
+        );
+    }
+
+    #[test]
+    fn an_extension_s_launch_runs_its_command_and_its_subtitle_override_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["@someone/hello:write".to_owned()],
+            ..TestBackend::default()
+        });
+        let mut app = extension_app(dir.path(), backend.clone());
+        let _ = app.update(Message::ExtensionSubtitlesLoaded(Ok(vec![(
+            "@someone/hello:write".into(),
+            "3 unread".into(),
+        )])));
+        for message in task_messages(app.update(Message::QueryChanged("greeting".into()))) {
+            let _ = app.update(message);
+        }
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("3 unread").is_ok(), "the override is the subtitle");
+            assert!(
+                ui.find("Hello").is_err(),
+                "in place of the extension's title"
+            );
+        }
+
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("who".into(), "ada".into());
+        let launch = crate::backend::ExtensionLaunch {
+            id: "@someone/hello:write".into(),
+            arguments: Some(arguments.clone()),
+            preferences: false,
+            fallback_text: None,
+        };
+        for message in task_messages(app.update(Message::LaunchFetched(Ok(launch)))) {
+            let _ = app.update(message);
+        }
+        assert_eq!(
+            backend.ran.lock().unwrap().as_slice(),
+            ["@someone/hello:write"]
+        );
+        assert_eq!(backend.given.lock().unwrap().last(), Some(&Some(arguments)));
+    }
+
+    #[test]
+    fn preferences_an_extension_opens_are_saved_without_running_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = extension_app(dir.path(), backend.clone());
+        let _ = app.update(Message::PreferencesOpened {
+            id: "@someone/hello:write".into(),
+            result: Ok(crate::backend::ExtensionStart::NeedsPreferences {
+                title: "Write Greeting".into(),
+                fields: Vec::new(),
+            }),
+        });
+        let Page::Preferences(page) = &app.page else {
+            panic!("no preferences form: {}", app.state_line());
+        };
+        assert_eq!(
+            page.purpose,
+            crate::preferences_page::Purpose::CommandPreferences
+        );
+        for message in task_messages(app.update(Message::PreferencesSubmit)) {
+            let _ = app.update(message);
+        }
+        assert!(matches!(app.page, Page::Root), "{}", app.state_line());
+        assert_eq!(backend.saved.lock().unwrap().len(), 1);
+        assert!(
+            backend.ran.lock().unwrap().is_empty(),
+            "saving does not run it"
+        );
+    }
+}

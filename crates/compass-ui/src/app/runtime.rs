@@ -240,3 +240,199 @@ impl LauncherApp {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::test_support::{
+        FakeWindows, choose, open_windows, panel_titles, settle, window_row, windows_app,
+        with_resident_hud,
+    };
+    use crate::resident::UiCommand;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_running_applications_panel_offers_quit_and_force_quit_and_they_reach_the_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = crate::backend::AppRuntimeInfo {
+            running: true,
+            frontmost: false,
+            windows: vec![window_row(31, "Mozilla Firefox", "Firefox", 5)],
+        };
+        let windows = Arc::new(FakeWindows {
+            running: vec![("firefox.desktop".into(), running)],
+            ..FakeWindows::default()
+        });
+        let (mut app, _) = windows_app(dir.path(), Some(windows.clone()));
+
+        // Not running: the panel is the plain one, and stays so.
+        app.query = "Terminal".into();
+        app.search();
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        assert!(!panel_titles(&app).iter().any(|t| t.contains("Quit")));
+        let _ = app.update(Message::TogglePanel);
+
+        app.query = "Firefox".into();
+        app.search();
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        assert_eq!(
+            panel_titles(&app),
+            [
+                "Open",
+                "Focus window",
+                "Close window",
+                "Copy name",
+                "Copy path",
+                "Quit application",
+                "Force quit application",
+                "Copy deeplink",
+                "Reset ranking",
+                "Add to favorites",
+                "Set alias",
+                "Set global shortcut",
+                "Open preferences",
+                "Copy ID",
+                "Disable item"
+            ]
+        );
+        let quit_row = app
+            .panel
+            .as_ref()
+            .unwrap()
+            .sections
+            .iter()
+            .find(|section| {
+                section
+                    .actions
+                    .iter()
+                    .any(|a| a.id.as_deref() == Some(super::APP_QUIT))
+            })
+            .unwrap();
+        assert_eq!(quit_row.actions[0].shortcut.as_deref(), Some("ctrl+q"));
+
+        let task = choose(&mut app, "Force quit application");
+        settle(&mut app, task);
+        assert_eq!(
+            windows.quits.lock().unwrap().as_slice(),
+            [("firefox.desktop".to_owned(), true)]
+        );
+
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let task = choose(&mut app, "Quit application");
+        settle(&mut app, task);
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let task = choose(&mut app, "Focus window");
+        settle(&mut app, task);
+        assert_eq!(
+            windows.quits.lock().unwrap().last(),
+            Some(&("firefox.desktop".to_owned(), false))
+        );
+        assert_eq!(windows.activated.lock().unwrap().as_slice(), [31]);
+    }
+
+    #[test]
+    fn a_quit_that_does_nothing_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = crate::backend::AppRuntimeInfo {
+            running: true,
+            frontmost: true,
+            windows: vec![window_row(31, "Files", "Files", 5)],
+        };
+        let windows = Arc::new(FakeWindows {
+            running: vec![("files.desktop".into(), running)],
+            fail_quit: true,
+            ..FakeWindows::default()
+        });
+        let (mut app, _) = windows_app(dir.path(), Some(windows));
+        app.query = "Files".into();
+        app.search();
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let task = choose(&mut app, "Quit application");
+        settle(&mut app, task);
+        assert_eq!(app.error.as_deref(), Some("Failed to quit files.desktop"));
+    }
+
+    #[test]
+    fn quit_and_force_quit_hide_with_the_cpps_hud() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = crate::backend::AppRuntimeInfo {
+            running: true,
+            frontmost: true,
+            windows: vec![window_row(31, "Files", "Files", 5)],
+        };
+        let windows = Arc::new(FakeWindows {
+            running: vec![("files.desktop".into(), running)],
+            ..FakeWindows::default()
+        });
+        let (app, _) = windows_app(dir.path(), Some(windows));
+        let mut app = with_resident_hud(app);
+        app.query = "Files".into();
+        app.search();
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let task = choose(&mut app, "Quit application");
+        settle(&mut app, task);
+        assert_eq!(app.hud_content(), Some(&crate::hud::Hud::new("Quit Files")));
+        assert!(matches!(app.page, Page::Root), "the launcher hid");
+
+        app.query = "Files".into();
+        app.search();
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let task = choose(&mut app, "Force quit application");
+        settle(&mut app, task);
+        assert_eq!(
+            app.hud_content().map(|hud| hud.text.as_str()),
+            Some("Force quit Files")
+        );
+    }
+
+    #[test]
+    fn the_window_switchers_panel_quits_a_known_windows_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let windows = Arc::new(FakeWindows {
+            rows: vec![
+                window_row(7, "Downloads", "Files", 1),
+                crate::backend::WindowRow {
+                    app_known: false,
+                    ..window_row(9, "xterm", "XTerm", 2)
+                },
+            ],
+            ..FakeWindows::default()
+        });
+        let (mut app, _) = windows_app(dir.path(), Some(windows.clone()));
+        open_windows(&mut app);
+        let _ = app.update(Message::WindowsQueryChanged("Downloads".into()));
+        let _ = app.update(Message::TogglePanel);
+        assert_eq!(
+            panel_titles(&app),
+            [
+                "Focus window",
+                "Close window",
+                "Quit application",
+                "Force quit application"
+            ]
+        );
+        let task = choose(&mut app, "Force quit application");
+        settle(&mut app, task);
+        assert_eq!(windows.window_quits.lock().unwrap().as_slice(), [(7, true)]);
+
+        let _ = app.update(Message::Command(UiCommand::Show));
+        open_windows(&mut app);
+        let _ = app.update(Message::WindowsQueryChanged("xterm".into()));
+        let _ = app.update(Message::TogglePanel);
+        assert_eq!(
+            panel_titles(&app),
+            ["Focus window", "Close window"],
+            "no application to quit"
+        );
+        let task = choose(&mut app, "Close window");
+        settle(&mut app, task);
+        assert_eq!(windows.closed.lock().unwrap().as_slice(), [9]);
+    }
+}

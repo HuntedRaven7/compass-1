@@ -241,7 +241,9 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, open_builtin, pressed, settle};
     use crate::semantics::Body;
+    use std::sync::Arc;
 
     #[test]
     fn the_programs_are_a_list_with_their_paths_and_the_loading_notice_before_them() {
@@ -274,5 +276,32 @@ mod tests {
         );
         assert_eq!(list.selected, Some(1));
         assert_eq!(semantics.status, None);
+    }
+
+    #[test]
+    fn run_terminal_program_runs_the_typed_command_line_in_a_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        open_builtin(&mut app, "run terminal program", "commands:run-program");
+        let Page::Programs(page) = &app.page else {
+            panic!("not on Run Terminal Program: {}", app.state_line());
+        };
+        assert_eq!(page.rows.len(), 2, "every program for the empty query");
+
+        let _ = app.update(Message::ProgramsQueryChanged("htop -d 5".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.programs_ran.lock().unwrap().as_slice(),
+            [(
+                vec!["htop".to_owned(), "-d".to_owned(), "5".to_owned()],
+                true,
+                false
+            )],
+            "run-in-terminal is the default: a terminal that closes"
+        );
+        assert!(matches!(app.page, Page::Root), "running hides the launcher");
     }
 }

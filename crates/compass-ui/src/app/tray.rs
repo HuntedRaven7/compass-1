@@ -413,8 +413,11 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, open_builtin, pressed, settle};
     use crate::backend::TrayMenuRow;
+    use crate::resident::UiCommand;
     use crate::semantics::Body;
+    use std::sync::Arc;
 
     fn list(app: &LauncherApp) -> crate::semantics::List {
         match app.semantics().body {
@@ -482,5 +485,97 @@ mod tests {
         assert_eq!(menu.items[0].name, "Wi-Fi");
         assert_eq!(menu.items[0].description.as_deref(), Some("Off"));
         assert_eq!(menu.items[1].description, None);
+    }
+
+    #[test]
+    fn search_tray_lists_activates_and_browses_an_items_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            tray: vec![
+                crate::backend::TrayItemRow {
+                    key: ":1.7".into(),
+                    title: "Fake Chat".into(),
+                    subtitle: "3 unread messages".into(),
+                    attention: true,
+                    has_menu: true,
+                    ..crate::backend::TrayItemRow::default()
+                },
+                crate::backend::TrayItemRow {
+                    key: ":1.8".into(),
+                    title: "Network".into(),
+                    ..crate::backend::TrayItemRow::default()
+                },
+            ],
+            ..TestBackend::default()
+        });
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        open_builtin(&mut app, "search tray", "commands:search-tray");
+        let Page::Tray(page) = &app.page else {
+            panic!("not Search Tray: {}", app.state_line());
+        };
+        assert_eq!(page.shown.len(), 2);
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Fake Chat").is_ok());
+            assert!(ui.find("3 unread messages").is_ok());
+            assert!(ui.find(crate::tray_page::ATTENTION).is_ok());
+        }
+        let _ = app.update(Message::TogglePanel);
+        let titles: Vec<String> = app
+            .panel
+            .as_ref()
+            .unwrap()
+            .sections
+            .iter()
+            .flat_map(|section| section.actions.iter().map(|a| a.title.clone()))
+            .collect();
+        assert_eq!(titles, ["Activate", "Browse menu", "Secondary activate"]);
+        let _ = app.update(Message::TogglePanel);
+
+        let _ = app.update(Message::TrayQueryChanged("network".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.tray_calls.lock().unwrap().as_slice(),
+            ["activate :1.8 false"],
+            "Enter activates"
+        );
+
+        let _ = app.update(Message::Command(UiCommand::Show));
+        open_builtin(&mut app, "search tray", "commands:search-tray");
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let _ = app.update(Message::PanelFilterChanged("Browse menu".into()));
+        let task = app.update(Message::PanelActivate);
+        settle(&mut app, task);
+        let Page::Tray(page) = &app.page else {
+            panic!("left Search Tray");
+        };
+        assert_eq!(page.menu_key(), Some(":1.7"));
+        assert_eq!(page.entries.len(), 2);
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Status › Away").is_ok());
+        }
+        let _ = app.update(Message::TrayQueryChanged("away".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert!(
+            backend
+                .tray_calls
+                .lock()
+                .unwrap()
+                .contains(&"trigger :1.7 3".to_owned())
+        );
+        assert!(
+            matches!(app.page, Page::Tray(_)),
+            "a toggle keeps the menu open"
+        );
+        let _ = app.update(pressed(iced::keyboard::key::Named::Escape));
+        let Page::Tray(page) = &app.page else {
+            panic!("Escape in a menu left Search Tray");
+        };
+        assert_eq!(page.menu_key(), None, "Escape goes back to the items");
     }
 }

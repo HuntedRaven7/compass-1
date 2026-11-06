@@ -513,6 +513,7 @@ fn one_line_message(mode: OutputMode, ok: bool, line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{pressed, scripts_app, settle, task_actions};
     use crate::semantics::Block;
 
     #[test]
@@ -544,5 +545,161 @@ mod tests {
         assert_eq!(semantics.status.as_deref(), Some("Copied to clipboard"));
         app.page = Page::ScriptOutput(page);
         assert!(matches!(app.semantics().body, Body::Document(_)));
+    }
+
+    #[test]
+    fn a_full_output_script_asks_for_its_argument_and_shows_its_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = scripts_app(dir.path());
+        app.query = "disk report".into();
+        app.search();
+        assert_eq!(
+            app.selected_row(),
+            Some(RootRow::Script(0)),
+            "{}",
+            app.state_line()
+        );
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        let Page::Preferences(page) = &app.page else {
+            panic!("no arguments form: {}", app.state_line());
+        };
+        assert_eq!(page.fields[0].title, "arg0");
+        let _ = app.update(Message::PreferenceEdited(
+            0,
+            crate::preferences_page::FieldValue::Text("/home".into()),
+        ));
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.script_runs.lock().unwrap().as_slice(),
+            [("report.sh".to_owned(), vec!["/home".to_owned()])]
+        );
+        assert_eq!(
+            backend.recorded.lock().unwrap().as_slice(),
+            ["scripts:report.sh"]
+        );
+        let Page::ScriptOutput(page) = &app.page else {
+            panic!("no output view: {}", app.state_line());
+        };
+        assert_eq!(page.heading(), "Done in 1.2s (exit=0)");
+        assert_eq!(page.runs[0].text, "report.sh");
+        assert_eq!(
+            page.runs[0].foreground,
+            Some(compass_core::script_output::Color::Red)
+        );
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        assert!(matches!(app.page, Page::Root), "{}", app.state_line());
+    }
+
+    #[test]
+    fn full_output_scrolls_from_the_keyboard_copies_and_shows_a_failure() {
+        use iced::keyboard::key::Named;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _backend) = scripts_app(dir.path());
+        app.page = Page::ScriptOutput(crate::script_page::ScriptOutputPage::new(
+            "report.sh".into(),
+            Vec::new(),
+            "Disk Report".into(),
+            7,
+        ));
+        let Page::ScriptOutput(page) = &mut app.page else {
+            unreachable!()
+        };
+        page.apply(
+            7,
+            crate::backend::ScriptOutputState {
+                output: "\u{1b}[31mdisk full\u{1b}[0m\nline 2\n".into(),
+                finished: true,
+                exit_code: Some(3),
+                elapsed_ms: 100,
+            },
+        );
+        assert!(page.failed());
+        assert_eq!(page.heading(), "Failed after 0.1s (exit code 3)");
+
+        for key in [
+            Named::ArrowDown,
+            Named::ArrowUp,
+            Named::PageDown,
+            Named::PageUp,
+            Named::Home,
+            Named::End,
+        ] {
+            assert_eq!(
+                task_actions(app.update(pressed(key))),
+                1,
+                "{key:?} scrolls the output"
+            );
+        }
+
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let copy = app
+            .panel
+            .as_ref()
+            .and_then(|panel| panel.row_titled("Copy output"))
+            .unwrap_or_else(|| panic!("no Copy output: {}", app.state_line()));
+        let task = app.update(Message::PanelClicked(copy));
+        assert_eq!(settle(&mut app, task), ["disk full\nline 2\n"]);
+    }
+
+    #[test]
+    fn after_a_compact_script_enter_does_not_run_it_again_and_typing_searches() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = scripts_app(dir.path());
+        app.query = "count things".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert!(app.error.is_some(), "{}", app.state_line());
+        let runs = backend.script_runs.lock().unwrap().len();
+        let started = app.update(Message::ScriptStarted {
+            id: "count.sh".into(),
+            arguments: Vec::new(),
+            result: Ok(Some(7)),
+        });
+        assert!(
+            task_actions(started) > 0,
+            "the search field gets the keyboard back"
+        );
+
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.script_runs.lock().unwrap().len(),
+            runs,
+            "not run again"
+        );
+        assert!(app.error.is_none(), "the results are back");
+
+        app.error = Some("count.sh".into());
+        let task = app.update(Message::QueryChanged("touch".into()));
+        settle(&mut app, task);
+        assert!(app.error.is_none(), "typing replaces the line with results");
+        assert_eq!(app.query, "touch");
+    }
+
+    #[test]
+    fn a_compact_script_says_its_first_line_and_a_silent_one_hides_the_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = scripts_app(dir.path());
+        app.query = "count things".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("count.sh "),
+            "{}",
+            app.state_line()
+        );
+
+        app.query = "touch marker".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(backend.script_runs.lock().unwrap().len(), 2);
     }
 }

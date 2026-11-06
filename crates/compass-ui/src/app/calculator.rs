@@ -498,8 +498,14 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::RootRow;
+    use crate::app::test_support::{
+        TestBackend, choose, index, open_builtin, pressed, settle, with_resident_hud,
+    };
     use crate::backend::{CalculatorGroupRow, CalculatorRow};
+    use crate::resident::UiCommand;
     use crate::semantics::Body;
+    use std::sync::Arc;
 
     #[test]
     fn the_history_lists_the_live_result_then_each_calculation() {
@@ -543,5 +549,193 @@ mod tests {
         assert_eq!(list.items[1].name, "3*3");
         assert_eq!(list.items[1].description.as_deref(), Some("9"));
         assert_eq!(list.selected, Some(1));
+    }
+
+    #[test]
+    fn a_copied_answer_is_remembered_and_calculator_history_lists_pins_and_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+
+        // Copying the root list's answer keeps the calculation.
+        app.query = "5 ft to m".into();
+        app.search();
+        assert_eq!(app.selected_row(), Some(RootRow::Calculator));
+        let task = app.update(Message::LaunchSelected);
+        let writes = settle(&mut app, task);
+        assert_eq!(
+            writes,
+            ["1.524"],
+            "the value, as the C++ copies answer.text"
+        );
+        let kept = backend.calculations.lock().unwrap().clone();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            (kept[0].question.as_str(), kept[0].conversion),
+            ("5 ft to m", true)
+        );
+
+        let _ = app.update(Message::Command(UiCommand::Show));
+        app.query = "calculator history".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        let Page::Calculator(page) = &app.page else {
+            panic!("not on Calculator History: {}", app.state_line());
+        };
+        assert_eq!(page.groups.len(), 1);
+        assert_eq!(page.groups[0].records[0].answer, "1.524 m");
+
+        // The live result for what is typed leads, and copying it keeps it.
+        let task = app.update(Message::CalculatorQueryChanged("=6*7".into()));
+        settle(&mut app, task);
+        let Page::Calculator(page) = &app.page else {
+            unreachable!()
+        };
+        assert_eq!(page.live.as_ref().map(|a| a.answer.as_str()), Some("42"));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        let writes = settle(&mut app, task);
+        assert_eq!(writes, ["42"]);
+        assert_eq!(backend.calculations.lock().unwrap().len(), 2);
+
+        // The panel pins and removes a remembered row.
+        let _ = app.update(Message::Command(UiCommand::Show));
+        let task = app.open_calculator_history();
+        settle(&mut app, task);
+        let _ = app.update(Message::TogglePanel);
+        let task = app.update(Message::PanelFilterChanged("Pin entry".into()));
+        settle(&mut app, task);
+        let task = app.update(Message::PanelActivate);
+        settle(&mut app, task);
+        let _ = app.update(Message::TogglePanel);
+        let _ = app.update(Message::PanelFilterChanged("Delete entry".into()));
+        let task = app.update(Message::PanelActivate);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.calculator_edits.lock().unwrap().as_slice(),
+            [
+                crate::backend::CalculatorChange::Pin("r1".into()),
+                crate::backend::CalculatorChange::Remove("r1".into()),
+            ]
+        );
+        let Page::Calculator(page) = &app.page else {
+            unreachable!()
+        };
+        assert_eq!(page.notice.as_deref(), Some("Entry removed"));
+        assert_eq!(page.len(), 1, "the list reloaded without it");
+    }
+
+    #[test]
+    fn refresh_exchange_rates_installs_the_fresh_rates_and_says_so_or_why_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let rates = compass_core::exchange_rates::ExchangeRates {
+            date: "2026-09-24".into(),
+            fetched_at: 7,
+            rates: [("EUR".to_owned(), 1.0), ("USD".to_owned(), 1.25)].into(),
+        };
+        let backend = Arc::new(TestBackend {
+            rates: Some(rates.clone()),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend);
+        open_builtin(&mut app, "refresh exchange rates", "commands:refresh-rates");
+        let installed = compass_core::calculator::exchange_rates();
+        let answer = compass_core::calculator::compute("10 usd to eur").map(|a| a.answer);
+        compass_core::calculator::set_exchange_rates(None);
+        assert_eq!(installed.as_deref(), Some(&rates));
+        assert_eq!(answer.as_deref(), Some("8 EUR"));
+        assert_eq!(
+            app.hud_content(),
+            Some(&crate::app::calculator::rates_refreshed())
+        );
+
+        let failing = Arc::new(TestBackend {
+            refuse_rates: Some("Could not refresh the exchange rates: offline".into()),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(failing);
+        open_builtin(&mut app, "refresh exchange rates", "commands:refresh-rates");
+        assert_eq!(
+            app.hud_content().map(|hud| hud.text.as_str()),
+            Some("Could not refresh the exchange rates: offline")
+        );
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Could not refresh the exchange rates: offline")
+        );
+    }
+
+    /// Ctrl+B over the answer offers upstream's panel, and each action does
+    /// what it says: the copies copy and remember, the search bar takes the
+    /// answer, and the history opens.
+    #[test]
+    fn the_calculator_answers_panel_copies_types_and_opens_the_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let answer = |app: &mut LauncherApp| {
+            app.page = Page::Root;
+            app.query = "6*7".into();
+            app.search();
+            assert_eq!(app.selected_row(), Some(RootRow::Calculator));
+            let _ = app.update(Message::TogglePanel);
+        };
+        let backend = Arc::new(TestBackend::default());
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        answer(&mut app);
+        let titles: Vec<String> = app
+            .panel
+            .as_ref()
+            .expect("a panel over the answer")
+            .sections
+            .iter()
+            .flat_map(|section| section.actions.iter().map(|a| a.title.clone()))
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Copy Result",
+                "Copy Question And Answer",
+                "Put answer in search bar",
+                "Open Calculator History",
+            ]
+        );
+
+        let task = choose(&mut app, "Copy Result");
+        assert_eq!(settle(&mut app, task), ["42"]);
+        assert_eq!(
+            app.hud_content().map(|hud| hud.text.as_str()),
+            Some("Answer copied to clipboard")
+        );
+
+        answer(&mut app);
+        let task = choose(&mut app, "Copy Question And Answer");
+        assert_eq!(settle(&mut app, task), ["6*7 = 42"]);
+        let remembered: Vec<(String, String)> = backend
+            .calculations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|row| (row.question.clone(), row.answer.clone()))
+            .collect();
+        assert_eq!(
+            remembered,
+            [("6*7".into(), "42".into()), ("6*7".into(), "42".into())],
+            "both copies are remembered, as CopyCalculatorAnswerAction's are"
+        );
+
+        answer(&mut app);
+        let task = choose(&mut app, "Put answer in search bar");
+        settle(&mut app, task);
+        assert_eq!(app.query, "42");
+        assert!(app.panel.is_none());
+        assert!(matches!(app.page, Page::Root));
+
+        answer(&mut app);
+        let task = choose(&mut app, "Open Calculator History");
+        settle(&mut app, task);
+        assert!(matches!(app.page, Page::Calculator(_)));
     }
 }

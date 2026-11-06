@@ -184,3 +184,234 @@ impl LauncherApp {
             .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::RootRow;
+    use crate::app::test_support::{TestBackend, index, settle, with_resident_hud};
+    use crate::resident::{EngineLink, UiCommand, UiOutcome};
+    use iced::window;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_copy_goes_through_the_engine_and_through_the_window_only_where_it_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        for copies in [true, false] {
+            let backend = Arc::new(TestBackend {
+                copies,
+                ..TestBackend::default()
+            });
+            let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+            app.query = "5 ft to m".into();
+            app.search();
+            assert_eq!(app.selected_row(), Some(RootRow::Calculator));
+            app.backend = Some(backend.clone());
+            let task = app.update(Message::LaunchSelected);
+            let window_writes = settle(&mut app, task);
+            if copies {
+                assert_eq!(
+                    backend.copied.lock().unwrap().as_slice(),
+                    ["1.524"],
+                    "the engine's clipboard outlives the window; the value, not `1.524 m`"
+                );
+                assert!(window_writes.is_empty(), "{window_writes:?}");
+            } else {
+                assert_eq!(window_writes, ["1.524"], "the window's, as a fallback");
+            }
+        }
+    }
+
+    #[test]
+    fn a_copied_answer_shows_the_calculators_hud_until_its_time_is_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.query = "6*7".into();
+        app.search();
+        assert_eq!(app.selected_row(), Some(RootRow::Calculator));
+        let shown_at = std::time::Instant::now();
+        let task = app.update(Message::LaunchSelected);
+        assert_eq!(settle(&mut app, task), ["42"]);
+        let hud = app.hud_content().expect("a HUD").clone();
+        assert_eq!(hud.text, "Answer copied to clipboard");
+        assert_eq!(hud.icon.as_deref(), Some(crate::hud::COPY_ICON));
+
+        let _ = app.update(Message::HudTick(shown_at));
+        assert!(app.hud_content().is_some(), "not yet");
+        let _ = app.update(Message::HudTick(
+            shown_at + crate::hud::DURATION + std::time::Duration::from_millis(100),
+        ));
+        assert!(app.hud_content().is_none(), "gone after 1.5 s");
+    }
+
+    #[test]
+    fn without_a_hud_a_copy_only_hides_and_an_exiting_launcher_shows_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path()))).with_hud(false);
+        app.query = "6*7".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        assert_eq!(settle(&mut app, task), ["42"]);
+        assert!(app.hud_content().is_none(), "GNOME's toplevel has no HUD");
+
+        let mut exiting = LauncherApp::with_index(index(dir.path())).with_hud(true);
+        exiting.query = "6*7".into();
+        exiting.search();
+        let task = exiting.update(Message::LaunchSelected);
+        settle(&mut exiting, task);
+        assert!(
+            exiting.hud_content().is_none(),
+            "no process left to show it"
+        );
+    }
+
+    #[test]
+    fn the_hud_surface_is_not_taken_for_the_launcher_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        let launcher = window::Id::unique();
+        let _ = app.update(Message::Opened(launcher));
+        assert_eq!(app.window, Some(launcher));
+        let _ = app.update(Message::Command(UiCommand::Hud {
+            text: "Paused".into(),
+            icon: Some("pause".into()),
+        }));
+        assert_eq!(
+            app.hud_content().map(|hud| hud.text.as_str()),
+            Some("Paused")
+        );
+        assert_eq!(app.window, Some(launcher), "the launcher stays up");
+        let hud = app.hud.window_id().expect("the HUD surface");
+        let _ = app.update(Message::Opened(hud));
+        assert_eq!(app.window, Some(launcher), "the HUD is not the launcher");
+        let _ = app.update(Message::Closed(hud));
+        assert_eq!(app.window, Some(launcher));
+        assert!(app.hud_content().is_none());
+    }
+
+    #[test]
+    fn the_engines_hud_is_refused_where_the_presentation_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path())).with_hud(false);
+        let (_commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, mut outcomes) = tokio::sync::mpsc::unbounded_channel();
+        app.link = Some(EngineLink::new(receiver, sender));
+        let _ = app.update(Message::Command(UiCommand::Hud {
+            text: "Next Track".into(),
+            icon: None,
+        }));
+        assert!(matches!(outcomes.try_recv(), Ok(UiOutcome::Failed(_))));
+
+        app.hud.set_supported(true);
+        let _ = app.update(Message::Command(UiCommand::Hud {
+            text: "Next Track".into(),
+            icon: Some("forward".into()),
+        }));
+        assert_eq!(outcomes.try_recv().ok(), Some(UiOutcome::Hidden));
+        assert_eq!(
+            app.hud_content().map(|hud| hud.text.as_str()),
+            Some("Next Track")
+        );
+    }
+
+    /// A no-view command that failed after the launcher hid: the reason is in
+    /// the HUD now, and on the launcher's error line when it is next shown,
+    /// not only in a desktop notification nobody may be there to post.
+    #[test]
+    fn a_no_view_commands_failure_is_said_in_the_hud_and_kept_for_the_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path())).with_hud(true);
+        let (_commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, mut outcomes) = tokio::sync::mpsc::unbounded_channel();
+        app.link = Some(EngineLink::new(receiver, sender));
+        let _ = app.update(Message::Command(UiCommand::Failure {
+            title: "Could not complete New Window".into(),
+            message: "AppleScript is only supported on macOS".into(),
+        }));
+        assert_eq!(outcomes.try_recv().ok(), Some(UiOutcome::Hidden));
+        assert_eq!(
+            app.hud_content().map(|hud| hud.text.as_str()),
+            Some("AppleScript is only supported on macOS"),
+            "the HUD has room for the reason"
+        );
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Could not complete New Window: AppleScript is only supported on macOS")
+        );
+        // The next summon opens a window and searches again.
+        let _ = app.update(Message::Opened(window::Id::unique()));
+        let mut ui = iced_test::simulator(app.view());
+        assert!(
+            ui.find("Could not complete New Window: AppleScript is only supported on macOS")
+                .is_ok(),
+            "the launcher shows it: {}",
+            app.state_line()
+        );
+    }
+
+    #[test]
+    fn a_long_hud_message_is_elided_inside_the_surface_and_a_short_one_hugs_its_text() {
+        // The pill's width in a frame of the HUD surface: the columns whose
+        // middle row is not transparent.
+        fn pill_width(app: &LauncherApp) -> usize {
+            let id = app.hud.window_id().expect("the HUD surface");
+            let (width, height) = crate::hud::SURFACE_SIZE;
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(width as f32, height as f32),
+                app.view_for(id),
+            );
+            let snapshot = ui.snapshot(&app.theme()).expect("the HUD renders");
+            if let Some(directory) = std::env::var_os("COMPASS_UI_SCREENSHOT_DIR") {
+                let name = format!("hud-{}", app.hud_content().map_or(0, |hud| hud.text.len()));
+                let _ = snapshot.matches_image(std::path::PathBuf::from(&directory).join(name));
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let _ = snapshot.matches_image(dir.path().join("hud"));
+            let png = std::fs::read_dir(dir.path())
+                .unwrap()
+                .find_map(|entry| {
+                    let path = entry.ok()?.path();
+                    path.extension().is_some_and(|x| x == "png").then_some(path)
+                })
+                .expect("a PNG");
+            let image = ::image::open(png).unwrap().to_rgba8();
+            // In surface pixels: the snapshot may be at a higher scale.
+            let scale = image.width() as usize / crate::hud::SURFACE_SIZE.0 as usize;
+            let row = image.height() / 2;
+            let backdrop = *image.get_pixel(0, row);
+            (0..image.width())
+                .filter(|&x| *image.get_pixel(x, row) != backdrop)
+                .count()
+                / scale.max(1)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        let _ = app.show_hud(crate::hud::Hud::new("Copied"));
+        let short = pill_width(&app);
+        let _ = app.show_hud(crate::hud::Hud::new(
+            "Could not start the extension: the worker exited before it answered, \
+             with status 1 and nothing on its standard error",
+        ));
+        let long = pill_width(&app);
+        let surface = crate::hud::SURFACE_SIZE.0 as usize;
+        assert!(
+            short < 120,
+            "a short message keeps a short pill: {short} px"
+        );
+        assert!(
+            long > short && long < surface,
+            "a long one is cut inside the {surface} px surface: {long} px"
+        );
+    }
+
+    #[test]
+    fn a_refused_paste_copies_the_glyph_with_the_copy_hud() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        let task = app.emoji_pasted("🙂".into(), Err("no paste here".into()));
+        assert_eq!(settle(&mut app, task), ["🙂"]);
+        assert_eq!(app.hud_content(), Some(&crate::hud::Hud::copied()));
+    }
+}

@@ -738,9 +738,16 @@ fn shortcut_detail_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Fallback;
+    use crate::app::flags::AppFlags;
+    use crate::app::test_support::{
+        TestBackend, choose, chord, index, open_builtin, opener, pressed, settle, shortcuts_app,
+        stored_shortcut,
+    };
     use crate::semantics::Body;
     use compass_core::shortcut_service::from_serialized;
     use compass_core::shortcut_store::SerializedShortcut;
+    use std::sync::Arc;
 
     #[test]
     fn manage_shortcuts_describes_its_rows_and_the_selected_detail() {
@@ -809,5 +816,379 @@ mod tests {
         let semantics = app.semantics();
         assert_eq!(semantics.body, Body::Empty);
         assert_eq!(semantics.status.as_deref(), Some("No shortcuts match"));
+    }
+
+    #[test]
+    fn manage_shortcuts_shows_the_detail_pane_and_opens_with_a_chosen_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            shortcuts: std::sync::Mutex::new(vec![
+                stored_shortcut("sct-docs", "Crate Docs", "https://docs.rs/{crate}"),
+                stored_shortcut("sct-news", "Hacker News", "https://news.ycombinator.com"),
+            ]),
+            openers: vec![
+                opener("firefox.desktop", "Firefox", true),
+                opener("chromium.desktop", "Chromium", false),
+            ],
+            ..TestBackend::default()
+        });
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        let task = app.refresh_shortcuts_task();
+        settle(&mut app, task);
+        open_builtin(&mut app, "manage shortcuts", "commands:manage-shortcuts");
+
+        // The pane follows the selection: the link expanded, the default
+        // application named as such.
+        let Page::Shortcuts(page) = &app.page else {
+            panic!("not on Manage Shortcuts: {}", app.state_line());
+        };
+        let detail = page.detail.clone().expect("a pane for the first row");
+        assert_eq!(detail.id, "sct-docs");
+        assert_eq!(detail.expanded.as_deref(), Ok("https://docs.rs/{crate}|"));
+        assert_eq!(detail.app.as_deref(), Some("Firefox (Default)"));
+        let task = app.update(pressed(iced::keyboard::key::Named::ArrowDown));
+        settle(&mut app, task);
+        let Page::Shortcuts(page) = &app.page else {
+            unreachable!()
+        };
+        assert_eq!(
+            page.detail.as_ref().map(|d| d.id.as_str()),
+            Some("sct-news")
+        );
+
+        // Open with… lists the applications for the stored link, opens the
+        // expanded one with the chosen application and hides.
+        let _ = app.update(Message::TogglePanel);
+        let task = choose(&mut app, "Open with...");
+        settle(&mut app, task);
+        let Page::OpenWith(page) = &app.page else {
+            panic!("no app selector: {}", app.state_line());
+        };
+        assert_eq!(page.all.len(), 2);
+        assert_eq!(
+            backend
+                .opener_lookups
+                .lock()
+                .unwrap()
+                .last()
+                .map(String::as_str),
+            Some("https://news.ycombinator.com")
+        );
+        // Escape goes back to the list, and the selector opens again.
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        assert!(
+            matches!(app.page, Page::Shortcuts(_)),
+            "{}",
+            app.state_line()
+        );
+        let _ = app.update(Message::TogglePanel);
+        let task = choose(&mut app, "Open with...");
+        settle(&mut app, task);
+        let _ = app.update(Message::OpenWithQueryChanged("chrom".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.opened_with.lock().unwrap().as_slice(),
+            [(
+                "chromium.desktop".to_owned(),
+                "https://news.ycombinator.com|".to_owned()
+            )]
+        );
+        assert!(
+            !matches!(app.page, Page::OpenWith(_)),
+            "hidden after opening"
+        );
+    }
+
+    #[test]
+    fn a_one_argument_shortcut_named_as_a_fallback_opens_with_the_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            shortcuts: std::sync::Mutex::new(vec![
+                stored_shortcut("sct-docs", "Crate Docs", "https://docs.rs/{crate}"),
+                stored_shortcut("sct-news", "Hacker News", "https://news.ycombinator.com"),
+            ]),
+            ..TestBackend::default()
+        });
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.apply(AppFlags {
+            fallbacks: vec![
+                "shortcuts:sct-news".into(),
+                "files:search".into(),
+                "shortcuts:sct-docs".into(),
+            ],
+            ..AppFlags::default()
+        });
+        app.backend = Some(backend.clone());
+        let task = app.refresh_shortcuts_task();
+        settle(&mut app, task);
+        app.query = "tokio".into();
+        app.search();
+        let fallbacks: Vec<RootRow> = app
+            .results
+            .iter()
+            .copied()
+            .filter(|row| matches!(row, RootRow::Fallback(_)))
+            .collect();
+        assert_eq!(
+            fallbacks.len(),
+            2,
+            "Search Files and the one-argument shortcut, not the one with none: {}",
+            app.state_line()
+        );
+        assert!(
+            matches!(fallbacks[0], RootRow::Fallback(_)),
+            "in configured order"
+        );
+        assert_eq!(fallbacks[1], RootRow::Fallback(Fallback::Shortcut(0)));
+        app.selected = app
+            .results
+            .iter()
+            .position(|row| *row == RootRow::Fallback(Fallback::Shortcut(0)))
+            .unwrap();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.opened_shortcuts.lock().unwrap().as_slice(),
+            [("sct-docs".to_owned(), vec!["tokio".to_owned()])]
+        );
+    }
+
+    #[test]
+    fn a_shortcut_in_root_search_asks_for_its_argument_then_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = shortcuts_app(dir.path());
+        app.query = "crate docs".into();
+        app.search();
+        assert_eq!(
+            app.selected_row(),
+            Some(RootRow::Shortcut(0)),
+            "{}",
+            app.state_line()
+        );
+        assert!(app.state_line().contains("selected_title=\"Crate Docs\""));
+
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        let Page::Preferences(page) = &app.page else {
+            panic!("no arguments form: {}", app.state_line());
+        };
+        assert_eq!(page.fields[0].title, "crate");
+
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        assert!(
+            backend.opened_shortcuts.lock().unwrap().is_empty(),
+            "a required argument left empty does not open it"
+        );
+
+        let _ = app.update(Message::PreferenceEdited(
+            0,
+            crate::preferences_page::FieldValue::Text("serde".into()),
+        ));
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.opened_shortcuts.lock().unwrap().as_slice(),
+            [("sct-docs".to_owned(), vec!["serde".to_owned()])]
+        );
+        assert_eq!(
+            backend.recorded.lock().unwrap().as_slice(),
+            ["shortcuts:sct-docs"],
+            "the visit counts in root search's ranking"
+        );
+        assert!(matches!(app.page, Page::Root));
+
+        // One with no arguments opens at once.
+        app.query = "hacker news".into();
+        app.search();
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.opened_shortcuts.lock().unwrap().last(),
+            Some(&("sct-news".to_owned(), Vec::new()))
+        );
+    }
+
+    #[test]
+    fn create_shortcut_saves_the_form_and_the_new_one_is_searchable() {
+        use crate::preferences_page::FieldValue;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = shortcuts_app(dir.path());
+        open_builtin(&mut app, "create shortcut", "commands:create-shortcut");
+        let Page::Preferences(page) = &app.page else {
+            panic!("no form: {}", app.state_line());
+        };
+        assert_eq!(page.title, "Create Shortcut");
+        let position = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        let (name, link, icon) = (position("name"), position("link"), position("icon"));
+
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        let Page::Preferences(page) = &app.page else {
+            panic!("the form went away without a link");
+        };
+        assert!(
+            page.notice.as_deref().is_some_and(|n| n.contains("Link")),
+            "{:?}",
+            page.notice
+        );
+
+        let _ = app.update(Message::PreferenceEdited(
+            name,
+            FieldValue::Text("Wiki".into()),
+        ));
+        let _ = app.update(Message::PreferenceEdited(
+            link,
+            FieldValue::Text("https://en.wikipedia.org/wiki/{page}".into()),
+        ));
+        let _ = app.update(Message::PreferenceEdited(
+            icon,
+            FieldValue::Choice(Some("icon://omnicast/book".into())),
+        ));
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.drafts.lock().unwrap().as_slice(),
+            [crate::backend::ShortcutDraft {
+                id: None,
+                name: "Wiki".into(),
+                icon: "icon://omnicast/book".into(),
+                url: "https://en.wikipedia.org/wiki/{page}".into(),
+                app: "default".into(),
+            }]
+        );
+        assert!(matches!(app.page, Page::Root), "{}", app.state_line());
+        app.query = "wiki".into();
+        app.search();
+        assert_eq!(app.selected_row(), Some(RootRow::Shortcut(2)));
+    }
+
+    #[test]
+    fn manage_shortcuts_filters_edits_and_removes() {
+        use iced::keyboard::Modifiers;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, backend) = shortcuts_app(dir.path());
+        open_builtin(&mut app, "manage shortcuts", "commands:manage-shortcuts");
+        assert!(
+            app.state_line().contains("page=shortcuts"),
+            "{}",
+            app.state_line()
+        );
+
+        let _ = app.update(Message::ShortcutsQueryChanged("hackr".into()));
+        let Page::Shortcuts(page) = &app.page else {
+            panic!("not on Manage Shortcuts");
+        };
+        assert_eq!(page.shown, [1], "the filter is fuzzy");
+
+        // Ctrl+E edits it in the form, prefilled; Escape comes back here.
+        let task = app.update(chord("e", Modifiers::CTRL));
+        settle(&mut app, task);
+        let Page::Preferences(page) = &app.page else {
+            panic!("no edit form: {}", app.state_line());
+        };
+        assert_eq!(page.title, "Edit \"Hacker News\"");
+        assert_eq!(page.command_id, "sct-news");
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        assert!(
+            matches!(app.page, Page::Shortcuts(_)),
+            "{}",
+            app.state_line()
+        );
+
+        // Saving an edit sends the id, and returns to the list.
+        let task = app.update(chord("e", Modifiers::CTRL));
+        settle(&mut app, task);
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        assert_eq!(
+            backend
+                .drafts
+                .lock()
+                .unwrap()
+                .last()
+                .and_then(|d| d.id.clone()),
+            Some("sct-news".to_owned())
+        );
+        assert!(
+            matches!(app.page, Page::Shortcuts(_)),
+            "{}",
+            app.state_line()
+        );
+
+        // Ctrl+X removes the selected one, here; Ctrl+Shift+X does not.
+        let _ = app.update(Message::ShortcutsQueryChanged(String::new()));
+        let task = app.update(chord("x", Modifiers::CTRL | Modifiers::SHIFT));
+        settle(&mut app, task);
+        assert_eq!(app.app_index.shortcuts().len(), 2);
+        let task = app.update(chord("x", Modifiers::CTRL));
+        settle(&mut app, task);
+        assert_eq!(
+            app.app_index
+                .shortcuts()
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sct-news"]
+        );
+
+        // The panel offers the rest; Copy writes the expanded link.
+        let _ = app.update(Message::TogglePanel);
+        let _ = app.update(Message::PanelFilterChanged("copy".into()));
+        let task = app.update(Message::PanelActivate);
+        let writes = settle(&mut app, task);
+        assert_eq!(writes, ["https://news.ycombinator.com|"]);
+    }
+
+    #[test]
+    fn a_root_shortcut_is_removed_with_ctrl_shift_x() {
+        use iced::keyboard::Modifiers;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _backend) = shortcuts_app(dir.path());
+        app.query = "hacker news".into();
+        app.search();
+        let task = app.update(chord("x", Modifiers::CTRL));
+        settle(&mut app, task);
+        assert_eq!(
+            app.app_index.shortcuts().len(),
+            2,
+            "Ctrl+X is not remove here"
+        );
+        let task = app.update(chord("x", Modifiers::CTRL | Modifiers::SHIFT));
+        settle(&mut app, task);
+        assert_eq!(app.app_index.shortcuts().len(), 1);
+        assert!(
+            app.results
+                .iter()
+                .all(|row| !matches!(row, RootRow::Shortcut(_))),
+            "the removed shortcut left the results"
+        );
+    }
+
+    #[test]
+    fn shortcuts_without_an_engine_say_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        open_builtin(&mut app, "create shortcut", "commands:create-shortcut");
+        let _ = app.update(Message::PreferenceEdited(
+            1,
+            crate::preferences_page::FieldValue::Text("https://x.test".into()),
+        ));
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        let Page::Preferences(page) = &app.page else {
+            panic!("the form went away");
+        };
+        assert!(
+            page.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("need the Compass engine")),
+            "{:?}",
+            page.notice
+        );
     }
 }

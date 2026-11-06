@@ -502,8 +502,10 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, open_builtin, pressed, settle};
     use crate::backend::{FontList, FontListEntry};
     use crate::semantics::{Block, Body};
+    use std::sync::Arc;
 
     fn fonts(names: &[&str]) -> FontList {
         let font = |name: &&str| FontListEntry {
@@ -584,6 +586,100 @@ mod tests {
                 block("Bold sample", None),
                 block("Italic sample", None),
             ]
+        );
+    }
+
+    #[test]
+    fn browse_fonts_filters_previews_and_goes_back_to_the_same_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend);
+        open_builtin(&mut app, "browse fonts", "commands:browse-fonts");
+        let Page::Fonts(page) = &app.page else {
+            panic!("not Browse Fonts: {}", app.state_line());
+        };
+        assert_eq!(page.shown().0, "All Fonts (2)");
+        assert_eq!(page.options, ["All", "Latin", "Monospace"]);
+
+        let task = app.update(Message::FontsCategoryChanged("Monospace".into()));
+        settle(&mut app, task);
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::FontPreview(preview) = &app.page else {
+            panic!("no specimen: {}", app.state_line());
+        };
+        assert_eq!(preview.name, "JetBrains Mono");
+        assert_eq!(
+            preview.lines.first(),
+            Some(&crate::fonts_page::SpecimenLine::Heading(
+                "JetBrains Mono".into()
+            ))
+        );
+
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        let Page::Fonts(page) = &app.page else {
+            panic!("not back at the list: {}", app.state_line());
+        };
+        assert_eq!(page.category.as_deref(), Some("Monospace"), "filter kept");
+
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let _ = app.update(Message::PanelMove(Direction::Down));
+        let task = app.update(Message::PanelActivate);
+        assert_eq!(
+            settle(&mut app, task),
+            ["JetBrains Mono"],
+            "Copy font family"
+        );
+    }
+
+    #[test]
+    fn browse_fonts_is_a_grid_that_remembers_its_category_and_sets_the_font() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        app.view.view_memory =
+            crate::view_memory::ViewMemory::load(Some(dir.path().join("view-state.json")));
+        open_builtin(&mut app, "browse fonts", "commands:browse-fonts");
+        let task = app.update(pressed(iced::keyboard::key::Named::ArrowRight));
+        settle(&mut app, task);
+        let Page::Fonts(page) = &app.page else {
+            panic!("not Browse Fonts: {}", app.state_line());
+        };
+        assert_eq!(page.selected, 1, "Right moves along the row");
+        let _ = app.view();
+
+        let task = app.update(Message::FontsCategoryChanged("Monospace".into()));
+        settle(&mut app, task);
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let _ = app.update(Message::PanelMove(Direction::Down));
+        let _ = app.update(Message::PanelMove(Direction::Down));
+        let task = app.update(Message::PanelActivate);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.fonts_set.lock().unwrap().as_slice(),
+            ["JetBrains Mono"]
+        );
+        assert_eq!(app.view.font_family.as_deref(), Some("JetBrains Mono"));
+
+        let task = app.update(Message::Dismiss);
+        settle(&mut app, task);
+        let mut reopened = LauncherApp::with_index(index(dir.path()));
+        reopened.backend = Some(backend);
+        reopened.view.view_memory =
+            crate::view_memory::ViewMemory::load(Some(dir.path().join("view-state.json")));
+        open_builtin(&mut reopened, "browse fonts", "commands:browse-fonts");
+        let Page::Fonts(page) = &reopened.page else {
+            panic!("not Browse Fonts: {}", reopened.state_line());
+        };
+        assert_eq!(
+            page.category.as_deref(),
+            Some("Monospace"),
+            "the category is remembered across processes"
         );
     }
 }

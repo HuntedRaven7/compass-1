@@ -960,7 +960,12 @@ fn store_confirm_semantics(title: &str) -> super::a11y::PageSemantics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{index, open_builtin, pressed, settle, store_backend};
     use crate::backend::{StoreDetail, StoreList, StoreRow};
+    use crate::resident::UiCommand;
+    use compass_core::AppIndex;
+    use iced::window;
+    use std::fs;
 
     fn row(id: &str, description: &str) -> StoreRow {
         StoreRow {
@@ -1072,5 +1077,321 @@ mod tests {
         page.confirm = true;
         app.page = Page::StoreDetail(Box::new(page));
         assert!(matches!(app.semantics().body, Body::Dialog(_)));
+    }
+
+    /// Every span's font, through quotes and lists, as `rich_text` gets it.
+    fn markdown_span_fonts(
+        items: &[iced::widget::markdown::Item],
+        style: iced::widget::markdown::Style,
+        out: &mut Vec<(String, iced::Font)>,
+    ) {
+        use iced::widget::markdown::{Bullet, Item};
+        for item in items {
+            match item {
+                Item::Heading(_, text) | Item::Paragraph(text) => {
+                    for span in text.spans(style).iter() {
+                        out.push((
+                            span.text.to_string(),
+                            span.font.expect("markdown sets every span's font"),
+                        ));
+                    }
+                }
+                Item::Quote(inner) => markdown_span_fonts(inner, style, out),
+                Item::List { bullets, .. } => {
+                    for bullet in bullets {
+                        let (Bullet::Point { items } | Bullet::Task { items, .. }) = bullet;
+                        markdown_span_fonts(items, style, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_is_drawn_in_the_launchers_font() {
+        // The store detail page's Markdown as `detail_markdown` writes it:
+        // heading, description, compatibility quote, bold-label facts and
+        // the command list, plus inline code.
+        let markdown = "# Brew\n\nSearch and install Homebrew formulae.\n\n\
+            > **No compatibility data for this extension**\n\n\
+            **Author** nhojb · **Downloads** 12.3K\n\n\
+            ## Commands (2)\n\n\
+            - **Search** — Search formulae and casks\n\
+            - **Installed** — List `brew list`\n";
+        let items: Vec<_> = iced::widget::markdown::parse(markdown).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+
+        for family in [None, Some("Cantarell")] {
+            app.view.font_family = family.map(str::to_owned);
+            let launcher = app.font();
+            let settings = app.markdown_settings();
+            let mut spans = Vec::new();
+            markdown_span_fonts(&items, settings.style, &mut spans);
+            assert!(spans.len() > 10, "the walk found the spans: {spans:?}");
+            for (text, font) in &spans {
+                if text == "brew list" {
+                    assert_eq!(
+                        font.family,
+                        iced::font::Family::Monospace,
+                        "inline code stays monospace"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    font.family, launcher.family,
+                    "{text:?} is drawn in {font:?}, not the launcher's {launcher:?}"
+                );
+                assert_eq!(
+                    font.style,
+                    iced::font::Style::Normal,
+                    "{text:?} has no emphasis and must not be italic"
+                );
+            }
+            let bold: Vec<_> = spans
+                .iter()
+                .filter(|(_, font)| font.weight == iced::font::Weight::Bold)
+                .map(|(text, _)| text.as_str())
+                .collect();
+            assert!(
+                bold.contains(&"Author") && bold.contains(&"Search"),
+                "the labels stay bold: {bold:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deeplink_opens_the_detail_page_and_uninstalling_asks_in_a_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let extensions = dir.path().join("extensions");
+        fs::create_dir_all(&extensions).unwrap();
+        let backend = store_backend(&extensions);
+        {
+            let mut rows = backend.store_rows.lock().unwrap();
+            rows[1].installed = true;
+            rows[1].compat = Some(1);
+        }
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        app.window = Some(window::Id::unique());
+        let task = app.update(Message::Command(UiCommand::Deeplink(
+            "raycast://extensions/zoe/timer".into(),
+        )));
+        settle(&mut app, task);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!(
+                "the deeplink did not open a detail page: {}",
+                app.state_line()
+            );
+        };
+        assert_eq!(detail.store, crate::backend::Store::Raycast);
+        assert_eq!(detail.detail.row.name, "timer");
+
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let _ = app.update(Message::PanelActivate);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!("left the detail page");
+        };
+        assert!(detail.confirm, "the panel's uninstall asks first");
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Are you sure?").is_ok());
+            assert!(ui.find("Uninstall Timer").is_ok(), "a dialog with buttons");
+        }
+        let task = app.update(Message::StoreConfirmAnswered(false));
+        settle(&mut app, task);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!("left the detail page");
+        };
+        assert!(
+            !detail.confirm && detail.detail.row.installed,
+            "Cancel keeps it"
+        );
+
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        let Page::Store(_) = &app.page else {
+            panic!("Escape did not go to the list: {}", app.state_line());
+        };
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Partial").is_ok(), "the tier beside its dot");
+        }
+
+        let bad = app.update(Message::Command(UiCommand::Deeplink(
+            "vicinae://extensions/only-one".into(),
+        )));
+        settle(&mut app, bad);
+    }
+
+    #[test]
+    fn the_extension_store_installs_into_root_search_and_uninstalls_after_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let extensions = dir.path().join("extensions");
+        fs::create_dir_all(&extensions).unwrap();
+        let backend = store_backend(&extensions);
+        let mut app = LauncherApp::with_index(
+            AppIndex::builder()
+                .dir(dir.path())
+                .extension_dirs([extensions.clone()])
+                .build(),
+        );
+        app.backend = Some(backend.clone());
+        open_builtin(&mut app, "extension store", "commands:store");
+        // The first time, the intro (`StoreIntroViewHost`); Enter goes on,
+        // and it is not shown again.
+        assert!(
+            matches!(app.page, Page::StoreIntro(_)),
+            "{}",
+            app.state_line()
+        );
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Enter: Continue to store    Esc: back").is_ok());
+        }
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            app.view.view_memory.get(crate::compass_pages::intro_key(
+                crate::backend::Store::Vicinae
+            )),
+            Some("true")
+        );
+        let _ = app.update(Message::Back);
+        open_builtin(&mut app, "extension store", "commands:store");
+        let Page::Store(page) = &app.page else {
+            panic!("not the store: {}", app.state_line());
+        };
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.heading, "Extensions");
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Clock").is_ok(), "{}", app.state_line());
+            assert!(ui.find("↓ 12").is_ok(), "the accessory is drawn");
+        }
+
+        let task = app.update(Message::StoreQueryChanged("clo".into()));
+        settle(&mut app, task);
+        let Page::Store(page) = &app.page else {
+            panic!("left the store");
+        };
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].title, "Clock");
+
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!("no detail page: {}", app.state_line());
+        };
+        assert_eq!(detail.title, "Vicinae Store - Clock");
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Vicinae Store - Clock").is_ok());
+        }
+
+        assert!(app.app_index.extensions().is_empty());
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!("left the detail page: {}", app.state_line());
+        };
+        assert!(detail.detail.row.installed, "Enter installs");
+        assert_eq!(detail.notice.as_deref(), Some("Extension installed"));
+        assert_eq!(
+            app.app_index
+                .extensions()
+                .iter()
+                .map(|command| command.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Show The Clock"],
+            "root search has the new command"
+        );
+
+        // Enter on an installed extension asks before uninstalling.
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!("left the detail page");
+        };
+        assert!(detail.confirm, "asked first");
+        assert!(backend.store_rows.lock().unwrap()[0].installed);
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::StoreDetail(detail) = &app.page else {
+            panic!("left the detail page");
+        };
+        assert!(!detail.detail.row.installed);
+        assert_eq!(detail.notice.as_deref(), Some("Extension uninstalled"));
+        assert!(
+            app.app_index.extensions().is_empty(),
+            "gone from root search"
+        );
+
+        let task = app.update(Message::TogglePanel);
+        settle(&mut app, task);
+        let titles: Vec<_> = app
+            .panel
+            .as_ref()
+            .expect("a panel")
+            .sections
+            .iter()
+            .flat_map(|section| section.actions.iter().map(|action| action.title.clone()))
+            .collect();
+        assert_eq!(titles, ["Install extension", "Open README", "Report issue"]);
+        let _ = app.update(Message::PanelMove(Direction::Down));
+        let task = app.update(Message::PanelActivate);
+        settle(&mut app, task);
+        assert_eq!(
+            *backend.opened_urls.lock().unwrap(),
+            ["https://example.com/README.md"]
+        );
+    }
+
+    #[test]
+    fn escape_from_a_store_detail_returns_to_the_same_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = store_backend(dir.path());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        app.view.view_memory.set(
+            crate::compass_pages::intro_key(crate::backend::Store::Raycast),
+            "true",
+        );
+        open_builtin(&mut app, "raycast store", "commands:raycast-store");
+        // The Raycast store waits for typing to settle; the wait itself
+        // needs a runtime, so the test delivers its end.
+        let _debounce = app.update(Message::StoreQueryChanged("tim".into()));
+        let Page::Store(page) = &app.page else {
+            panic!("not the store");
+        };
+        let generation = page.generation;
+        let stale = app.update(Message::StoreSearchDue(generation - 1));
+        assert!(settle(&mut app, stale).is_empty());
+        let task = app.update(Message::StoreSearchDue(generation));
+        settle(&mut app, task);
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert!(matches!(app.page, Page::StoreDetail(_)));
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        let Page::Store(page) = &app.page else {
+            panic!("not back at the list: {}", app.state_line());
+        };
+        assert_eq!(page.query, "tim", "the search is kept");
+        assert_eq!(page.rows[0].title, "Timer");
+        assert_eq!(
+            backend.store_owners.lock().unwrap().as_slice(),
+            ["clockworks"],
+            "the detail page is asked for by the owner the store files it under, not the author"
+        );
+        let asked = backend.store_queries.lock().unwrap().clone();
+        assert!(
+            asked
+                .iter()
+                .all(|(store, _)| *store == crate::backend::Store::Raycast)
+        );
+        assert_eq!(asked.last().map(|(_, q)| q.as_str()), Some("tim"));
     }
 }

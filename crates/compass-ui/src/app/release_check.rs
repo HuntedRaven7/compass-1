@@ -164,3 +164,73 @@ impl LauncherApp {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::release_check;
+    use crate::app::test_support::{TestBackend, app, settle};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_newer_release_leads_the_empty_query_and_its_panel_opens_or_skips_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = Arc::new(TestBackend::default());
+        let url = "https://github.com/tuna-os/compass/releases/tag/v0.2.0";
+        *backend.update.lock().unwrap() = Some(crate::backend::UpdateOffer {
+            tag: "v0.2.0".into(),
+            version: "0.2.0".into(),
+            release_url: url.into(),
+            current: "v0.1.0".into(),
+        });
+        let mut app = app(dir.path());
+        app.backend = Some(backend.clone());
+
+        // What the window asks each time it opens.
+        let task = app.refresh_update_task();
+        settle(&mut app, task);
+        assert_eq!(app.results.first(), Some(&RootRow::Update));
+        assert_eq!(app.root_heading_at(0), Some("Update"));
+        assert!(
+            app.state_line()
+                .contains("selected_title=\"Compass v0.2.0 is available\""),
+            "{}",
+            app.state_line()
+        );
+        let offer = app.update.as_ref().expect("held");
+        assert_eq!(release_check::subtitle(offer), "You are running v0.1.0");
+
+        // Only for the empty query.
+        let task = app.update(Message::QueryChanged("fire".into()));
+        settle(&mut app, task);
+        assert!(!app.results.contains(&RootRow::Update));
+        let task = app.update(Message::QueryChanged(String::new()));
+        settle(&mut app, task);
+        assert_eq!(app.results.first(), Some(&RootRow::Update));
+
+        // Enter reads the release notes.
+        let task = app.update(Message::LaunchSelected);
+        settle(&mut app, task);
+        assert_eq!(backend.opened_urls.lock().unwrap().as_slice(), [url]);
+
+        // The panel skips it, and the row goes.
+        let _ = app.update(Message::TogglePanel);
+        let skip = app
+            .panel
+            .as_ref()
+            .and_then(|panel| panel.row_titled("Skip this version"))
+            .expect("the panel offers to skip");
+        assert!(
+            app.panel
+                .as_ref()
+                .and_then(|panel| panel.row_titled("View release notes"))
+                .is_some()
+        );
+        let task = app.update(Message::PanelClicked(skip));
+        settle(&mut app, task);
+        assert_eq!(backend.skipped.lock().unwrap().as_slice(), ["v0.2.0"]);
+        assert!(app.update.is_none());
+        assert!(!app.results.contains(&RootRow::Update));
+        assert_eq!(app.root_heading_at(0), None);
+    }
+}

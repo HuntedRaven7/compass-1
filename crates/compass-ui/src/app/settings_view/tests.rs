@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::app::AppFlags;
 use crate::backend::BackendFuture;
+use crate::settings_page::{Shown, alias_key};
+use compass_core::settings_catalog::CorePage;
 use serde_json::json;
 
 fn settle(app: &mut LauncherApp, task: Task<Message>) {

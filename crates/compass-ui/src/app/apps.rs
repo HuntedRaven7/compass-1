@@ -7,10 +7,11 @@ use std::sync::Arc;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
 
+use super::search::launch_task;
 use super::{
     Direction, Element, LauncherApp, Length, Message, Padding, Page, PanelSection, PanelState,
-    Task, chord_direction, column, container, focus_search, launch_task, mouse_area,
-    next_selection, scrollable, text,
+    Task, chord_direction, column, container, focus_search, mouse_area, next_selection, scrollable,
+    text,
 };
 use crate::action_panel::Action;
 use crate::apps_page::{self, AppRow, AppsKind, AppsPage};
@@ -519,8 +520,16 @@ fn digit_of(key: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::RootRow;
+    use crate::app::flags::AppFlags;
+    use crate::app::test_support::{
+        FakeWindows, RecordingLaunchTarget, TestBackend, chord, index, open_builtin, pressed,
+        settle, window_row,
+    };
     use crate::backend::DefaultAppRow;
     use crate::semantics::Body;
+    use compass_core::AppIndex;
+    use std::fs;
 
     #[test]
     fn a_picker_lists_the_applications_and_says_which_is_the_default() {
@@ -561,5 +570,267 @@ mod tests {
         assert_eq!(list.items[1].name, "XTerm");
         assert_eq!(list.items[1].description, None);
         assert_eq!(list.selected, Some(1));
+    }
+
+    /// Browse Apps, once enabled (`isDefaultDisabled`): every application,
+    /// the hidden ones with `showHidden`, the name, comment and keyword
+    /// filter, Enter to open, `control+shift+1` for the first desktop action
+    /// and the copy actions from the panel.
+    #[test]
+    fn browse_apps_lists_filters_opens_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(index(dir.path()));
+        fs::write(
+            dir.path().join("editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Editor\nComment=Write prose\n\
+             Exec=/bin/true\nActions=new;\n[Desktop Action new]\nName=New Window\nExec=/bin/true -n\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("probe.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Probe\nExec=/bin/true\nNoDisplay=true\n",
+        )
+        .unwrap();
+        let launcher = Arc::new(RecordingLaunchTarget::default());
+        let mut app = LauncherApp::with_index(AppIndex::builder().dir(dir.path()).build())
+            .with_launcher(launcher.clone());
+        app.query = "browse apps".into();
+        app.search();
+        assert!(
+            !matches!(app.selected_row(), Some(RootRow::Command(c)) if c.entrypoint == "browse-apps"),
+            "disabled until the configuration enables it"
+        );
+        let config = compass_core::Config::parse(
+            r#"{"providers":{"commands":{"entrypoints":{"browse-apps":{"enabled":true}}}}}"#,
+            std::path::Path::new("config.json"),
+        )
+        .unwrap();
+        app.app_index.apply_root_config(&config.root_config());
+        app.browse_apps.show_hidden = true;
+        open_builtin(&mut app, "browse apps", "commands:browse-apps");
+        let Page::Apps(page) = &app.page else {
+            panic!("not Browse Apps: {}", app.state_line());
+        };
+        assert_eq!(page.heading(), "Applications (5)");
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Probe").is_ok());
+            assert!(ui.find("Hidden").is_ok(), "the NoDisplay entry says so");
+        }
+
+        let _ = app.update(Message::AppsQueryChanged("prose".into()));
+        let task = app.update(chord(
+            "!",
+            iced::keyboard::Modifiers::CTRL | iced::keyboard::Modifiers::SHIFT,
+        ));
+        settle(&mut app, task);
+        assert_eq!(*launcher.0.lock().unwrap(), [Some("new".to_owned())]);
+
+        open_builtin(&mut app, "browse apps", "commands:browse-apps");
+        let _ = app.update(Message::AppsQueryChanged("prose".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            launcher.0.lock().unwrap().last(),
+            Some(&None),
+            "Open application"
+        );
+
+        open_builtin(&mut app, "browse apps", "commands:browse-apps");
+        let _ = app.update(Message::AppsQueryChanged("editor".into()));
+        let _ = app.open_apps_panel().expect("a panel");
+        let titles: Vec<String> = app.panel.as_ref().unwrap().sections[0]
+            .actions
+            .iter()
+            .map(|action| action.title.clone())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Open application",
+                "New Window",
+                "Copy app ID",
+                "Copy app location"
+            ],
+            "no Open Location without an engine to open it"
+        );
+        let writes = {
+            let task = app.apps_panel_action("apps.action.2").expect("copy id");
+            settle(&mut app, task)
+        };
+        assert_eq!(writes, ["editor.desktop"]);
+    }
+
+    /// Set Default Browser and Set Default Terminal: the engine's list with
+    /// the default marked, Enter to choose, back to the root on success and
+    /// the picker's sentence on failure.
+    #[test]
+    fn a_default_picker_lists_the_engines_candidates_and_sets_the_chosen_one() {
+        use crate::backend::{DefaultApp, DefaultAppRow};
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            default_apps: vec![
+                DefaultAppRow {
+                    id: "firefox.desktop".into(),
+                    name: "Firefox".into(),
+                    description: "Browse the web".into(),
+                    is_default: true,
+                },
+                DefaultAppRow {
+                    id: "broken.desktop".into(),
+                    name: "Broken".into(),
+                    ..DefaultAppRow::default()
+                },
+                DefaultAppRow {
+                    id: "files.desktop".into(),
+                    name: "Files".into(),
+                    ..DefaultAppRow::default()
+                },
+            ],
+            ..TestBackend::default()
+        });
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        open_builtin(
+            &mut app,
+            "set default browser",
+            "commands:set-default-browser",
+        );
+        let Page::Apps(page) = &app.page else {
+            panic!("not the picker: {}", app.state_line());
+        };
+        assert_eq!(page.placeholder(), "Select a web browser...");
+        assert_eq!(page.shown.len(), 3);
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find("Available web browsers").is_ok());
+            assert!(ui.find("✓ Default").is_ok());
+        }
+
+        let _ = app.update(Message::AppsQueryChanged("broken".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        let Page::Apps(page) = &app.page else {
+            panic!("a failure stays on the picker");
+        };
+        assert_eq!(
+            page.notice.as_deref(),
+            Some(compass_core::default_app::BROWSER_FAILURE)
+        );
+
+        let _ = app.update(Message::AppsQueryChanged("files".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert!(matches!(app.page, Page::Root), "popToRoot");
+        assert_eq!(
+            *backend.defaults_set.lock().unwrap(),
+            [(DefaultApp::Browser, "files.desktop".to_owned())]
+        );
+
+        open_builtin(
+            &mut app,
+            "set default terminal",
+            "commands:set-default-terminal",
+        );
+        let Page::Apps(page) = &app.page else {
+            panic!("not the terminal picker");
+        };
+        assert_eq!(page.heading(), "Available terminal emulators");
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.defaults_set.lock().unwrap().last(),
+            Some(&(DefaultApp::Terminal, "firefox.desktop".to_owned()))
+        );
+    }
+
+    #[test]
+    fn browse_apps_offers_focus_window_first_and_reads_its_preferences_on_opening() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(index(dir.path()));
+        fs::write(
+            dir.path().join("editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Editor\nExec=/bin/true\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("probe.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Probe\nExec=/bin/true\nNoDisplay=true\n",
+        )
+        .unwrap();
+        let config_path = dir.path().join("compass.json");
+        let write_config = |show_hidden: bool| {
+            fs::write(
+                &config_path,
+                format!(
+                    r#"{{"providers":{{"commands":{{"entrypoints":{{"browse-apps":
+                        {{"enabled":true,"preferences":{{"showHidden":{show_hidden}}}}}}}}}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write_config(false);
+        let running = crate::backend::AppRuntimeInfo {
+            running: true,
+            frontmost: false,
+            windows: vec![window_row(42, "Draft", "Editor", 7)],
+        };
+        let windows = Arc::new(FakeWindows {
+            running: vec![("editor.desktop".into(), running)],
+            ..FakeWindows::default()
+        });
+        let mut app = LauncherApp::with_index(AppIndex::builder().dir(dir.path()).build());
+        app.apply(AppFlags {
+            windows: Some(windows.clone() as Arc<dyn crate::backend::WindowBackend>),
+            config_path: Some(config_path.clone()),
+            ..AppFlags::default()
+        });
+        let config = compass_core::Config::load_from(&config_path).unwrap();
+        app.app_index.apply_root_config(&config.root_config());
+
+        open_builtin(&mut app, "browse apps", "commands:browse-apps");
+        let Page::Apps(page) = &app.page else {
+            panic!("not Browse Apps: {}", app.state_line());
+        };
+        assert_eq!(page.heading(), "Applications (4)");
+
+        // A change to the preference applies the next time the view opens,
+        // without a restart.
+        write_config(true);
+        open_builtin(&mut app, "browse apps", "commands:browse-apps");
+        let Page::Apps(page) = &app.page else {
+            panic!("not Browse Apps: {}", app.state_line());
+        };
+        assert_eq!(
+            page.heading(),
+            "Applications (5)",
+            "the hidden entry now shows"
+        );
+
+        // A running application's panel starts with Focus Window, which Enter
+        // runs.
+        let task = app.update(Message::AppsQueryChanged("editor".into()));
+        settle(&mut app, task);
+        let _ = app.open_apps_panel().expect("a panel");
+        let titles: Vec<String> = app.panel.as_ref().unwrap().sections[0]
+            .actions
+            .iter()
+            .map(|action| action.title.clone())
+            .collect();
+        assert_eq!(titles[..2], ["Focus window", "Open application"]);
+        let _ = app.update(Message::TogglePanel);
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(windows.activated.lock().unwrap().as_slice(), [42]);
+
+        // One that does not run opens.
+        open_builtin(&mut app, "browse apps", "commands:browse-apps");
+        let task = app.update(Message::AppsQueryChanged("terminal".into()));
+        settle(&mut app, task);
+        let _ = app.open_apps_panel().expect("a panel");
+        assert_eq!(
+            app.panel.as_ref().unwrap().sections[0].actions[0].title,
+            "Open application"
+        );
     }
 }

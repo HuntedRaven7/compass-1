@@ -365,8 +365,10 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, extension_app, pressed, task_messages};
     use crate::backend::MediaPlayerRow;
     use crate::semantics::Body;
+    use std::sync::Arc;
 
     #[test]
     fn the_players_are_a_list_with_artist_and_state() {
@@ -406,5 +408,149 @@ mod tests {
             Some("New Order  ·  Playing")
         );
         assert_eq!(list.selected, Some(0));
+    }
+
+    #[test]
+    fn a_media_command_runs_at_once_and_shows_why_it_did_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["commands:next-track".to_owned()],
+            ..TestBackend::default()
+        });
+        let mut app = extension_app(dir.path(), backend.clone());
+        for message in task_messages(app.update(Message::QueryChanged("next track".into()))) {
+            let _ = app.update(message);
+        }
+        app.selected = app
+            .results
+            .iter()
+            .position(|row| matches!(row, RootRow::Command(c) if c.entrypoint == "next-track"))
+            .expect("Next Track is in root search");
+        let mut pending = task_messages(app.update(Message::LaunchSelected));
+        while let Some(message) = pending.pop() {
+            pending.extend(task_messages(app.update(message)));
+        }
+        assert!(app.power_confirm.is_none(), "media commands do not ask");
+        assert_eq!(backend.played.lock().unwrap().as_slice(), ["next-track"]);
+        assert_eq!(app.error.as_deref(), Some("No media player is running"));
+    }
+
+    #[test]
+    fn a_media_command_runs_with_the_player_chosen_in_its_form() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["commands:play-pause".to_owned()],
+            ..TestBackend::default()
+        });
+        let mut app = extension_app(dir.path(), backend.clone());
+        for message in task_messages(app.update(Message::QueryChanged("play pause".into()))) {
+            let _ = app.update(message);
+        }
+        app.selected = app
+            .results
+            .iter()
+            .position(|row| matches!(row, RootRow::Command(c) if c.entrypoint == "play-pause"))
+            .expect("Play / Pause is in root search");
+        let _ = app.update(Message::TogglePanel);
+        let panel = app.panel.as_ref().expect("a media command has a panel");
+        let titles: Vec<&str> = panel.sections[0]
+            .actions
+            .iter()
+            .map(|a| a.title.as_str())
+            .collect();
+        assert_eq!(titles, ["Play / Pause", "Choose player…"]);
+        let _ = app.update(Message::PanelMove(Direction::Down));
+        let _ = app.update(Message::PanelActivate);
+        assert!(
+            matches!(&app.page, Page::Preferences(page)
+                if page.purpose == crate::preferences_page::Purpose::MediaArguments),
+            "{}",
+            app.state_line()
+        );
+        let _ = app.update(Message::PreferenceEdited(
+            0,
+            crate::preferences_page::FieldValue::Text(" spotify ".into()),
+        ));
+        let mut pending = task_messages(app.update(pressed(iced::keyboard::key::Named::Enter)));
+        while let Some(message) = pending.pop() {
+            pending.extend(task_messages(app.update(message)));
+        }
+        assert_eq!(
+            backend.played.lock().unwrap().as_slice(),
+            ["play-pause spotify"]
+        );
+    }
+
+    #[test]
+    fn now_playing_lists_the_players_and_controls_the_selected_one() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["commands:now-playing".to_owned()],
+            ..TestBackend::default()
+        });
+        *backend.players.lock().unwrap() = vec![
+            crate::backend::MediaPlayerRow {
+                id: "org.mpris.MediaPlayer2.firefox".into(),
+                identity: "Firefox".into(),
+                ..Default::default()
+            },
+            crate::backend::MediaPlayerRow {
+                id: "org.mpris.MediaPlayer2.spotify".into(),
+                identity: "Spotify".into(),
+                title: "Blue Monday".into(),
+                artist: "New Order".into(),
+                playing: true,
+                can_go_next: true,
+                ..Default::default()
+            },
+        ];
+        let mut app = extension_app(dir.path(), backend.clone());
+        for message in task_messages(app.update(Message::QueryChanged("now playing".into()))) {
+            let _ = app.update(message);
+        }
+        app.selected = app
+            .results
+            .iter()
+            .position(|row| matches!(row, RootRow::Command(c) if c.entrypoint == "now-playing"))
+            .expect("Now Playing is in root search");
+        let mut pending = task_messages(app.update(Message::LaunchSelected));
+        while let Some(message) = pending.pop() {
+            pending.extend(task_messages(app.update(message)));
+        }
+        let Page::NowPlaying(page) = &app.page else {
+            panic!("Now Playing did not open: {}", app.state_line());
+        };
+        assert_eq!(page.shown.len(), 2);
+
+        for message in task_messages(app.update(Message::NowPlayingQueryChanged("order".into()))) {
+            let _ = app.update(message);
+        }
+        let _ = app.update(Message::TogglePanel);
+        let titles: Vec<String> = app.panel.as_ref().expect("a player has a panel").sections[0]
+            .actions
+            .iter()
+            .map(|a| a.title.clone())
+            .collect();
+        assert_eq!(titles, ["Pause", "Next Track"]);
+        let _ = app.update(Message::TogglePanel);
+
+        let mut pending = task_messages(app.update(pressed(iced::keyboard::key::Named::Enter)));
+        while let Some(message) = pending.pop() {
+            pending.extend(task_messages(app.update(message)));
+        }
+        assert_eq!(
+            backend.controlled.lock().unwrap().as_slice(),
+            [(
+                "org.mpris.MediaPlayer2.spotify".to_owned(),
+                crate::backend::MediaAction::PlayPause
+            )]
+        );
+        let Page::NowPlaying(page) = &app.page else {
+            panic!("Now Playing closed: {}", app.state_line());
+        };
+        let row = page.selected_row().expect("still selected");
+        assert!(!row.playing && row.paused, "the list was reloaded");
     }
 }

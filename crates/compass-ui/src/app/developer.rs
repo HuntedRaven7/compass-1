@@ -146,6 +146,8 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, open_builtin, settle};
+    use std::sync::Arc;
 
     #[test]
     fn the_success_page_is_read_as_its_text_then_its_keys() {
@@ -181,5 +183,40 @@ mod tests {
         );
         app.page = Page::Created(page);
         assert!(matches!(app.semantics().body, Body::Document(_)));
+    }
+
+    #[test]
+    fn create_extension_sends_the_form_and_shows_where_it_went() {
+        use crate::preferences_page::FieldValue;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        open_builtin(&mut app, "create extension", "commands:create-extension");
+        for (position, value) in [
+            "zoe",
+            "Hello",
+            "Says hello to the whole world",
+            "/home/me/code",
+            "Say Hello",
+            "Says hello",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let _ = app.update(Message::PreferenceEdited(
+                position,
+                FieldValue::Text(value.into()),
+            ));
+        }
+        let task = app.update(Message::PreferencesSubmit);
+        settle(&mut app, task);
+        let created = backend.created.lock().unwrap().clone();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].template, ":boilerplate/tmpl-list");
+        let Page::Created(page) = &app.page else {
+            panic!("no success page: {}", app.state_line());
+        };
+        assert_eq!(page.path, "/home/me/code/hello");
     }
 }

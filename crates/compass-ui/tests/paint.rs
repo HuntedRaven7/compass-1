@@ -26,8 +26,8 @@
 //! # Invariants, not images
 //!
 //! A committed PNG compared byte-for-byte reddens whenever a runner changes
-//! its font package, and `app.rs` already rejects that for exactly this
-//! reason. These assertions are about COLOUR IN REGIONS, tied to the layout
+//! its font package, and `app/view.rs`'s view tests already reject that for
+//! exactly this reason. These assertions are about COLOUR IN REGIONS, tied to the layout
 //! bounds the widget tree reports: glyph shapes can move freely without
 //! touching them, and a selection that stops painting cannot hide from them.
 //!

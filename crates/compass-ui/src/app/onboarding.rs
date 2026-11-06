@@ -767,3 +767,706 @@ impl LauncherApp {
         .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::flags::AppFlags;
+    use crate::app::test_support::{TestBackend, index, pressed, settle, with_resident_hud};
+    use crate::resident::{EngineLink, UiCommand};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_due_onboarding_started_hidden_waits_for_the_first_summon() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compass/onboarding.json");
+        let (_commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, _outcomes) = tokio::sync::mpsc::unbounded_channel();
+        let (mut app, _) = LauncherApp::boot(AppFlags {
+            start_hidden: true,
+            link: Some(EngineLink::new(receiver, sender)),
+            onboarding: Some(path.clone()),
+            ..AppFlags::default()
+        });
+        assert!(app.pending_window.is_none(), "login stays quiet");
+        assert!(!app.showing_onboarding());
+
+        let _ = app.update(Message::Command(UiCommand::Toggle));
+        assert!(app.pending_window.is_some(), "the first summon opens it");
+        assert_eq!(
+            app.onboarding_step(),
+            Some(compass_core::onboarding::Step::Welcome)
+        );
+
+        // Dismissed with the hotkey: seen, and not shown at the next login.
+        let _ = app.update(Message::Command(UiCommand::Toggle));
+        assert!(!app.showing_onboarding());
+        assert!(!compass_core::onboarding::should_show(&path, false));
+        let _ = app.update(Message::Command(UiCommand::Toggle));
+        assert!(!app.showing_onboarding(), "once is enough");
+
+        let (_commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, _outcomes) = tokio::sync::mpsc::unbounded_channel();
+        let (app, _) = LauncherApp::boot(AppFlags {
+            start_hidden: false,
+            link: Some(EngineLink::new(receiver, sender)),
+            onboarding: Some(dir.path().join("other/onboarding.json")),
+            ..AppFlags::default()
+        });
+        assert!(
+            app.pending_window.is_some(),
+            "started shown, it opens at once"
+        );
+        assert_eq!(
+            app.onboarding_step(),
+            Some(compass_core::onboarding::Step::Welcome)
+        );
+
+        let (_commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, _outcomes) = tokio::sync::mpsc::unbounded_channel();
+        let (app, _) = LauncherApp::boot(AppFlags {
+            start_hidden: true,
+            link: Some(EngineLink::new(receiver, sender)),
+            onboarding: None,
+            ..AppFlags::default()
+        });
+        assert!(app.pending_window.is_none(), "not due: hidden as asked");
+        assert!(!app.showing_onboarding());
+    }
+
+    #[test]
+    fn finishing_the_onboarding_records_it_and_hides() {
+        use compass_core::onboarding::{self, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compass").join(onboarding::FILE_NAME);
+        let backend = Arc::new(TestBackend::default());
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        app.open_onboarding(path.clone());
+
+        let _ = app.update(pressed(iced::keyboard::key::Named::Enter));
+        assert_eq!(app.onboarding_step(), Some(Step::Personalize));
+        let task = app.update(Message::OnboardingTheme(
+            crate::onboarding_page::ThemeOption(crate::theme::Theme::Dracula),
+        ));
+        settle(&mut app, task);
+        assert_eq!(
+            app.view.theme_choice,
+            crate::theme::Theme::Dracula,
+            "previewed"
+        );
+        assert_eq!(
+            backend.themes_kept.lock().unwrap().as_slice(),
+            ["dracula"],
+            "and kept"
+        );
+        let task = app.update(Message::OnboardingOpen(onboarding::HOTKEY_DOCS_URL));
+        settle(&mut app, task);
+        assert_eq!(
+            backend.opened_urls.lock().unwrap().as_slice(),
+            [onboarding::HOTKEY_DOCS_URL]
+        );
+
+        let _ = app.update(Message::OnboardingContinue);
+        assert_eq!(app.onboarding_step(), Some(Step::Extensions));
+        let _ = app.update(Message::OnboardingContinue);
+        assert_eq!(app.onboarding_step(), Some(Step::Complete));
+        assert!(onboarding::should_show(&path, false), "not before Finish");
+        let _ = app.update(pressed(iced::keyboard::key::Named::Enter));
+        assert!(!app.showing_onboarding(), "Finish closes the flow");
+        assert!(
+            matches!(app.page, Page::Root),
+            "and leaves the launcher open at its search"
+        );
+        assert!(!onboarding::should_show(&path, false), "and records it");
+    }
+
+    #[test]
+    fn escape_closes_the_onboarding_and_records_it_as_seen() {
+        use compass_core::onboarding;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(onboarding::FILE_NAME);
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.open_onboarding(path.clone());
+        let _ = app.update(Message::OnboardingJump(3));
+        assert_eq!(
+            app.onboarding_step(),
+            Some(onboarding::Step::Complete),
+            "a dot goes straight to its step"
+        );
+        let _ = app.update(Message::OnboardingBack);
+        assert_eq!(app.onboarding_step(), Some(onboarding::Step::Extensions));
+        let _ = app.update(pressed(iced::keyboard::key::Named::Escape));
+        assert_eq!(
+            app.onboarding_step(),
+            Some(onboarding::Step::Personalize),
+            "Escape goes back a step"
+        );
+        let _ = app.update(pressed(iced::keyboard::key::Named::Escape));
+        assert_eq!(app.onboarding_step(), Some(onboarding::Step::Welcome));
+        let _ = app.update(pressed(iced::keyboard::key::Named::Escape));
+        assert!(!app.showing_onboarding(), "and closes from the first");
+        assert!(
+            !onboarding::should_show(&path, false),
+            "not asked again at every login"
+        );
+    }
+
+    #[test]
+    fn the_onboarding_is_worked_from_the_keyboard() {
+        use crate::onboarding_page::Control;
+        use compass_core::onboarding::Step;
+        use iced::keyboard::key::Named;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        let focused = |app: &LauncherApp| match &app.page {
+            Page::Onboarding(page) => page.focused,
+            _ => panic!("not the onboarding"),
+        };
+        let shift_tab = || {
+            Message::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(Named::Tab),
+                modified_key: iced::keyboard::Key::Named(Named::Tab),
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers: iced::keyboard::Modifiers::SHIFT,
+                text: None,
+                repeat: false,
+            })
+        };
+        let _ = app.update(pressed(Named::Tab));
+        assert_eq!(focused(&app), Some(Control::Continue));
+        let _ = app.update(pressed(Named::Space));
+        assert_eq!(app.onboarding_step(), Some(Step::Personalize));
+        assert_eq!(focused(&app), None, "a new step starts unfocused");
+
+        // The theme dropdown, from the keyboard.
+        let _ = app.update(pressed(Named::Tab));
+        assert_eq!(focused(&app), Some(Control::Theme));
+        let _ = app.update(pressed(Named::Enter));
+        let Page::Onboarding(page) = &app.page else {
+            unreachable!()
+        };
+        assert_eq!(page.menu, Some(0), "open at the current theme");
+        let _ = app.update(pressed(Named::ArrowDown));
+        let _ = app.update(pressed(Named::Enter));
+        assert_eq!(app.view.theme_choice, crate::theme::Theme::ALL[1]);
+        let _ = app.update(shift_tab());
+        assert_eq!(focused(&app), None, "Shift+Tab from the first control");
+
+        // Install is reached and pressed; Back and Continue close the walk.
+        let _ = app.update(pressed(Named::Enter));
+        assert_eq!(app.onboarding_step(), Some(Step::Extensions));
+        let _ = app.update(pressed(Named::Tab));
+        assert_eq!(focused(&app), Some(Control::Install(0)));
+        let _ = app.update(pressed(Named::Space));
+        let Page::Onboarding(page) = &app.page else {
+            unreachable!()
+        };
+        assert_ne!(
+            page.extensions.state(0),
+            Some(compass_core::onboarding::Install::Available),
+            "Install was pressed"
+        );
+        for _ in 0..10 {
+            if focused(&app) == Some(Control::Back) {
+                break;
+            }
+            let _ = app.update(pressed(Named::Tab));
+        }
+        assert_eq!(focused(&app), Some(Control::Back));
+        let _ = app.update(pressed(Named::Enter));
+        assert_eq!(app.onboarding_step(), Some(Step::Personalize));
+    }
+
+    #[test]
+    fn every_onboarding_step_draws_its_heading_and_buttons() {
+        use compass_core::onboarding::Step;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        for (step, expected) in [
+            (Step::Welcome, ["Welcome to Compass", "Continue"]),
+            (Step::Personalize, ["Make it your own", "Open Docs"]),
+            (Step::Extensions, ["Add extensions", "Install"]),
+            (Step::Complete, ["Setup complete", "Finish"]),
+        ] {
+            assert_eq!(app.onboarding_step(), Some(step));
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(800.0, 600.0),
+                app.view(),
+            );
+            for label in expected {
+                assert!(ui.find(label).is_ok(), "{step:?} has no {label:?}");
+            }
+            drop(ui);
+            let _ = app.update(Message::OnboardingContinue);
+        }
+    }
+
+    /// Clicks `label` on the onboarding card, as a pointer would, and runs
+    /// what the click sends to the end.
+    fn click_onboarding(app: &mut LauncherApp, label: &str) {
+        let messages: Vec<_> = {
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(800.0, 600.0),
+                app.view(),
+            );
+            ui.click(label)
+                .unwrap_or_else(|_| panic!("{label:?} is not on the card"));
+            ui.into_messages().collect()
+        };
+        for message in messages {
+            let task = app.update(message);
+            settle(app, task);
+        }
+    }
+
+    fn onboarding_page(app: &LauncherApp) -> &crate::onboarding_page::OnboardingPage {
+        match &app.page {
+            Page::Onboarding(page) => page,
+            _ => panic!("the flow is not on screen"),
+        }
+    }
+
+    /// Every button of the flow, clicked: each opens its URL or does its
+    /// action, and none leads to upstream Vicinae.
+    #[test]
+    fn every_onboarding_button_does_what_it_says() {
+        use compass_core::onboarding::{self, Install, RECOMMENDED_EXTENSIONS, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compass").join(onboarding::FILE_NAME);
+        let first = &RECOMMENDED_EXTENSIONS[0];
+        let backend = Arc::new(TestBackend {
+            store_rows: std::sync::Mutex::new(vec![crate::backend::StoreRow {
+                id: first.id(),
+                name: first.name.into(),
+                author: first.owner.into(),
+                owner: first.owner.into(),
+                title: first.title.into(),
+                ..crate::backend::StoreRow::default()
+            }]),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        app.open_onboarding(path.clone());
+
+        click_onboarding(&mut app, "Continue");
+        assert_eq!(app.onboarding_step(), Some(Step::Personalize));
+        click_onboarding(&mut app, "Open Docs");
+        assert_eq!(
+            backend.opened_urls.lock().unwrap().as_slice(),
+            ["https://tunaos.org/docs/compass/getting-started#set-a-keyboard-shortcut"]
+        );
+        assert_eq!(
+            onboarding_page(&app).notice.as_deref(),
+            Some("Opened in browser"),
+            "the click is answered on the card"
+        );
+        assert!(app.showing_onboarding(), "and the flow stays up");
+        click_onboarding(&mut app, "Back");
+        assert_eq!(
+            onboarding_page(&app).notice,
+            None,
+            "a step's notice stays on it"
+        );
+        assert_eq!(app.onboarding_step(), Some(Step::Welcome));
+        click_onboarding(&mut app, "Continue");
+        click_onboarding(&mut app, "Continue");
+        assert_eq!(app.onboarding_step(), Some(Step::Extensions));
+
+        click_onboarding(&mut app, "Install");
+        assert_eq!(
+            onboarding_page(&app).extensions.state(0),
+            Some(Install::Installed),
+            "the first Install installs the first recommendation"
+        );
+        assert_eq!(
+            backend.installs.lock().unwrap().first(),
+            Some(&(
+                crate::backend::Store::Raycast,
+                "gebeto".to_owned(),
+                "translate".to_owned()
+            )),
+            "from the Raycast store, by its author and name"
+        );
+        assert!(
+            backend.store_rows.lock().unwrap()[0].installed,
+            "through the store's own install call"
+        );
+        click_onboarding(&mut app, "Install");
+        let page = onboarding_page(&app);
+        assert_eq!(page.extensions.state(1), Some(Install::Failed));
+        let notice = page.extensions.notice().expect("the failure is said");
+        assert!(
+            notice.starts_with(&format!(
+                "Could not install {}: ",
+                RECOMMENDED_EXTENSIONS[1].title
+            )) && notice.ends_with("install it later from the Extension Store."),
+            "{notice}"
+        );
+        {
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(800.0, 600.0),
+                app.view(),
+            );
+            assert!(ui.find(notice).is_ok(), "and shown on the card");
+            assert!(ui.find("Try Again").is_ok());
+            assert!(ui.find("Installed").is_ok());
+        }
+        click_onboarding(&mut app, "Continue");
+        assert_eq!(
+            app.onboarding_step(),
+            Some(Step::Complete),
+            "a failure never blocks"
+        );
+
+        {
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(800.0, 600.0),
+                app.view(),
+            );
+            assert!(ui.find("Compass is open source software.").is_ok());
+            assert!(ui.find("Sponsor").is_err(), "Compass has no sponsor page");
+        }
+        click_onboarding(&mut app, "GitHub");
+        assert_eq!(
+            backend
+                .opened_urls
+                .lock()
+                .unwrap()
+                .last()
+                .map(String::as_str),
+            Some("https://github.com/tuna-os/compass")
+        );
+        assert_eq!(
+            onboarding_page(&app).notice.as_deref(),
+            Some("Opened in browser")
+        );
+        assert!(
+            backend
+                .opened_urls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|url| !url.contains("vicinae")),
+            "no button leads upstream"
+        );
+        click_onboarding(&mut app, "Finish");
+        assert!(!app.showing_onboarding());
+        assert!(!onboarding::should_show(&path, false), "Finish records it");
+    }
+
+    /// A link that cannot open says why on the card: without the engine, and
+    /// when the engine could not start a browser.
+    #[test]
+    fn an_onboarding_link_that_cannot_open_says_why() {
+        use compass_core::onboarding::Step;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        let _ = app.update(Message::OnboardingJump(3));
+        assert_eq!(app.onboarding_step(), Some(Step::Complete));
+        click_onboarding(&mut app, "GitHub");
+        let notice = onboarding_page(&app).notice.clone();
+        assert_eq!(
+            notice.as_deref(),
+            Some("Opening a link needs the Compass engine")
+        );
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(800.0, 600.0),
+            app.view(),
+        );
+        assert!(
+            ui.find(notice.unwrap().as_str()).is_ok(),
+            "shown on the card"
+        );
+        drop(ui);
+
+        let refusing = Arc::new(TestBackend {
+            refuse_opens: Some("No application opens https links".into()),
+            ..TestBackend::default()
+        });
+        app.backend = Some(refusing.clone());
+        click_onboarding(&mut app, "GitHub");
+        assert_eq!(
+            onboarding_page(&app).notice.as_deref(),
+            Some("No application opens https links")
+        );
+        assert_eq!(refusing.opened_urls.lock().unwrap().len(), 1);
+        assert!(app.showing_onboarding());
+    }
+
+    /// Whether `label` is drawn on the launcher's card.
+    fn drawn(app: &LauncherApp, label: &str) -> bool {
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(800.0, 600.0),
+            app.view(),
+        );
+        ui.find(label).is_ok()
+    }
+
+    /// The hotkey sentence the flow shows for `state`.
+    fn hotkey_sentence(
+        app: &LauncherApp,
+        state: &compass_core::launcher_shortcut::LauncherShortcut,
+    ) -> String {
+        let key = compass_core::key_combo::KeyCombo::parse(&app.launcher_hotkey)
+            .unwrap()
+            .display_tokens()
+            .join("+");
+        state.describe(&key, "compass toggle")
+    }
+
+    /// Set Up Shortcut asks the engine, which asks the desktop, and the row
+    /// then says what the desktop answered: granted, declined, taken by
+    /// something else, or no portal at all; with Try Again where asking
+    /// again can help and the documentation where it cannot.
+    #[test]
+    fn the_onboarding_asks_for_the_hotkey_and_says_each_answer() {
+        use compass_core::launcher_shortcut::LauncherShortcut;
+        use compass_core::onboarding::Step;
+        for (answer, next) in [
+            (
+                LauncherShortcut::Granted {
+                    trigger: Some("Super+Space".into()),
+                },
+                "Open Docs",
+            ),
+            (LauncherShortcut::Refused, "Try Again"),
+            (
+                LauncherShortcut::Conflict {
+                    reason: "Your desktop did not assign it a key.".into(),
+                },
+                "Try Again",
+            ),
+            (LauncherShortcut::Unavailable, "Open Docs"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Arc::new(TestBackend {
+                hotkey: std::sync::Mutex::new(Some(LauncherShortcut::NotRequested)),
+                hotkey_on_request: Some(answer.clone()),
+                ..TestBackend::default()
+            });
+            let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+            app.backend = Some(backend.clone());
+            app.open_onboarding(dir.path().join("onboarding.json"));
+            click_onboarding(&mut app, "Continue");
+            assert_eq!(app.onboarding_step(), Some(Step::Personalize));
+            assert_eq!(
+                backend.hotkey_calls.lock().unwrap().as_slice(),
+                [false],
+                "the step reads the state without asking the desktop"
+            );
+            let waiting = hotkey_sentence(&app, &LauncherShortcut::NotRequested);
+            assert!(drawn(&app, &waiting), "{waiting}");
+
+            click_onboarding(&mut app, "Set Up Shortcut");
+            assert_eq!(backend.hotkey_calls.lock().unwrap().last(), Some(&true));
+            assert_eq!(onboarding_page(&app).shortcut.as_ref(), Some(&answer));
+            let said = hotkey_sentence(&app, &answer);
+            assert!(drawn(&app, &said), "{answer:?}: {said}");
+            assert!(drawn(&app, next), "{answer:?} offers {next}");
+
+            // Finishing after an answer does not ask again.
+            let _ = app.update(Message::OnboardingJump(3));
+            let asked = backend.hotkey_calls.lock().unwrap().len();
+            click_onboarding(&mut app, "Finish");
+            assert_eq!(
+                backend.hotkey_calls.lock().unwrap().len(),
+                asked,
+                "{answer:?}: no second dialog at Finish"
+            );
+        }
+    }
+
+    /// The engine waits for the flow to ask; a flow finished or closed
+    /// without Set Up Shortcut asks then, so the hotkey still works.
+    #[test]
+    fn finishing_or_closing_the_onboarding_asks_for_the_hotkey_once() {
+        use compass_core::launcher_shortcut::LauncherShortcut;
+        for close in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Arc::new(TestBackend {
+                hotkey: std::sync::Mutex::new(Some(LauncherShortcut::NotRequested)),
+                hotkey_on_request: Some(LauncherShortcut::Granted { trigger: None }),
+                ..TestBackend::default()
+            });
+            let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+            app.backend = Some(backend.clone());
+            app.open_onboarding(dir.path().join("onboarding.json"));
+            let task = if close {
+                app.update(pressed(iced::keyboard::key::Named::Escape))
+            } else {
+                let _ = app.update(Message::OnboardingJump(3));
+                app.update(Message::OnboardingContinue)
+            };
+            settle(&mut app, task);
+            assert!(!app.showing_onboarding());
+            assert_eq!(
+                backend.hotkey_calls.lock().unwrap().as_slice(),
+                [true],
+                "closed: {close}"
+            );
+        }
+    }
+
+    /// On Sway, Hyprland and niri the compositor binds the key: the row
+    /// keeps its configuration line, offers no portal request, and finishing
+    /// asks nothing.
+    #[test]
+    fn a_wlroots_compositor_keeps_its_configuration_line() {
+        use compass_core::hotkey_guide::Compositor;
+        use compass_core::launcher_shortcut::LauncherShortcut;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            hotkey: std::sync::Mutex::new(Some(LauncherShortcut::Unavailable)),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        app.hotkey_compositor = Some(Compositor::Sway);
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        click_onboarding(&mut app, "Continue");
+        let line = Compositor::Sway.instruction("compass toggle");
+        assert!(drawn(&app, &line), "{line}");
+        assert!(drawn(&app, "Open Docs"));
+        assert!(!drawn(&app, "Set Up Shortcut"));
+        assert!(!drawn(&app, "Try Again"));
+        let _ = app.update(Message::OnboardingJump(3));
+        click_onboarding(&mut app, "Finish");
+        assert!(
+            !backend.hotkey_calls.lock().unwrap().contains(&true),
+            "nothing is asked of a portal Sway does not have"
+        );
+    }
+
+    /// Start at login is off until the person turns it on, and then shows
+    /// what the engine answered: on, refused, or why the change failed.
+    #[test]
+    fn the_onboardings_login_switch_shows_what_the_engine_answered() {
+        use compass_core::login_start::{State, Status, Unit};
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            login: std::sync::Mutex::new(Some(Status::default())),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        click_onboarding(&mut app, "Continue");
+        assert!(!app.login_start_on(), "off by default");
+        assert!(drawn(&app, State::Off.describe()));
+
+        // From the keyboard, as every control on the card.
+        for _ in 0..10 {
+            if onboarding_page(&app).focused == Some(crate::onboarding_page::Control::LoginStart) {
+                break;
+            }
+            let _ = app.update(pressed(iced::keyboard::key::Named::Tab));
+        }
+        let task = app.update(pressed(iced::keyboard::key::Named::Space));
+        settle(&mut app, task);
+        assert_eq!(backend.login_changes.lock().unwrap().as_slice(), [true]);
+        assert!(app.login_start_on());
+        assert!(drawn(
+            &app,
+            app.login_start.as_ref().unwrap().state.describe()
+        ));
+
+        let task = app.update(Message::LoginStartToggled(false));
+        settle(&mut app, task);
+        assert!(!app.login_start_on());
+
+        // The desktop said no: shown as such, never as on.
+        let refusing = Arc::new(TestBackend {
+            login: std::sync::Mutex::new(Some(Status {
+                state: State::Off,
+                unit: Some(Unit::Enabled),
+            })),
+            login_enabled_as: Some(State::Refused),
+            ..TestBackend::default()
+        });
+        app.backend = Some(refusing);
+        let task = app.update(Message::LoginStartToggled(true));
+        settle(&mut app, task);
+        assert!(!app.login_start_on());
+        let status = app.login_start.clone().unwrap();
+        assert_eq!(status.state, State::Refused);
+        assert!(drawn(&app, &status.describe()), "the unit is reported too");
+
+        // A failure is said on the card, and nothing changes.
+        let failing = Arc::new(TestBackend {
+            login_failure: Some("Asking your desktop's Background portal failed.".into()),
+            ..TestBackend::default()
+        });
+        app.backend = Some(failing);
+        let task = app.update(Message::LoginStartToggled(true));
+        settle(&mut app, task);
+        assert_eq!(app.login_start, Some(status));
+        assert_eq!(
+            onboarding_page(&app).notice.as_deref(),
+            Some("Asking your desktop's Background portal failed.")
+        );
+    }
+
+    /// The theme picked on "Make it your own" is the one the page is drawn
+    /// in, kept by the engine or not.
+    #[test]
+    fn the_onboarding_theme_picker_shows_the_choice() {
+        use crate::theme::Theme;
+        let dir = tempfile::tempdir().unwrap();
+        for backend in [None, Some(Arc::new(TestBackend::default()))] {
+            let mut app = LauncherApp::with_index(index(dir.path()));
+            app.backend = backend
+                .clone()
+                .map(|b| b as Arc<dyn crate::backend::ApplicationBackend>);
+            app.open_onboarding(dir.path().join("onboarding.json"));
+            let _ = app.update(Message::OnboardingJump(1));
+            let task = app.update(Message::OnboardingTheme(
+                crate::onboarding_page::ThemeOption(Theme::Nord),
+            ));
+            settle(&mut app, task);
+            assert_eq!(app.view.theme_choice, Theme::Nord);
+            // The pick list draws its value without a text widget a selector
+            // finds; the paint tier checks the card is drawn in the theme.
+            assert_eq!(app.palette(), Theme::Nord.palette(app.view.appearance));
+            if let Some(backend) = backend {
+                assert_eq!(backend.themes_kept.lock().unwrap().as_slice(), ["nord"]);
+                assert_eq!(app.view.theme_preview, None, "kept, so nothing to put back");
+            }
+            assert_eq!(onboarding_page(&app).notice, None);
+        }
+    }
+
+    /// Without the engine, Install says why and the flow goes on.
+    #[test]
+    fn installing_without_the_engine_says_why_and_goes_on() {
+        use compass_core::onboarding::{Install, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        let _ = app.update(Message::OnboardingJump(2));
+        assert_eq!(app.onboarding_step(), Some(Step::Extensions));
+        click_onboarding(&mut app, "Install");
+        let page = onboarding_page(&app);
+        assert_eq!(page.extensions.state(0), Some(Install::Failed));
+        assert!(
+            page.extensions
+                .notice()
+                .is_some_and(|notice| notice.contains("needs the Compass engine"))
+        );
+        click_onboarding(&mut app, "Continue");
+        assert_eq!(app.onboarding_step(), Some(Step::Complete));
+    }
+}

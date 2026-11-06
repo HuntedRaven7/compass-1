@@ -299,8 +299,10 @@ impl LauncherApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{TestBackend, index, open_builtin, pressed, settle};
     use crate::semantics::Body;
     use crate::theme::Theme;
+    use std::sync::Arc;
 
     #[test]
     fn the_themes_are_a_list_with_their_descriptions_and_say_when_none_match() {
@@ -327,5 +329,55 @@ mod tests {
         let semantics = app.semantics();
         assert_eq!(semantics.body, Body::Empty);
         assert_eq!(semantics.status.as_deref(), Some("No themes match"));
+    }
+
+    #[test]
+    fn set_theme_previews_as_the_selection_moves_and_escape_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        app.view.theme_choice = crate::theme::Theme::Nord;
+        open_builtin(&mut app, "set theme", "commands:set-theme");
+        assert!(
+            app.state_line().contains("page=themes"),
+            "{}",
+            app.state_line()
+        );
+
+        let task = app.update(pressed(iced::keyboard::key::Named::ArrowDown));
+        settle(&mut app, task);
+        assert_ne!(
+            app.view.theme_choice,
+            crate::theme::Theme::Nord,
+            "previewed"
+        );
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        assert_eq!(app.view.theme_choice, crate::theme::Theme::Nord, "put back");
+        assert!(matches!(app.page, Page::Root));
+        assert!(backend.themes_kept.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_theme_keeps_the_chosen_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        app.backend = Some(backend.clone());
+        app.view.theme_choice = crate::theme::Theme::System;
+        open_builtin(&mut app, "set theme", "commands:set-theme");
+        let _ = app.update(Message::ThemesQueryChanged("dracula".into()));
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
+        settle(&mut app, task);
+        assert_eq!(backend.themes_kept.lock().unwrap().as_slice(), ["dracula"]);
+        assert_eq!(app.view.theme_choice, crate::theme::Theme::Dracula);
+        let task = app.update(Message::Dismiss);
+        settle(&mut app, task);
+        assert_eq!(
+            app.view.theme_choice,
+            crate::theme::Theme::Dracula,
+            "a kept theme stays when the launcher hides"
+        );
     }
 }
