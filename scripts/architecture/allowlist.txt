@@ -7,9 +7,6 @@
 
 crates/compass-ui/src/app.rs #258 LauncherApp couples lifecycle, search, UI state, windows, persistence and extensions
 crates/compass-ui/src/app/settings_view.rs #258 settings view carved out of LauncherApp, still one module
-crates/compass/src/serve.rs #292 EngineState owns 20+ engine services and their lifecycles
-crates/compass/src/ui_backend.rs #292 UI backend connection, one of EngineState's services
-crates/compass/src/extension_runner.rs #292 extension runner, one of EngineState's services
 crates/compass-ipc/src/protocol.rs #294 every request/response domain in one protocol module
 crates/compass-ipc/tests/framing.rs #294 protocol framing tests, grow with protocol.rs
 crates/compass-core/src/config.rs #261 compass-core modules over 1k LOC

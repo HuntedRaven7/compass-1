@@ -61,13 +61,15 @@ fn kill(pid: u32) -> bool {
 async fn application(state: &Arc<RwLock<EngineState>>, id: &str) -> Option<(AppIdentity, String)> {
     let state = state.read().await;
     let item = state
+        .search
         .index
         .get(id)
         .or_else(|| {
             state
+                .search
                 .index
                 .position_by_entrypoint(id)
-                .map(|position| &state.index.items()[position])
+                .map(|position| &state.search.index.items()[position])
         })
         .filter(|item| !item.is_action())?;
     Some((
@@ -105,7 +107,7 @@ pub async fn quit_window_app(
     window: u32,
     force: bool,
 ) -> Response {
-    let windows = match super::list_windows(state).await {
+    let windows = match super::shell::list_windows(state).await {
         Response::Windows { windows } => windows,
         other => return other,
     };
@@ -117,7 +119,7 @@ pub async fn quit_window_app(
     };
     let found = {
         let state = state.read().await;
-        compass_core::app_service::AppService::new(&state.index)
+        compass_core::app_service::AppService::new(&state.search.index)
             .find_by_class(&target.wm_class)
             .map(|item| {
                 (
@@ -156,7 +158,10 @@ async fn quit_windows(
         acted |= kill(pid);
     }
     for id in close {
-        acted |= matches!(super::act_on_window(state, id, true).await, Response::Ack);
+        acted |= matches!(
+            super::shell::act_on_window(state, id, true).await,
+            Response::Ack
+        );
     }
     if acted {
         return Response::Ack;

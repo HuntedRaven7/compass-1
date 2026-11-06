@@ -130,7 +130,7 @@ pub fn answer(db: &Connection, request: Request, now: &jiff::Zoned, id: &str) ->
 pub(super) async fn storage(
     state: &Arc<RwLock<EngineState>>,
 ) -> Option<crate::extension_runner::Storage> {
-    let slot = Arc::clone(&state.read().await.calculator);
+    let slot = Arc::clone(&state.read().await.utilities.calculator);
     let mut slot = slot.lock().await;
     if slot.is_none() {
         let data_dir = compass_core::xdg_dirs::data_home()?.join("compass");

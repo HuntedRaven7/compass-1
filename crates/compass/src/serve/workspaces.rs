@@ -167,7 +167,7 @@ pub(super) async fn handle(
                         workspaces,
                         &windows,
                         active.as_deref(),
-                        &state.read().await.index,
+                        &state.read().await.search.index,
                     ),
                 },
                 Ok(Err(err)) => Response::Error(err),
@@ -266,7 +266,7 @@ async fn gnome(
                     workspaces.iter().map(gnome_workspace).collect(),
                     &windows,
                     active.as_deref(),
-                    &state.read().await.index,
+                    &state.read().await.search.index,
                 ),
             }
         }

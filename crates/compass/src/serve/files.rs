@@ -146,7 +146,7 @@ async fn copy_file(state: &Arc<RwLock<EngineState>>, path: &Path, paste: bool) -
             Err(err) => refused(format!("{WHAT} failed: {err}")),
         };
     }
-    let Some(shell) = state.read().await.shell.clone() else {
+    let Some(shell) = state.read().await.shell.client.clone() else {
         return Response::Error(crate::window_service::no_bus(WHAT));
     };
     let content = compass_shell::ClipboardContent::binary(payload, "text/uri-list");

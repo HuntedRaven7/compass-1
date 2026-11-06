@@ -1326,7 +1326,7 @@ fn a_window_that_dies_puts_the_engine_back_to_refusing() {
     // What this does *not* pin is the engine clearing its slot: a push to a
     // dead socket fails whether or not the link was dropped, so the refusal
     // looks identical. Confirmed by a control -- these tests still pass with
-    // the clearing removed. See `forward` in `serve.rs`.
+    // the clearing removed. See `forward` in `serve/shell.rs`.
     for attempt in 0..3 {
         let out = daemon.try_client(&["show"]);
         assert!(

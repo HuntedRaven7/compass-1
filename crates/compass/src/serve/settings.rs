@@ -21,12 +21,70 @@ fn internal(message: impl Into<String>) -> Response {
     Response::Error(ProtocolError::new(ErrorKind::Internal, message))
 }
 
-/// [`Request::SetSetting`] and [`Request::SetProviderEnabled`].
+/// [`Request::SetSetting`], [`Request::SetProviderEnabled`], and the font and
+/// theme pickers' [`Request::SetFont`] and [`Request::SetTheme`].
 pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Response {
     match request {
         Request::SetSetting { key, value_json } => set_setting(state, key, &value_json).await,
         Request::SetProviderEnabled { provider, enabled } => {
             set_provider_enabled(state, provider, enabled).await
+        }
+        Request::SetFont { family } => {
+            let family = family.trim().to_owned();
+            if family.is_empty() {
+                return Response::Error(ProtocolError::new(
+                    ErrorKind::BadRequest,
+                    "a font family is needed",
+                ));
+            }
+            let saved = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let mut config = Config::load()?;
+                config.set_font_family(&family);
+                config.save_to(compass_core::config::default_config_path()?)?;
+                Ok(())
+            })
+            .await;
+            match saved {
+                Ok(Ok(())) => Response::Ack,
+                Ok(Err(error)) => Response::Error(ProtocolError::new(
+                    ErrorKind::Internal,
+                    format!("could not save the font: {error}"),
+                )),
+                Err(error) => Response::Error(ProtocolError::new(
+                    ErrorKind::Internal,
+                    format!("saving the font failed: {error}"),
+                )),
+            }
+        }
+        Request::SetTheme { theme } => {
+            let _ = tokio::task::spawn_blocking(compass_ui::theme::load_default_user_themes).await;
+            let Some(parsed) = compass_ui::theme::Theme::from_name(&theme) else {
+                return Response::Error(ProtocolError::new(
+                    ErrorKind::BadRequest,
+                    format!("unknown theme {theme:?}"),
+                ));
+            };
+            let saved = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let mut config = Config::load()?;
+                config
+                    .launcher_mut()
+                    .appearance_mut()
+                    .set_theme(Some(parsed.name().to_owned()));
+                config.save_to(compass_core::config::default_config_path()?)?;
+                Ok(())
+            })
+            .await;
+            match saved {
+                Ok(Ok(())) => Response::Ack,
+                Ok(Err(error)) => Response::Error(ProtocolError::new(
+                    ErrorKind::Internal,
+                    format!("could not save the theme: {error}"),
+                )),
+                Err(error) => Response::Error(ProtocolError::new(
+                    ErrorKind::Internal,
+                    format!("saving the theme failed: {error}"),
+                )),
+            }
         }
         _ => bad_request("not a settings request"),
     }
@@ -98,26 +156,27 @@ async fn apply_live(state: &Arc<RwLock<EngineState>>, config: &Config, key: &str
     let expander = {
         let mut state = state.write().await;
         if key == "launcher.max_results" {
-            state.max_results = config.launcher().max_results();
+            state.search.max_results = config.launcher().max_results();
         }
         if key.starts_with("providers.clipboard.") {
             state
-                .clipboard_control
+                .clipboard
+                .control
                 .apply(&crate::clipboard_service::Settings::from_preferences(
                     config.provider_preferences(crate::clipboard_service::PROVIDER_ID),
                 ));
         }
         if key.contains(&format!(".{}.", crate::programs::ENTRYPOINT)) {
-            state.run_program_default =
+            state.scripts.run_program_default =
                 crate::programs::default_action(config.entrypoint_preferences(
                     compass_core::commands::COMMANDS_PROVIDER_ID,
                     crate::programs::ENTRYPOINT,
                 ));
         }
-        state.expander.clone()
+        state.snippets.expander.clone()
     };
     if key.starts_with("providers.files.") {
-        let files = Arc::clone(&state.read().await.files);
+        let files = Arc::clone(&state.read().await.search.files);
         let applied = tokio::task::spawn_blocking(move || {
             files.reload_settings(|| {
                 let latest = Config::load().map_err(|error| error.to_string())?;
@@ -198,10 +257,11 @@ pub async fn apply_all(state: &Arc<RwLock<EngineState>>, config: &Config) {
         apply_live(state, config, key).await;
     }
     state.read().await.global_shortcuts().reload();
-    state.read().await.extension_sync.request();
+    state.read().await.stores.sync.request();
     state
         .write()
         .await
+        .search
         .index
         .apply_root_config(&config.root_config());
 }
@@ -226,6 +286,7 @@ async fn set_provider_enabled(
     state
         .write()
         .await
+        .search
         .index
         .apply_root_config(&config.root_config());
     Response::Ack

@@ -52,14 +52,15 @@ pub async fn launch_command(
     }
     let (app_key, declared, is_extension) = {
         let state = state.read().await;
-        if !state.index.roots().iter().any(|root| root.id == id) {
+        if !state.search.index.roots().iter().any(|root| root.id == id) {
             return bad_request(format!("Unknown command entrypoint: {id}"));
         }
         let app_key = state
+            .search
             .index
             .position_by_entrypoint(&id)
-            .map(|position| state.index.items()[position].key().to_owned());
-        let extension = state.index.extension(&id);
+            .map(|position| state.search.index.items()[position].key().to_owned());
+        let extension = state.search.index.extension(&id);
         (
             app_key,
             extension
@@ -79,7 +80,7 @@ pub async fn launch_command(
     if let Some(key) = app_key {
         return match launch_app(state, &key, &[], true).await {
             Response::AppLaunched { .. } => {
-                if let Err(error) = state.write().await.frecency.record_launch(&key) {
+                if let Err(error) = state.write().await.search.frecency.record_launch(&key) {
                     tracing::warn!(%error, "could not record a launch from the command line");
                 }
                 Response::Ack
@@ -90,7 +91,7 @@ pub async fn launch_command(
 
     let (launches, slot) = {
         let state = state.read().await;
-        (Arc::clone(&state.launches), state.window_slot())
+        (Arc::clone(&state.extensions.launches), state.window_slot())
     };
     let context = (is_extension && query.is_some()).then(|| crate::extension_commands::Context {
         launch_context: serde_json::Value::Null,
@@ -122,7 +123,7 @@ pub async fn launch_app(
 ) -> Response {
     let found = {
         let state = state.read().await;
-        let index = &state.index;
+        let index = &state.search.index;
         index
             .get(id)
             .or_else(|| {
@@ -143,7 +144,7 @@ pub async fn launch_app(
     };
 
     if !new_instance && let Some(window) = app_windows(state, &identity).await.into_iter().next() {
-        return match super::act_on_window(state, window.id, false).await {
+        return match super::shell::act_on_window(state, window.id, false).await {
             Response::Error(error) => Response::Error(error),
             _ => Response::AppLaunched {
                 focused_window_title: Some(window.title),
@@ -170,7 +171,7 @@ pub async fn launch_app(
 /// by class, or by a title that is its name. None when windows cannot be
 /// listed here, which makes a launch launch, as the C++'s dummy provider does.
 pub async fn app_windows(state: &Arc<RwLock<EngineState>>, app: &AppIdentity) -> Vec<WindowInfo> {
-    match super::list_windows(state).await {
+    match super::shell::list_windows(state).await {
         Response::Windows { windows } => windows
             .into_iter()
             .filter(|window| app.matches_window(&window.wm_class, &window.title))
@@ -218,7 +219,7 @@ pub async fn open_launch_link(
     }
     let target = {
         let state = state.read().await;
-        link.target(|id| state.index.has_provider(id))
+        link.target(|id| state.search.index.has_provider(id))
     };
     match target {
         Ok(compass_core::root_items::LaunchTarget::Provider(_)) => {
@@ -226,7 +227,7 @@ pub async fn open_launch_link(
             super::forward(&slot, WindowCommand::Deeplink(url), "open a deeplink").await
         }
         Ok(compass_core::root_items::LaunchTarget::Entrypoint(id)) => {
-            let known = state.read().await.index.root(&id).is_some();
+            let known = state.read().await.search.index.root(&id).is_some();
             if !known {
                 return bad_request(format!("{id} does not refer to a valid entrypoint"));
             }
@@ -250,7 +251,7 @@ pub async fn fs_query(
             None => return bad_request(format!("Unknown file category: {key}")),
         },
     };
-    let files = Arc::clone(&state.read().await.files);
+    let files = Arc::clone(&state.read().await.search.files);
     if !files.index_available() {
         return Response::Error(ProtocolError::new(
             ErrorKind::Unsupported,
@@ -259,7 +260,7 @@ pub async fn fs_query(
     }
     let limit = i32::try_from(limit).unwrap_or(i32::MAX);
     let search = tokio::task::spawn_blocking(move || files.index_query(&query, limit, category));
-    match tokio::time::timeout(super::FILE_SEARCH_TIMEOUT, search).await {
+    match tokio::time::timeout(super::search::FILE_SEARCH_TIMEOUT, search).await {
         Ok(Ok(rows)) => Response::Files {
             heading: String::new(),
             files: rows
