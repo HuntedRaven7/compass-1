@@ -27,6 +27,16 @@
 //! No backend is a warning, never a reason to stop: the engine still answers
 //! `compass toggle`, and on a wlroots compositor the log says how to bind
 //! that by hand.
+//!
+//! # The first run
+//!
+//! The portal's permission dialog is the desktop's own, and appearing beside
+//! a first-run flow that has not yet explained it is what made it look like
+//! something the launcher did by itself. So while the flow is due, the portal
+//! is not asked at start ([`Service::defer`]): the flow's Set Up Shortcut
+//! asks ([`Control::request_launcher`]), and finishing or closing the flow
+//! asks if the person did not. Every outcome is kept as a
+//! [`LauncherShortcut`] for the flow and Settings to show.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -34,34 +44,47 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use compass_core::Config;
-use compass_core::global_shortcuts::{self, Action, Binding, Reconciler};
+use compass_core::global_shortcuts::{self, Action, Binding, LAUNCHER_ID, Reconciler};
 use compass_core::key_combo::KeyCombo;
+use compass_core::launcher_shortcut::LauncherShortcut;
 use compass_ipc::{Response, WindowCommand};
 use compass_portals::{
-    PortalConfig, Portals, ShortcutBinder, ShortcutDescriptor, ShortcutEvent, ShortcutsOutcome,
-    Trigger,
+    PortalConfig, PortalError, Portals, ShortcutBinder, ShortcutDescriptor, ShortcutEvent,
+    ShortcutsOutcome, Trigger,
 };
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 
 use crate::serve::{EngineState, forward};
 
 /// What the rest of the engine uses to steer the service: a new
-/// configuration to bind, and the recorder capturing.
+/// configuration to bind, the recorder capturing, and the first-run flow
+/// asking for the launcher hotkey.
 #[derive(Debug)]
 pub struct Control {
     generation: watch::Sender<u64>,
     capturing: watch::Sender<bool>,
     frontmost: watch::Sender<Option<String>>,
     probes: std::sync::Mutex<Option<mpsc::UnboundedSender<Probe>>>,
+    launcher: watch::Sender<LauncherShortcut>,
+    requests: std::sync::Mutex<Option<mpsc::UnboundedSender<LauncherRequest>>>,
 }
 
 /// A combination the recorder captured, and where the backend's answer
 /// goes.
 type Probe = (KeyCombo, oneshot::Sender<Option<String>>);
 
+/// The first-run flow asking for the launcher hotkey, and where the answer
+/// goes.
+type LauncherRequest = oneshot::Sender<LauncherShortcut>;
+
 /// How long the recorder waits for the backend's answer to a probe before
 /// taking the combination.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long the first-run flow's request for the launcher hotkey waits for
+/// the desktop: its dialog, then the bind. Past it the answer is "still
+/// waiting", and the outcome is kept for the next time someone asks.
+pub const LAUNCHER_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Default for Control {
     fn default() -> Self {
@@ -70,6 +93,8 @@ impl Default for Control {
             capturing: watch::Sender::new(false),
             frontmost: watch::Sender::new(None),
             probes: std::sync::Mutex::new(None),
+            launcher: watch::Sender::new(LauncherShortcut::Pending),
+            requests: std::sync::Mutex::new(None),
         }
     }
 }
@@ -124,6 +149,52 @@ impl Control {
             changed
         });
     }
+
+    /// Where the launcher hotkey stands, as the service last learned it.
+    #[must_use]
+    pub fn launcher(&self) -> LauncherShortcut {
+        self.launcher.borrow().clone()
+    }
+
+    /// Records where the launcher hotkey stands.
+    pub fn set_launcher(&self, state: LauncherShortcut) {
+        self.launcher.send_if_modified(|current| {
+            let changed = *current != state;
+            *current = state;
+            changed
+        });
+    }
+
+    /// Asks the desktop for the launcher hotkey now, and answers where it
+    /// stands after: the first-run flow's Set Up Shortcut and Try Again.
+    /// With no backend running it answers what is known, changing nothing.
+    /// It waits for up to [`LAUNCHER_REQUEST_TIMEOUT`], then answers what is
+    /// known while the request carries on.
+    pub async fn request_launcher(&self) -> LauncherShortcut {
+        let sender = self
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(sender) = sender else {
+            return self.launcher();
+        };
+        let (reply, answer) = oneshot::channel();
+        if sender.send(reply).is_err() {
+            return self.launcher();
+        }
+        match tokio::time::timeout(LAUNCHER_REQUEST_TIMEOUT, answer).await {
+            Ok(Ok(state)) => state,
+            Ok(Err(_)) | Err(_) => self.launcher(),
+        }
+    }
+
+    fn serve_requests(&self, sender: Option<mpsc::UnboundedSender<LauncherRequest>>) {
+        *self
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sender;
+    }
 }
 
 /// Binds shortcuts on the desktop, one at a time
@@ -161,6 +232,12 @@ pub trait Backend: Send {
             }
         }
     }
+
+    /// What the desktop said about the launcher hotkey at the last flush,
+    /// when the backend learns more than "bound" or "refused because".
+    fn launcher_state(&self) -> Option<LauncherShortcut> {
+        None
+    }
 }
 
 /// A backend kept in step with the configuration.
@@ -170,6 +247,8 @@ pub struct Service<B> {
     reconciler: Reconciler,
     capturing: bool,
     inhibited: bool,
+    deferred: bool,
+    failures: BTreeMap<String, String>,
 }
 
 impl<B: Backend> Service<B> {
@@ -180,6 +259,60 @@ impl<B: Backend> Service<B> {
             reconciler: Reconciler::default(),
             capturing: false,
             inhibited: false,
+            deferred: false,
+            failures: BTreeMap::new(),
+        }
+    }
+
+    /// Binds nothing until [`Self::request`]: the first-run flow asks for
+    /// the permission dialog rather than the engine at start.
+    pub fn defer(&mut self) {
+        self.deferred = true;
+    }
+
+    /// Whether binding waits for [`Self::request`].
+    #[must_use]
+    pub fn deferred(&self) -> bool {
+        self.deferred
+    }
+
+    /// Asks the desktop for `desired` now: the end of a deferral, or a
+    /// second ask after the launcher hotkey was refused or failed. Asking
+    /// again for a hotkey that is bound changes nothing.
+    pub async fn request(&mut self, desired: &BTreeMap<String, Binding>) {
+        if std::mem::take(&mut self.deferred) {
+            self.reconcile(desired).await;
+            return;
+        }
+        if self.launcher(desired).is_granted() || self.capturing || self.inhibited {
+            return;
+        }
+        self.backend.unbind_all().await;
+        self.reconciler.clear();
+        self.failures.clear();
+        self.reconcile(desired).await;
+    }
+
+    /// Where the launcher hotkey stands after the last reconcile.
+    #[must_use]
+    pub fn launcher(&self, desired: &BTreeMap<String, Binding>) -> LauncherShortcut {
+        if !desired.contains_key(LAUNCHER_ID) {
+            return LauncherShortcut::Unset;
+        }
+        if self.deferred {
+            return LauncherShortcut::NotRequested;
+        }
+        if let Some(state) = self.backend.launcher_state() {
+            return state;
+        }
+        if self.reconciler.action(LAUNCHER_ID).is_some() {
+            return LauncherShortcut::Granted { trigger: None };
+        }
+        match self.failures.get(LAUNCHER_ID) {
+            Some(reason) => LauncherShortcut::Conflict {
+                reason: format!("The desktop said: {reason}."),
+            },
+            None => LauncherShortcut::Pending,
         }
     }
 
@@ -234,9 +367,9 @@ impl<B: Backend> Service<B> {
     }
 
     /// `reconcile`: releases what is no longer wanted and binds what is new.
-    /// Nothing while capturing or paused.
+    /// Nothing while capturing, paused or deferred.
     pub async fn reconcile(&mut self, desired: &BTreeMap<String, Binding>) {
-        if self.capturing || self.inhibited {
+        if self.capturing || self.inhibited || self.deferred {
             return;
         }
         let plan = self.reconciler.plan(desired);
@@ -248,11 +381,17 @@ impl<B: Backend> Service<B> {
         }
         for binding in &plan.bind {
             let result = self.backend.bind(binding).await;
-            if let Err(reason) = &result {
-                tracing::warn!(
-                    id = %binding.id, trigger = %binding.trigger, %reason,
-                    "failed to bind a global shortcut"
-                );
+            match &result {
+                Ok(()) => {
+                    self.failures.remove(&binding.id);
+                }
+                Err(reason) => {
+                    tracing::warn!(
+                        id = %binding.id, trigger = %binding.trigger, %reason,
+                        "failed to bind a global shortcut"
+                    );
+                    self.failures.insert(binding.id.clone(), reason.clone());
+                }
             }
             self.reconciler.bound(binding, &result);
         }
@@ -262,6 +401,7 @@ impl<B: Backend> Service<B> {
                     %id, trigger = %binding.trigger, %reason,
                     "failed to bind a global shortcut"
                 );
+                self.failures.insert(id.clone(), reason.clone());
                 self.reconciler.bound(binding, &Err(reason));
             }
         }
@@ -331,8 +471,22 @@ async fn load_config() -> Config {
     }
 }
 
+/// Records where the launcher hotkey stands, unless every binding is
+/// released for the recorder or a listed application, when the last answer
+/// is still the one that will hold once they are bound again.
+fn report<B: Backend>(
+    control: &Control,
+    service: &Service<B>,
+    desired: &BTreeMap<String, Binding>,
+) {
+    if !service.capturing && !service.inhibited {
+        control.set_launcher(service.launcher(desired));
+    }
+}
+
 /// Runs `service` until its presses stop: binds what `config` reads, again
-/// on each reload, suspends while capturing, and acts on each press.
+/// on each reload, suspends while capturing, acts on each press, and asks
+/// the desktop for the launcher hotkey when the first-run flow does.
 pub async fn serve<B, F, Fut>(
     state: Arc<RwLock<EngineState>>,
     mut service: Service<B>,
@@ -349,6 +503,8 @@ pub async fn serve<B, F, Fut>(
     let mut frontmost = control.frontmost.subscribe();
     let (probes_tx, mut probes) = mpsc::unbounded_channel::<Probe>();
     control.serve_probes(Some(probes_tx));
+    let (requests_tx, mut requests) = mpsc::unbounded_channel::<LauncherRequest>();
+    control.serve_requests(Some(requests_tx));
     let paused = |config: &Config, frontmost: &watch::Receiver<Option<String>>| {
         global_shortcuts::inhibited(
             config.global_shortcuts().inhibit_apps(),
@@ -358,10 +514,14 @@ pub async fn serve<B, F, Fut>(
     {
         let config = config().await;
         let desired = desired(&state, &config).await;
+        if !service.deferred() {
+            control.set_launcher(LauncherShortcut::Pending);
+        }
         service
             .set_inhibited(paused(&config, &frontmost), &desired)
             .await;
         service.reconcile(&desired).await;
+        report(&control, &service, &desired);
     }
     loop {
         tokio::select! {
@@ -384,6 +544,7 @@ pub async fn serve<B, F, Fut>(
                 let desired = desired(&state, &config).await;
                 service.set_inhibited(paused(&config, &frontmost), &desired).await;
                 service.reconcile(&desired).await;
+                report(&control, &service, &desired);
             }
             changed = capturing.changed() => {
                 if changed.is_err() {
@@ -392,6 +553,7 @@ pub async fn serve<B, F, Fut>(
                 let on = *capturing.borrow_and_update();
                 let desired = desired(&state, &config().await).await;
                 service.set_capturing(on, &desired).await;
+                report(&control, &service, &desired);
             }
             changed = frontmost.changed() => {
                 if changed.is_err() {
@@ -401,6 +563,7 @@ pub async fn serve<B, F, Fut>(
                 let config = config().await;
                 let desired = desired(&state, &config).await;
                 service.set_inhibited(paused(&config, &frontmost), &desired).await;
+                report(&control, &service, &desired);
             }
             Some((combo, reply)) = probes.recv() => {
                 // The recorder says it captures before it probes; take that
@@ -412,9 +575,19 @@ pub async fn serve<B, F, Fut>(
                 }
                 let _ = reply.send(service.probe(&combo).await);
             }
+            Some(reply) = requests.recv() => {
+                let desired = desired(&state, &config().await).await;
+                control.set_launcher(LauncherShortcut::Pending);
+                service.request(&desired).await;
+                let answer = service.launcher(&desired);
+                tracing::info!(state = ?answer, "the launcher hotkey, as the first-run flow asked");
+                control.set_launcher(answer.clone());
+                let _ = reply.send(answer);
+            }
         }
     }
     control.serve_probes(None);
+    control.serve_requests(None);
     tracing::info!("global shortcuts: the backend went away; they are unbound");
 }
 
@@ -428,9 +601,21 @@ pub async fn run(state: Arc<RwLock<EngineState>>) {
         return;
     }
     if let Some(backend) = connect_portal(presses_tx).await {
-        serve(state, Service::new(backend), presses, load_config).await;
+        let mut service = Service::new(backend);
+        if crate::onboarding_due().is_some() {
+            tracing::info!(
+                "the first-run flow is due; the launcher hotkey waits for it to ask the desktop"
+            );
+            service.defer();
+        }
+        serve(state, service, presses, load_config).await;
         return;
     }
+    state
+        .read()
+        .await
+        .global_shortcuts()
+        .set_launcher(LauncherShortcut::Unavailable);
     let hint = match crate::wlroots::detect().await {
         Some(wlroots) => compass_wayland::hotkey::manual_binding_hint(wlroots.desktop.as_deref()),
         None => "bind `compass toggle` to a key in your desktop's settings".to_owned(),
@@ -601,6 +786,7 @@ pub struct PortalBackend {
     binder: ShortcutBinder,
     set: BTreeMap<String, ShortcutDescriptor>,
     dirty: bool,
+    launcher: Option<LauncherShortcut>,
 }
 
 impl PortalBackend {
@@ -611,7 +797,40 @@ impl PortalBackend {
             binder,
             set: BTreeMap::new(),
             dirty: false,
+            launcher: None,
         }
+    }
+}
+
+/// What the portal's answer to binding a set that holds the launcher hotkey
+/// means for it: bound with the key the desktop describes, left without a
+/// key (something else has it), declined, unavailable, or failed.
+#[must_use]
+pub fn launcher_outcome(result: &Result<ShortcutsOutcome, PortalError>) -> LauncherShortcut {
+    match result {
+        Ok(ShortcutsOutcome::Granted { shortcuts }) => {
+            match shortcuts.iter().find(|bound| bound.id == LAUNCHER_ID) {
+                Some(bound) if !bound.trigger_description.trim().is_empty() => {
+                    LauncherShortcut::Granted {
+                        trigger: Some(bound.trigger_description.clone()),
+                    }
+                }
+                Some(_) => LauncherShortcut::Conflict {
+                    reason: "Your desktop did not assign it a key, which usually means another shortcut already uses it.".to_owned(),
+                },
+                None => LauncherShortcut::Conflict {
+                    reason: "Your desktop left it out of the shortcuts it bound.".to_owned(),
+                },
+            }
+        }
+        Ok(ShortcutsOutcome::Denied) => LauncherShortcut::Refused,
+        Ok(_) => LauncherShortcut::Failed {
+            reason: "the desktop ended the request without saying why.".to_owned(),
+        },
+        Err(error) if error.is_unavailable() => LauncherShortcut::Unavailable,
+        Err(error) => LauncherShortcut::Failed {
+            reason: format!("{error}."),
+        },
     }
 }
 
@@ -656,6 +875,10 @@ impl Backend for PortalBackend {
         Ok(())
     }
 
+    fn launcher_state(&self) -> Option<LauncherShortcut> {
+        self.launcher.clone()
+    }
+
     async fn flush(&mut self) -> Vec<(String, String)> {
         if !std::mem::take(&mut self.dirty) {
             return Vec::new();
@@ -666,7 +889,12 @@ impl Backend for PortalBackend {
                 .map(|descriptor| (descriptor.id.clone(), reason.to_owned()))
                 .collect()
         };
-        match self.binder.apply(&set).await {
+        let result = self.binder.apply(&set).await;
+        self.launcher = self
+            .set
+            .contains_key(LAUNCHER_ID)
+            .then(|| launcher_outcome(&result));
+        match result {
             Ok(ShortcutsOutcome::Granted { shortcuts }) => {
                 for bound in &shortcuts {
                     tracing::info!(
@@ -1140,5 +1368,155 @@ mod tests {
                 .as_deref(),
             Some("LOGO+space")
         );
+    }
+
+    #[tokio::test]
+    async fn a_deferred_service_binds_nothing_until_the_flow_asks() {
+        let fake = Fake::default();
+        let mut service = Service::new(fake.clone());
+        service.defer();
+        let desired = wanted("{}");
+        service.reconcile(&desired).await;
+        assert!(fake.log().is_empty(), "no dialog at start");
+        assert_eq!(service.launcher(&desired), LauncherShortcut::NotRequested);
+        assert_eq!(service.action("toggle"), None);
+
+        service.request(&desired).await;
+        assert_eq!(fake.log(), ["bind toggle super+space"]);
+        assert_eq!(
+            service.launcher(&desired),
+            LauncherShortcut::Granted { trigger: None }
+        );
+        service.request(&desired).await;
+        assert_eq!(fake.log().len(), 1, "a bound hotkey is not asked for again");
+        assert_eq!(
+            service.launcher(&wanted(r#"{"launcher": {"hotkey": ""}}"#)),
+            LauncherShortcut::Unset
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_launcher_hotkey_is_asked_for_again_when_the_flow_asks() {
+        let fake = Fake {
+            refuse: vec!["toggle".to_owned()],
+            ..Fake::default()
+        };
+        let mut service = Service::new(fake.clone());
+        let desired = wanted("{}");
+        service.reconcile(&desired).await;
+        assert!(matches!(
+            service.launcher(&desired),
+            LauncherShortcut::Conflict { ref reason } if reason.contains("taken")
+        ));
+        service.reconcile(&desired).await;
+        assert_eq!(fake.log().len(), 1, "a reload does not ask again");
+        service.request(&desired).await;
+        assert_eq!(
+            fake.log(),
+            [
+                "bind toggle super+space",
+                "unbind all",
+                "bind toggle super+space"
+            ],
+            "Try Again does"
+        );
+    }
+
+    #[test]
+    fn the_portals_answers_become_the_launcher_hotkeys_state() {
+        use compass_portals::{Availability, BoundShortcut, Unavailable};
+        let bound = |trigger: &str| {
+            Ok(ShortcutsOutcome::Granted {
+                shortcuts: vec![BoundShortcut {
+                    id: "toggle".to_owned(),
+                    description: global_shortcuts::LAUNCHER_DESCRIPTION.to_owned(),
+                    trigger_description: trigger.to_owned(),
+                }],
+            })
+        };
+        assert_eq!(
+            launcher_outcome(&bound("Super+Space")),
+            LauncherShortcut::Granted {
+                trigger: Some("Super+Space".to_owned())
+            }
+        );
+        assert!(matches!(
+            launcher_outcome(&bound("")),
+            LauncherShortcut::Conflict { .. }
+        ));
+        assert!(matches!(
+            launcher_outcome(&Ok(ShortcutsOutcome::Granted { shortcuts: vec![] })),
+            LauncherShortcut::Conflict { .. }
+        ));
+        assert_eq!(
+            launcher_outcome(&Ok(ShortcutsOutcome::Denied)),
+            LauncherShortcut::Refused
+        );
+        assert!(matches!(
+            launcher_outcome(&Ok(ShortcutsOutcome::Refused)),
+            LauncherShortcut::Failed { .. }
+        ));
+        assert_eq!(
+            launcher_outcome(&Err(PortalError::Unavailable {
+                interface: "org.freedesktop.portal.GlobalShortcuts",
+                availability: Availability::Unavailable {
+                    reason: Unavailable::InterfaceMissing,
+                },
+            })),
+            LauncherShortcut::Unavailable
+        );
+        assert!(matches!(
+            launcher_outcome(&Err(PortalError::Timeout {
+                method: "BindShortcuts",
+                timeout: Duration::from_secs(30),
+            })),
+            LauncherShortcut::Failed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_first_run_flow_reads_and_asks_for_the_hotkey_over_ipc() {
+        let state = engine();
+        let ask = |request: bool| {
+            crate::serve::handle(&state, compass_ipc::Request::LauncherShortcut { request })
+        };
+        let launcher = |state: LauncherShortcut| crate::permissions::launcher_response(state);
+        assert_eq!(
+            ask(true).await,
+            launcher(LauncherShortcut::Pending),
+            "no service yet: what is known"
+        );
+
+        let fake = Fake::default();
+        let (presses_tx, presses) = mpsc::unbounded_channel();
+        let mut service = Service::new(fake.clone());
+        service.defer();
+        let task = tokio::spawn(serve(Arc::clone(&state), service, presses, || async {
+            config("{}")
+        }));
+        let control = state.read().await.global_shortcuts();
+        for _ in 0..400 {
+            if control.launcher() == LauncherShortcut::NotRequested {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(ask(false).await, launcher(LauncherShortcut::NotRequested));
+        assert!(fake.log().is_empty());
+        assert_eq!(
+            ask(true).await,
+            launcher(LauncherShortcut::Granted { trigger: None })
+        );
+        assert_eq!(fake.log(), ["bind toggle super+space"]);
+        assert_eq!(
+            ask(false).await,
+            launcher(LauncherShortcut::Granted { trigger: None })
+        );
+
+        drop(presses_tx);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the service ends with its presses")
+            .expect("no panic");
     }
 }

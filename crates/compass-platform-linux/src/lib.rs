@@ -16,5 +16,7 @@ pub mod compositor;
 pub mod dir_watcher;
 pub mod keyboard;
 mod launch;
+mod login_start;
 
 pub use launch::{LinuxLauncher, host_command, run_command};
+pub use login_start::{DIALOG_TIMEOUT as LOGIN_START_DIALOG_TIMEOUT, LinuxLoginStart};

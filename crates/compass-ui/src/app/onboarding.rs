@@ -5,6 +5,16 @@
 //! extensions" step before the last, which installs through the same backend
 //! call as the store's detail page.
 //!
+//! "Make it your own" also sets up the launcher hotkey and starting at login.
+//! The hotkey row shows where the hotkey stands with the desktop
+//! (`compass_core::launcher_shortcut`) and, where asking can help, offers Set
+//! Up Shortcut, which has the engine ask the GlobalShortcuts portal: the
+//! desktop's permission dialog appears because the person asked for it.
+//! Finishing or closing the flow asks if nobody did, since the engine waits
+//! for the flow. On Sway, Hyprland and niri the row keeps the compositor's own
+//! configuration line. The Start at login switch is off until it is turned on
+//! (`compass_core::login_start`).
+//!
 //! Finishing records the flow in `onboarding.json` and leaves the launcher
 //! open at its search. Closing it, with Escape or the hotkey, records it too:
 //! unlike Vicinae, which asks again at the next start, Compass does not show
@@ -18,6 +28,7 @@ use iced::{Alignment, Border, Element, Length, Padding, Theme};
 use super::{LauncherApp, Message, Page, Task};
 use crate::adwaita;
 use crate::onboarding_page::{Control, OnboardingPage, ThemeOption};
+use compass_core::launcher_shortcut::{self, LauncherShortcut};
 use compass_core::onboarding::{self, Advance, Step};
 
 const COMPASS_LOGO: &[u8] = include_bytes!("../../../../extra/compass.svg");
@@ -26,15 +37,13 @@ const COMPASS_LOGO: &[u8] = include_bytes!("../../../../extra/compass.svg");
 /// list fits the card with room for a failure's notice under it.
 const INSTALL_PADDING: [f32; 2] = [5.0, 12.0];
 
-/// Whether the platform binds the launcher's hotkey itself
-/// (`Platform.supports("globalShortcuts")`). Compass binds only its fixed
-/// toggle through the portal, with no recorder to change it, so the flow
-/// takes the C++'s other branch: bind a key to `compass toggle`.
-const SHORTCUTS_AVAILABLE: bool = false;
-
 /// How tall the theme list opened from the keyboard grows before it
 /// scrolls: five themes.
 const MENU_HEIGHT: f32 = 160.0;
+
+/// What the Start at login row says before the engine has.
+const LOGIN_START_OFFER: &str =
+    "Compass can start, hidden, when you log in, so the hotkey works straight away.";
 
 /// Why Install did nothing, as the store pages say it.
 const NEEDS_ENGINE: &str = "Installing extensions needs the Compass engine";
@@ -77,8 +86,122 @@ impl LauncherApp {
         let files = crate::theme::load_user_themes(&self.view.theme_dirs);
         let extensions = self.app_index.extensions();
         let installed = |id: &str| extensions.iter().any(|command| command.extension_id == id);
-        let page = OnboardingPage::new(state_path, files, installed);
+        let mut page = OnboardingPage::new(state_path, files, installed);
+        page.compositor = self.hotkey_compositor;
         self.page = Page::Onboarding(Box::new(page));
+    }
+
+    /// The flow's hotkey sentence: where the hotkey stands with the desktop,
+    /// or the compositor's own configuration line on Sway, Hyprland and niri.
+    fn hotkey_guidance(&self, page: &OnboardingPage) -> String {
+        let key = compass_core::key_combo::KeyCombo::parse(&self.launcher_hotkey).map_or_else(
+            || self.launcher_hotkey.clone(),
+            |combo| combo.display_tokens().join("+"),
+        );
+        let command = compass_core::hotkey_guide::toggle_command(self.flatpak);
+        launcher_shortcut::guidance(page.shortcut.as_ref(), page.compositor, &key, &command)
+    }
+
+    /// Whether Compass starts at login, as last answered.
+    pub(super) fn login_start_on(&self) -> bool {
+        self.login_start
+            .as_ref()
+            .is_some_and(|status| status.state.is_on())
+    }
+
+    /// Asks the engine where the hotkey and login start stand, for the step
+    /// now on show when it shows them.
+    fn onboarding_step_shown(&self) -> Task<Message> {
+        let Page::Onboarding(page) = &self.page else {
+            return Task::none();
+        };
+        if !matches!(page.flow.step(), Step::Personalize | Step::Complete) {
+            return Task::none();
+        }
+        let Some(backend) = self.backend.clone() else {
+            return Task::none();
+        };
+        let login = backend.clone();
+        Task::batch([
+            Task::perform(
+                async move { backend.launcher_shortcut(false).await },
+                Message::LauncherShortcutAnswered,
+            ),
+            Task::perform(
+                async move { login.login_start(None).await },
+                Message::LoginStartAnswered,
+            ),
+        ])
+    }
+
+    /// Finishing or closing the flow: asks the desktop for the hotkey when
+    /// `ask` ([`OnboardingPage::asks_on_finish`]), since the engine waits for
+    /// the flow to.
+    pub(super) fn ask_for_hotkey_on_finish(&self, ask: bool) -> Task<Message> {
+        match self.backend.clone() {
+            Some(backend) if ask => Task::perform(
+                async move { backend.launcher_shortcut(true).await },
+                Message::LauncherShortcutAnswered,
+            ),
+            _ => Task::none(),
+        }
+    }
+
+    /// Says `notice` where the person is: on the flow's card, or in
+    /// Settings.
+    fn first_run_notice(&mut self, notice: String) {
+        match &mut self.page {
+            Page::Onboarding(page) => page.notice = Some(notice),
+            Page::Settings(page) => page.notice = Some(notice),
+            _ => self.say(notice),
+        }
+    }
+
+    /// The launcher hotkey's and login start's answers, and the switch,
+    /// which the flow and Settings share.
+    pub(super) fn first_run_message(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::LauncherShortcutAnswered(answer) => {
+                if let Page::Onboarding(page) = &mut self.page {
+                    match answer {
+                        Ok(state) => page.shortcut = Some(state),
+                        // Only a request the person made says why it
+                        // failed; a status that could not be read leaves
+                        // the row as it was.
+                        Err(reason) if page.shortcut == Some(LauncherShortcut::Pending) => {
+                            page.shortcut = None;
+                            page.notice = Some(reason);
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Task::none()
+            }
+            Message::LoginStartToggled(enable) => {
+                if self.login_start_busy {
+                    return Task::none();
+                }
+                let Some(backend) = self.backend.clone() else {
+                    self.first_run_notice(crate::backend::LOGIN_START_NEEDS_ENGINE.to_owned());
+                    return Task::none();
+                };
+                self.login_start_busy = true;
+                Task::perform(
+                    async move { backend.login_start(Some(enable)).await },
+                    Message::LoginStartAnswered,
+                )
+            }
+            Message::LoginStartAnswered(answer) => {
+                let asked = std::mem::take(&mut self.login_start_busy);
+                match answer {
+                    Ok(status) => self.login_start = Some(status),
+                    Err(reason) if asked => self.first_run_notice(reason),
+                    Err(_) => {}
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
     }
 
     /// Whether the flow is on screen. For tests.
@@ -161,6 +284,11 @@ impl LauncherApp {
                 Some(Control::OpenDocs) => {
                     self.update(Message::OnboardingOpen(onboarding::HOTKEY_DOCS_URL))
                 }
+                Some(Control::RequestShortcut) => self.update(Message::OnboardingRequestShortcut),
+                Some(Control::LoginStart) => {
+                    let on = self.login_start_on();
+                    self.update(Message::LoginStartToggled(!on))
+                }
                 Some(Control::GitHub) => {
                     self.update(Message::OnboardingOpen(onboarding::GITHUB_URL))
                 }
@@ -192,25 +320,38 @@ impl LauncherApp {
                 Advance::Next => {
                     // What a step said belongs to that step.
                     page.notice = None;
-                    Task::none()
+                    self.onboarding_step_shown()
                 }
                 Advance::Finish => {
                     // Finish leaves the launcher open at its search, so the
                     // first thing after setting it up is using it.
                     record_completed(&page.state_path);
+                    let ask = page.asks_on_finish();
                     self.page = Page::Root;
-                    super::focus_search()
+                    Task::batch([super::focus_search(), self.ask_for_hotkey_on_finish(ask)])
                 }
             },
             Message::OnboardingBack => {
                 page.notice = None;
                 page.flow.back();
-                Task::none()
+                self.onboarding_step_shown()
             }
             Message::OnboardingJump(position) => {
                 page.notice = None;
                 page.flow.jump(position);
-                Task::none()
+                self.onboarding_step_shown()
+            }
+            Message::OnboardingRequestShortcut => {
+                let Some(backend) = self.backend.clone() else {
+                    page.notice = Some(crate::backend::SHORTCUT_NEEDS_ENGINE.to_owned());
+                    return Task::none();
+                };
+                page.notice = None;
+                page.shortcut = Some(LauncherShortcut::Pending);
+                Task::perform(
+                    async move { backend.launcher_shortcut(true).await },
+                    Message::LauncherShortcutAnswered,
+                )
             }
             Message::OnboardingTheme(ThemeOption(theme)) => {
                 page.notice = None;
@@ -317,7 +458,11 @@ impl LauncherApp {
             })
             .size(20)
             .color(palette.text.to_iced());
-        let subtitle = text(step.subtitle(SHORTCUTS_AVAILABLE))
+        let granted = page
+            .shortcut
+            .as_ref()
+            .is_some_and(LauncherShortcut::is_granted);
+        let subtitle = text(step.subtitle(granted))
             .font(self.font())
             .size(14)
             .color(palette.muted.to_iced())
@@ -414,27 +559,67 @@ impl LauncherApp {
                     }
                     None => theme_row.into(),
                 };
+                // Where asking can help, the button asks the desktop: the
+                // step's own action, so it takes the accent. Otherwise the
+                // documentation says how to bind the key by hand.
+                let hotkey_control = match page.shortcut.as_ref().filter(|_| page.offers_request())
+                {
+                    Some(state) => ring(
+                        Control::RequestShortcut,
+                        suggested(state.request_label(), Message::OnboardingRequestShortcut).into(),
+                    ),
+                    None => ring(
+                        Control::OpenDocs,
+                        action(
+                            "Open Docs",
+                            Message::OnboardingOpen(onboarding::HOTKEY_DOCS_URL),
+                        )
+                        .into(),
+                    ),
+                };
                 let hotkey_row = row![
                     column![
                         text("Global hotkey").font(self.font()).size(14),
-                        text(self.open_hint())
+                        text(self.hotkey_guidance(page))
                             .font(self.font())
                             .size(12)
                             .color(palette.muted.to_iced()),
                     ]
                     .width(Length::Fill),
-                    ring(
-                        Control::OpenDocs,
-                        action(
-                            "Open Docs",
-                            Message::OnboardingOpen(onboarding::HOTKEY_DOCS_URL)
-                        )
-                        .into()
+                    hotkey_control,
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                let login_row = row![
+                    column![
+                        text("Start at login").font(self.font()).size(14),
+                        text(self.login_start.as_ref().map_or_else(
+                            || LOGIN_START_OFFER.to_owned(),
+                            compass_core::login_start::Status::describe,
+                        ))
+                        .font(self.font())
+                        .size(12)
+                        .color(palette.muted.to_iced()),
+                    ]
+                    .width(Length::Fill),
+                    adwaita::ringed(
+                        iced::widget::toggler(self.login_start_on())
+                            .size(adwaita::SWITCH_SIZE)
+                            .style(move |_: &Theme, status| adwaita::switch(palette, status))
+                            .on_toggle_maybe(
+                                (!self.login_start_busy).then_some(Message::LoginStartToggled)
+                            ),
+                        palette,
+                        page.focused == Some(Control::LoginStart),
+                        adwaita::SWITCH_SIZE / 2.0,
                     ),
                 ]
+                .spacing(8)
                 .align_y(Alignment::Center);
-                content = content
-                    .push(self.onboarding_box(column![theme_row, hotkey_row].spacing(14).into()));
+                content =
+                    content.push(self.onboarding_box(
+                        column![theme_row, hotkey_row, login_row].spacing(14).into(),
+                    ));
             }
             Step::Extensions => {
                 let mut rows = column![].spacing(4);
@@ -493,7 +678,7 @@ impl LauncherApp {
                 content = content
                     .push(
                         container(
-                            text(self.open_hint())
+                            text(self.hotkey_guidance(page))
                                 .font(self.font())
                                 .size(13)
                                 .color(palette.text.to_iced())

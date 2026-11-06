@@ -69,6 +69,15 @@ pub struct MockState {
     /// `None` is the key being absent, which the portal reports as an error
     /// rather than as a value -- the case a client must not read as "dark".
     pub color_scheme: Option<u32>,
+    /// `(autostart, commandline, reason)` of every `RequestBackground`.
+    pub background_requests: Vec<(Option<bool>, Vec<String>, Option<String>)>,
+    /// Whether `RequestBackground` grants autostart when asked for it. The
+    /// desktop may allow running in the background and still say no to
+    /// starting at login.
+    pub refuse_autostart: bool,
+    /// Preferred triggers something else already holds: `BindShortcuts`
+    /// leaves a shortcut asking for one of them without a key.
+    pub taken_triggers: Vec<String>,
 }
 
 /// Shared handle to [`MockState`].
@@ -317,10 +326,15 @@ impl GlobalShortcutsIface {
                         // The compositor, not the app, decides the final
                         // trigger; echo the preference back in the desktop's
                         // own prose so tests can tell the two apart.
-                        trigger_description: preferred
-                            .as_deref()
-                            .map(describe_trigger)
-                            .unwrap_or_else(|| "unassigned".to_owned()),
+                        // A trigger something else holds is left unassigned,
+                        // as a desktop does when the person keeps it.
+                        trigger_description: match preferred.as_deref() {
+                            Some(trigger) if state.taken_triggers.iter().any(|t| t == trigger) => {
+                                String::new()
+                            }
+                            Some(trigger) => describe_trigger(trigger),
+                            None => "unassigned".to_owned(),
+                        },
                     },
                 ));
             }
@@ -620,6 +634,73 @@ impl SettingsIface {
     ) -> zbus::Result<()>;
 }
 
+/// `{"background": b, "autostart": b}`.
+#[derive(Serialize, Type)]
+#[zvariant(signature = "dict")]
+struct BackgroundResults {
+    #[serde(with = "as_value")]
+    background: bool,
+    #[serde(with = "as_value")]
+    autostart: bool,
+}
+
+/// Mock `org.freedesktop.portal.Background`.
+pub struct BackgroundIface {
+    pub version: u32,
+    pub behaviour: Behaviour,
+    pub state: SharedState,
+}
+
+#[interface(name = "org.freedesktop.portal.Background")]
+impl BackgroundIface {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        self.version
+    }
+
+    async fn request_background(
+        &self,
+        _parent_window: String,
+        options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<OwnedObjectPath> {
+        let sender = sender_of(&header);
+        let request = handle_path("request", &sender, &token(&options, "handle_token"));
+        let autostart = options
+            .get("autostart")
+            .and_then(|v| bool::try_from(v).ok());
+        let commandline = options
+            .get("commandline")
+            .and_then(|v| Vec::<String>::try_from(v.try_clone().ok()?).ok())
+            .unwrap_or_default();
+        let reason = options
+            .get("reason")
+            .and_then(|v| <&str>::try_from(v).ok())
+            .map(ToOwned::to_owned);
+        let granted = {
+            let mut state = lock(&self.state);
+            state.calls.push("RequestBackground");
+            state
+                .background_requests
+                .push((autostart, commandline, reason));
+            autostart.unwrap_or(false) && !state.refuse_autostart
+        };
+        let conn = emitter.connection().clone();
+        dispatch(
+            conn,
+            request.clone(),
+            self.behaviour,
+            BackgroundResults {
+                background: true,
+                autostart: granted,
+            },
+        )
+        .await;
+        Ok(OwnedObjectPath::try_from(request).expect("valid object path"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Assembly
 // ---------------------------------------------------------------------------
@@ -635,6 +716,8 @@ pub struct MockOptions {
     pub file_chooser: bool,
     /// Export Settings.
     pub settings: bool,
+    /// Export Background.
+    pub background: bool,
     /// Version every exported interface reports.
     pub version: u32,
     /// How requests are answered.
@@ -654,6 +737,7 @@ impl Default for MockOptions {
             open_uri: true,
             file_chooser: true,
             settings: true,
+            background: true,
             version: 2,
             behaviour: Behaviour::Succeed,
             session_behaviour: Behaviour::Succeed,
@@ -743,6 +827,16 @@ impl MockPortal {
                 },
             )?;
         }
+        if options.background {
+            builder = builder.serve_at(
+                DESKTOP_PATH,
+                BackgroundIface {
+                    version: options.version,
+                    behaviour: options.behaviour,
+                    state: Arc::clone(&state),
+                },
+            )?;
+        }
         if options.own_name {
             builder = builder.name(DESKTOP_DESTINATION)?;
         }
@@ -797,6 +891,23 @@ impl MockPortal {
     /// Shortcuts bound so far as `(id, description, preferred_trigger)`.
     pub fn bound(&self) -> Vec<(String, String, Option<String>)> {
         lock(&self.state).bound.clone()
+    }
+
+    /// `(autostart, commandline, reason)` of every `RequestBackground`.
+    pub fn background_requests(&self) -> Vec<(Option<bool>, Vec<String>, Option<String>)> {
+        lock(&self.state).background_requests.clone()
+    }
+
+    /// Make `RequestBackground` allow running in the background but refuse
+    /// autostart.
+    pub fn refuse_autostart(&self) {
+        lock(&self.state).refuse_autostart = true;
+    }
+
+    /// Something else holds `trigger`: a shortcut that prefers it is bound
+    /// without a key.
+    pub fn take_trigger(&self, trigger: &str) {
+        lock(&self.state).taken_triggers.push(trigger.to_owned());
     }
 
     /// Set the URIs the next `FileChooser.OpenFile` will answer with.

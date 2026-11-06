@@ -10,7 +10,8 @@
 //! implementation — `flatpak-spawn`, the XDG `OpenURI` portal, a direct spawn
 //! — while depending on `compass-portals`. The other two were never here.
 //!
-//! What is here today is [`AppLauncher`]. Clipboard, window management, tray,
+//! What is here today is [`AppLauncher`], and [`LoginStarter`] for starting
+//! at login. Clipboard, window management, tray,
 //! global shortcuts and file indexing are the remaining services ADR-0013
 //! names, and they join this crate as they are ported rather than being
 //! declared in advance: a trait written before there is an implementation to
@@ -20,11 +21,13 @@
 
 pub mod accessibility;
 pub mod launch;
+pub mod login_start;
 pub mod shortcut_inhibit;
 pub mod window_material;
 
 pub use accessibility::{AccessibilityTree, ActionSink, accesskit};
 pub use launch::{AppLauncher, LaunchError, LaunchFuture, LaunchMethod, NullLauncher};
+pub use login_start::{LoginStartFuture, LoginStarter};
 pub use shortcut_inhibit::ShortcutInhibitor;
 pub use window_material::{
     MaterialOutcome, MaterialRegion, NativeWindow, WindowMaterial, raw_window_handle,

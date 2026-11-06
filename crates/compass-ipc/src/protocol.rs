@@ -103,8 +103,10 @@ use serde::{Deserialize, Serialize};
 /// [`Request::StoreInstall`] now carry, and a no-view command's failure
 /// said in the launcher ([`WindowCommand::Failure`]); version 24, copying text
 /// on the engine's long-lived clipboard rather than the window's, which goes
-/// when the window hides ([`Request::CopyText`]).
-pub const PROTOCOL_VERSION: u16 = 24;
+/// when the window hides ([`Request::CopyText`]); version 25, the first-run
+/// flow's launcher hotkey and login start ([`Request::LauncherShortcut`],
+/// [`Request::LoginStart`]).
+pub const PROTOCOL_VERSION: u16 = 25;
 
 /// How long the engine holds an [`Request::ExtensionView`] open waiting for a
 /// change before it answers with the version it has.
@@ -1086,6 +1088,21 @@ pub enum Request {
         /// What to copy.
         text: String,
     },
+    /// The launcher hotkey's state with the desktop. With `request`, the
+    /// desktop is asked for it now (the first-run flow's Set Up Shortcut and
+    /// Try Again), and the answer waits for its dialog. Answered with
+    /// [`Response::LauncherShortcut`]. (v25.)
+    LauncherShortcut {
+        /// Ask the desktop now, rather than only report.
+        request: bool,
+    },
+    /// Starting Compass at login: `enable` turns it on or off, and `None`
+    /// only reads it. Answered with [`Response::LoginStart`], or an error
+    /// sentence when the change failed and nothing changed. (v25.)
+    LoginStart {
+        /// On, off, or only report.
+        enable: Option<bool>,
+    },
 }
 
 /// A newer Compass release, in a [`Response::UpdateStatus`]. (v21.)
@@ -1609,6 +1626,77 @@ pub enum Response {
         /// The desktop's reason.
         refusal: Option<String>,
     },
+    /// Answer to [`Request::LauncherShortcut`]. (v25.)
+    LauncherShortcut {
+        /// Where the launcher hotkey stands.
+        state: LauncherShortcutState,
+    },
+    /// Answer to [`Request::LoginStart`]: the state after the change, if
+    /// there was one. (v25.)
+    LoginStart {
+        /// Whether Compass starts at login, and how.
+        state: LoginStartState,
+        /// The packaged systemd user unit, when it is installed.
+        unit: Option<LoginStartUnit>,
+    },
+}
+
+/// The launcher hotkey's state with the desktop, in a
+/// [`Response::LauncherShortcut`] (`compass_core::launcher_shortcut`). (v25.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LauncherShortcutState {
+    /// Waiting for the first-run flow to ask.
+    NotRequested,
+    /// Asked; the desktop has not answered.
+    Pending,
+    /// Bound, with the desktop's description of the key when it gave one.
+    Granted {
+        /// The key, in the desktop's words.
+        trigger: Option<String>,
+    },
+    /// Answered without binding the launcher's key.
+    Conflict {
+        /// Why, as a sentence.
+        reason: String,
+    },
+    /// The person declined the desktop's dialog.
+    Refused,
+    /// No GlobalShortcuts portal and no compositor hotkey protocol.
+    Unavailable,
+    /// Asking failed.
+    Failed {
+        /// Why, as a sentence.
+        reason: String,
+    },
+    /// No launcher hotkey is configured.
+    Unset,
+    /// The engine runs with `--no-hotkey`.
+    Off,
+}
+
+/// Whether Compass starts at login, in a [`Response::LoginStart`]
+/// (`compass_core::login_start`). (v25.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoginStartState {
+    /// It does not.
+    Off,
+    /// The desktop starts it, through the Background portal.
+    Portal,
+    /// Compass's own XDG autostart entry starts it.
+    AutostartFile,
+    /// The desktop declined the last request.
+    Refused,
+    /// This session has no way to start it at login.
+    Unavailable,
+}
+
+/// The packaged systemd user unit, in a [`Response::LoginStart`]. (v25.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoginStartUnit {
+    /// Installed and not enabled.
+    Installed,
+    /// Enabled.
+    Enabled,
 }
 
 /// One item of a [`Response::LocalStorageItems`]. (v19.)

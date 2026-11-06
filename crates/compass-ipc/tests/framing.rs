@@ -455,6 +455,13 @@ fn all_requests() -> Vec<Request> {
         Request::CopyText {
             text: "88.07 👍🏽 zoë".into(),
         },
+        Request::LauncherShortcut { request: true },
+        Request::LauncherShortcut { request: false },
+        Request::LoginStart { enable: None },
+        Request::LoginStart { enable: Some(true) },
+        Request::LoginStart {
+            enable: Some(false),
+        },
         Request::FsQuery {
             query: "résumé".into(),
             limit: 10_000,
@@ -673,6 +680,27 @@ fn all_responses() -> Vec<Response> {
         Response::ShortcutProbe { refusal: None },
         Response::ShortcutProbe {
             refusal: Some("Already bound by the desktop ✗".into()),
+        },
+        Response::LauncherShortcut {
+            state: compass_ipc::LauncherShortcutState::Granted {
+                trigger: Some("Super+Space ✓".into()),
+            },
+        },
+        Response::LauncherShortcut {
+            state: compass_ipc::LauncherShortcutState::Conflict {
+                reason: "Already taken by the desktop.".into(),
+            },
+        },
+        Response::LauncherShortcut {
+            state: compass_ipc::LauncherShortcutState::NotRequested,
+        },
+        Response::LoginStart {
+            state: compass_ipc::LoginStartState::Portal,
+            unit: Some(compass_ipc::LoginStartUnit::Enabled),
+        },
+        Response::LoginStart {
+            state: compass_ipc::LoginStartState::Unavailable,
+            unit: None,
         },
         Response::FileActions(compass_ipc::FileActionInfo {
             mime: Some("image/png".into()),
@@ -1178,6 +1206,8 @@ fn request_variants_are_exhaustive() {
             | Request::ProbeShortcut { .. }
             | Request::ExtensionAlertRemember { .. }
             | Request::CopyText { .. }
+            | Request::LauncherShortcut { .. }
+            | Request::LoginStart { .. }
             | Request::WindowOutcome(_) => {}
         }
     }
@@ -1245,6 +1275,8 @@ fn response_variants_are_exhaustive() {
             | Response::UpdateStatus { .. }
             | Response::ExchangeRates { .. }
             | Response::ShortcutProbe { .. }
+            | Response::LauncherShortcut { .. }
+            | Response::LoginStart { .. }
             | Response::Window(_) => {}
         }
     }

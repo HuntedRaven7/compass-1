@@ -69,6 +69,16 @@ pub const SETTINGS: PortalInterface = PortalInterface {
     newest_known_version: 2,
 };
 
+/// `org.freedesktop.portal.Background`.
+///
+/// Version 1 has `RequestBackground`, the only method Compass calls; version
+/// 2 added `SetStatus`.
+pub const BACKGROUND: PortalInterface = PortalInterface {
+    name: "org.freedesktop.portal.Background",
+    minimum_version: 1,
+    newest_known_version: 2,
+};
+
 /// Interface version required by `GlobalShortcuts.ConfigureShortcuts`.
 pub const CONFIGURE_SHORTCUTS_MIN_VERSION: u32 = 2;
 

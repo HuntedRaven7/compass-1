@@ -58,6 +58,9 @@ pub enum Control {
     ItemSwitch(String),
     /// A link button (About), by its URL.
     Link(String),
+    /// General's Start at login switch, which is the engine's to change
+    /// rather than a setting of `compass.json`.
+    LoginStart,
 }
 
 impl Control {
@@ -388,6 +391,9 @@ impl SettingsPage {
                 .map(Control::Link)
                 .collect(),
             Shown::Core(CorePage::Keybindings) => Vec::new(),
+            Shown::Core(CorePage::General) => settings(Self::core_settings(CorePage::General))
+                .chain(std::iter::once(Control::LoginStart))
+                .collect(),
             Shown::Core(core) => settings(Self::core_settings(core)).collect(),
             Shown::Provider(provider) => {
                 let mut controls = vec![Control::ProviderSwitch(provider.id.clone())];

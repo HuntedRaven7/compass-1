@@ -48,6 +48,7 @@ pub mod ipc;
 pub mod logs;
 pub mod notification_icon;
 pub(crate) mod paste;
+pub mod permissions;
 pub mod programs;
 pub mod rhai_host;
 pub mod rhai_scripts;
@@ -494,7 +495,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
 /// Where the first-run flow is recorded, when it is due: `onboarding.json`
 /// older than the flow and `COMPASS_NO_ONBOARDING` unset, as the C++ shows
 /// its onboarding window at server start in a build with `ENABLE_ONBOARDING`.
-fn onboarding_due() -> Option<std::path::PathBuf> {
+pub(crate) fn onboarding_due() -> Option<std::path::PathBuf> {
     use compass_core::onboarding;
     let disabled = onboarding::disabled_by(std::env::var_os(onboarding::DISABLE_ENV).as_deref());
     let path = onboarding::default_path().filter(|path| onboarding::should_show(path, disabled))?;

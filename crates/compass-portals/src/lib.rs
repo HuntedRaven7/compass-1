@@ -87,6 +87,7 @@
 #![warn(missing_docs)]
 
 pub mod availability;
+pub mod background;
 pub mod error;
 pub mod file_chooser;
 pub mod open_uri;
@@ -98,10 +99,11 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 pub use availability::{
-    Availability, CONFIGURE_SHORTCUTS_MIN_VERSION, DESKTOP_DESTINATION, DESKTOP_PATH,
+    Availability, BACKGROUND, CONFIGURE_SHORTCUTS_MIN_VERSION, DESKTOP_DESTINATION, DESKTOP_PATH,
     DegradedFeature, FILE_CHOOSER, GLOBAL_SHORTCUTS, NotQueryable, OPEN_URI, PortalCapabilities,
     PortalInterface, SCHEME_SUPPORTED_MIN_VERSION, SETTINGS, Unavailable,
 };
+pub use background::{BackgroundOutcome, BackgroundPortal};
 pub use error::{PortalError, Result};
 pub use file_chooser::{FileChooserOutcome, FileChooserPortal, FileChooserRequest};
 pub use open_uri::{OpenOutcome, OpenUriPortal};
@@ -296,6 +298,26 @@ impl Portals {
         Ok(SettingsPortal::new(
             self.conn.clone(),
             self.config.call_timeout,
+        ))
+    }
+
+    /// The Background client, after probing the interface now.
+    ///
+    /// Probed on each call rather than cached with [`Self::capabilities`]:
+    /// it is asked for only when someone turns login start on or off, and
+    /// not part of what `compass doctor` lists as degraded.
+    ///
+    /// # Errors
+    ///
+    /// [`PortalError::Unavailable`] when the interface is not there.
+    pub async fn background(&self) -> Result<BackgroundPortal> {
+        let availability = self.availability_of(BACKGROUND).await;
+        if !availability.is_available() {
+            return Err(PortalError::unavailable(BACKGROUND, availability));
+        }
+        Ok(BackgroundPortal::new(
+            self.conn.clone(),
+            self.config.dialog_timeout,
         ))
     }
 }

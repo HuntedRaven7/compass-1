@@ -77,6 +77,26 @@ pub trait ApplicationBackend: std::fmt::Debug + Send + Sync {
         Box::pin(async { Ok(None) })
     }
 
+    /// Where the launcher hotkey stands with the desktop; with `request`,
+    /// the engine asks the desktop for it now and answers after its dialog.
+    fn launcher_shortcut(
+        &self,
+        request: bool,
+    ) -> BackendFuture<'_, compass_core::launcher_shortcut::LauncherShortcut> {
+        let _ = request;
+        Box::pin(async { Err(SHORTCUT_NEEDS_ENGINE.to_owned()) })
+    }
+
+    /// Whether Compass starts at login; with `enable`, turns it on or off
+    /// first. An error is the sentence to show, and nothing changed.
+    fn login_start(
+        &self,
+        enable: Option<bool>,
+    ) -> BackendFuture<'_, compass_core::login_start::Status> {
+        let _ = enable;
+        Box::pin(async { Err(LOGIN_START_NEEDS_ENGINE.to_owned()) })
+    }
+
     /// Turns a whole provider's items on or off in root search.
     fn set_provider_enabled(&self, provider: String, enabled: bool) -> BackendFuture<'_, ()> {
         let _ = (provider, enabled);
@@ -1412,6 +1432,12 @@ pub struct FileActions {
 /// What "Open with…" says without an engine.
 pub const OPEN_WITH_NEEDS_ENGINE: &str =
     "Open with needs the Compass engine, and this window is running without one";
+
+/// What the launcher hotkey's row says without an engine, which binds it.
+pub const SHORTCUT_NEEDS_ENGINE: &str = "Setting up the launcher hotkey needs the Compass engine.";
+
+/// What the login start switch says without an engine.
+pub const LOGIN_START_NEEDS_ENGINE: &str = "Starting at login needs the Compass engine.";
 
 /// An application "Open with…" offers.
 #[derive(Debug, Clone, PartialEq, Eq)]

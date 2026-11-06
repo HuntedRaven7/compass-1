@@ -1087,6 +1087,13 @@ pub struct LauncherApp {
     hotkey_compositor: Option<compass_core::hotkey_guide::Compositor>,
     /// See [`AppFlags::flatpak`].
     flatpak: bool,
+    /// Whether Compass starts at login, as the engine last answered; the
+    /// first-run flow's switch and Settings' show it.
+    login_start: Option<compass_core::login_start::Status>,
+    /// Whether a change to login start is on its way to the engine: the
+    /// switch waits for its answer, and a failure is said where it was
+    /// flipped.
+    login_start_busy: bool,
     /// Whether the engine was last told the recorder is capturing.
     capture_reported: bool,
     /// Whether an extension's file chooser is open, which takes the focus
@@ -1531,6 +1538,8 @@ impl LauncherApp {
             launcher_hotkey: compass_core::config::DEFAULT_HOTKEY.to_owned(),
             hotkey_compositor: None,
             flatpak: false,
+            login_start: None,
+            login_start_busy: false,
             capture_reported: false,
             choosing_files: false,
             power_asks: std::collections::BTreeMap::new(),
@@ -1653,10 +1662,16 @@ impl LauncherApp {
     /// launcher that vanished with no way back is a worse one.
     fn conceal(&mut self) -> Task<Message> {
         // Dismissing the first-run flow, by Escape or the hotkey, counts as
-        // having seen it: it is not shown again at every login.
-        if let Page::Onboarding(page) = &self.page {
-            onboarding::record_completed(&page.state_path);
-        }
+        // having seen it: it is not shown again at every login. The engine
+        // waits for the flow to ask for the launcher hotkey, so closing it
+        // asks when nobody did.
+        let shortcut = match &self.page {
+            Page::Onboarding(page) => {
+                onboarding::record_completed(&page.state_path);
+                self.ask_for_hotkey_on_finish(page.asks_on_finish())
+            }
+            _ => Task::none(),
+        };
         self.cancel_search();
         self.panel = None;
         // Leaving Set Theme without choosing puts the theme back, as
@@ -1678,7 +1693,7 @@ impl LauncherApp {
             Task::none()
         };
         let hidden = self.hide_window();
-        Task::batch([closing, cleared, hidden])
+        Task::batch([closing, cleared, hidden, shortcut])
     }
 
     /// Hides or exits after [`Self::conceal`] has reset the view.
@@ -2796,7 +2811,11 @@ impl LauncherApp {
             | Message::OnboardingOpen(_)
             | Message::OnboardingLinkOpened(_)
             | Message::OnboardingInstall(_)
-            | Message::OnboardingInstalled(..) => self.onboarding_message(message),
+            | Message::OnboardingInstalled(..)
+            | Message::OnboardingRequestShortcut => self.onboarding_message(message),
+            Message::LauncherShortcutAnswered(_)
+            | Message::LoginStartToggled(_)
+            | Message::LoginStartAnswered(_) => self.first_run_message(message),
             Message::ActionDone(Some(hud), Ok(())) => self.show_hud(hud),
             Message::ActionDone(None, Ok(())) => self.conceal(),
             Message::ActionDone(_, Err(reason)) => {
@@ -7952,6 +7971,220 @@ mod tests {
         assert!(app.showing_onboarding());
     }
 
+    /// Whether `label` is drawn on the launcher's card.
+    fn drawn(app: &LauncherApp, label: &str) -> bool {
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(800.0, 600.0),
+            app.view(),
+        );
+        ui.find(label).is_ok()
+    }
+
+    /// The hotkey sentence the flow shows for `state`.
+    fn hotkey_sentence(
+        app: &LauncherApp,
+        state: &compass_core::launcher_shortcut::LauncherShortcut,
+    ) -> String {
+        let key = compass_core::key_combo::KeyCombo::parse(&app.launcher_hotkey)
+            .unwrap()
+            .display_tokens()
+            .join("+");
+        state.describe(&key, "compass toggle")
+    }
+
+    /// Set Up Shortcut asks the engine, which asks the desktop, and the row
+    /// then says what the desktop answered: granted, declined, taken by
+    /// something else, or no portal at all; with Try Again where asking
+    /// again can help and the documentation where it cannot.
+    #[test]
+    fn the_onboarding_asks_for_the_hotkey_and_says_each_answer() {
+        use compass_core::launcher_shortcut::LauncherShortcut;
+        use compass_core::onboarding::Step;
+        for (answer, next) in [
+            (
+                LauncherShortcut::Granted {
+                    trigger: Some("Super+Space".into()),
+                },
+                "Open Docs",
+            ),
+            (LauncherShortcut::Refused, "Try Again"),
+            (
+                LauncherShortcut::Conflict {
+                    reason: "Your desktop did not assign it a key.".into(),
+                },
+                "Try Again",
+            ),
+            (LauncherShortcut::Unavailable, "Open Docs"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Arc::new(TestBackend {
+                hotkey: std::sync::Mutex::new(Some(LauncherShortcut::NotRequested)),
+                hotkey_on_request: Some(answer.clone()),
+                ..TestBackend::default()
+            });
+            let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+            app.backend = Some(backend.clone());
+            app.open_onboarding(dir.path().join("onboarding.json"));
+            click_onboarding(&mut app, "Continue");
+            assert_eq!(app.onboarding_step(), Some(Step::Personalize));
+            assert_eq!(
+                backend.hotkey_calls.lock().unwrap().as_slice(),
+                [false],
+                "the step reads the state without asking the desktop"
+            );
+            let waiting = hotkey_sentence(&app, &LauncherShortcut::NotRequested);
+            assert!(drawn(&app, &waiting), "{waiting}");
+
+            click_onboarding(&mut app, "Set Up Shortcut");
+            assert_eq!(backend.hotkey_calls.lock().unwrap().last(), Some(&true));
+            assert_eq!(onboarding_page(&app).shortcut.as_ref(), Some(&answer));
+            let said = hotkey_sentence(&app, &answer);
+            assert!(drawn(&app, &said), "{answer:?}: {said}");
+            assert!(drawn(&app, next), "{answer:?} offers {next}");
+
+            // Finishing after an answer does not ask again.
+            let _ = app.update(Message::OnboardingJump(3));
+            let asked = backend.hotkey_calls.lock().unwrap().len();
+            click_onboarding(&mut app, "Finish");
+            assert_eq!(
+                backend.hotkey_calls.lock().unwrap().len(),
+                asked,
+                "{answer:?}: no second dialog at Finish"
+            );
+        }
+    }
+
+    /// The engine waits for the flow to ask; a flow finished or closed
+    /// without Set Up Shortcut asks then, so the hotkey still works.
+    #[test]
+    fn finishing_or_closing_the_onboarding_asks_for_the_hotkey_once() {
+        use compass_core::launcher_shortcut::LauncherShortcut;
+        for close in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Arc::new(TestBackend {
+                hotkey: std::sync::Mutex::new(Some(LauncherShortcut::NotRequested)),
+                hotkey_on_request: Some(LauncherShortcut::Granted { trigger: None }),
+                ..TestBackend::default()
+            });
+            let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+            app.backend = Some(backend.clone());
+            app.open_onboarding(dir.path().join("onboarding.json"));
+            let task = if close {
+                app.update(pressed(iced::keyboard::key::Named::Escape))
+            } else {
+                let _ = app.update(Message::OnboardingJump(3));
+                app.update(Message::OnboardingContinue)
+            };
+            settle(&mut app, task);
+            assert!(!app.showing_onboarding());
+            assert_eq!(
+                backend.hotkey_calls.lock().unwrap().as_slice(),
+                [true],
+                "closed: {close}"
+            );
+        }
+    }
+
+    /// On Sway, Hyprland and niri the compositor binds the key: the row
+    /// keeps its configuration line, offers no portal request, and finishing
+    /// asks nothing.
+    #[test]
+    fn a_wlroots_compositor_keeps_its_configuration_line() {
+        use compass_core::hotkey_guide::Compositor;
+        use compass_core::launcher_shortcut::LauncherShortcut;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            hotkey: std::sync::Mutex::new(Some(LauncherShortcut::Unavailable)),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        app.hotkey_compositor = Some(Compositor::Sway);
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        click_onboarding(&mut app, "Continue");
+        let line = Compositor::Sway.instruction("compass toggle");
+        assert!(drawn(&app, &line), "{line}");
+        assert!(drawn(&app, "Open Docs"));
+        assert!(!drawn(&app, "Set Up Shortcut"));
+        assert!(!drawn(&app, "Try Again"));
+        let _ = app.update(Message::OnboardingJump(3));
+        click_onboarding(&mut app, "Finish");
+        assert!(
+            !backend.hotkey_calls.lock().unwrap().contains(&true),
+            "nothing is asked of a portal Sway does not have"
+        );
+    }
+
+    /// Start at login is off until the person turns it on, and then shows
+    /// what the engine answered: on, refused, or why the change failed.
+    #[test]
+    fn the_onboardings_login_switch_shows_what_the_engine_answered() {
+        use compass_core::login_start::{State, Status, Unit};
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            login: std::sync::Mutex::new(Some(Status::default())),
+            ..TestBackend::default()
+        });
+        let mut app = with_resident_hud(LauncherApp::with_index(index(dir.path())));
+        app.backend = Some(backend.clone());
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        click_onboarding(&mut app, "Continue");
+        assert!(!app.login_start_on(), "off by default");
+        assert!(drawn(&app, State::Off.describe()));
+
+        // From the keyboard, as every control on the card.
+        for _ in 0..10 {
+            if onboarding_page(&app).focused == Some(crate::onboarding_page::Control::LoginStart) {
+                break;
+            }
+            let _ = app.update(pressed(iced::keyboard::key::Named::Tab));
+        }
+        let task = app.update(pressed(iced::keyboard::key::Named::Space));
+        settle(&mut app, task);
+        assert_eq!(backend.login_changes.lock().unwrap().as_slice(), [true]);
+        assert!(app.login_start_on());
+        assert!(drawn(
+            &app,
+            app.login_start.as_ref().unwrap().state.describe()
+        ));
+
+        let task = app.update(Message::LoginStartToggled(false));
+        settle(&mut app, task);
+        assert!(!app.login_start_on());
+
+        // The desktop said no: shown as such, never as on.
+        let refusing = Arc::new(TestBackend {
+            login: std::sync::Mutex::new(Some(Status {
+                state: State::Off,
+                unit: Some(Unit::Enabled),
+            })),
+            login_enabled_as: Some(State::Refused),
+            ..TestBackend::default()
+        });
+        app.backend = Some(refusing);
+        let task = app.update(Message::LoginStartToggled(true));
+        settle(&mut app, task);
+        assert!(!app.login_start_on());
+        let status = app.login_start.clone().unwrap();
+        assert_eq!(status.state, State::Refused);
+        assert!(drawn(&app, &status.describe()), "the unit is reported too");
+
+        // A failure is said on the card, and nothing changes.
+        let failing = Arc::new(TestBackend {
+            login_failure: Some("Asking your desktop's Background portal failed.".into()),
+            ..TestBackend::default()
+        });
+        app.backend = Some(failing);
+        let task = app.update(Message::LoginStartToggled(true));
+        settle(&mut app, task);
+        assert_eq!(app.login_start, Some(status));
+        assert_eq!(
+            onboarding_page(&app).notice.as_deref(),
+            Some("Asking your desktop's Background portal failed.")
+        );
+    }
+
     /// The theme picked on "Make it your own" is the one the page is drawn
     /// in, kept by the engine or not.
     #[test]
@@ -8646,6 +8879,22 @@ mod tests {
         preferences_asked: std::sync::Mutex<Vec<String>>,
         /// Why opening a file or a link fails, when it does.
         refuse_opens: Option<String>,
+        /// Where the fake engine says the launcher hotkey stands; `None`
+        /// answers as the trait's default does.
+        hotkey: std::sync::Mutex<Option<compass_core::launcher_shortcut::LauncherShortcut>>,
+        /// What asking the desktop for the hotkey turns it into.
+        hotkey_on_request: Option<compass_core::launcher_shortcut::LauncherShortcut>,
+        /// Each hotkey call: `true` for a request, `false` for a read.
+        hotkey_calls: std::sync::Mutex<Vec<bool>>,
+        /// Whether Compass starts at login, as the fake engine says; `None`
+        /// answers as the trait's default does.
+        login: std::sync::Mutex<Option<compass_core::login_start::Status>>,
+        /// What turning login start on leaves; on otherwise.
+        login_enabled_as: Option<compass_core::login_start::State>,
+        /// Why a change to login start fails, when it does.
+        login_failure: Option<String>,
+        /// The changes asked for.
+        login_changes: std::sync::Mutex<Vec<bool>>,
     }
 
     impl crate::backend::ApplicationBackend for TestBackend {
@@ -8665,6 +8914,53 @@ mod tests {
             self.probes.lock().unwrap().push(trigger);
             let refusal = self.probe_refusal.clone();
             Box::pin(async move { Ok(refusal) })
+        }
+
+        fn launcher_shortcut(
+            &self,
+            request: bool,
+        ) -> crate::backend::BackendFuture<'_, compass_core::launcher_shortcut::LauncherShortcut>
+        {
+            self.hotkey_calls.lock().unwrap().push(request);
+            let mut hotkey = self.hotkey.lock().unwrap();
+            if request && let Some(after) = &self.hotkey_on_request {
+                *hotkey = Some(after.clone());
+            }
+            let answer = hotkey
+                .clone()
+                .ok_or_else(|| crate::backend::SHORTCUT_NEEDS_ENGINE.to_owned());
+            Box::pin(async move { answer })
+        }
+
+        fn login_start(
+            &self,
+            enable: Option<bool>,
+        ) -> crate::backend::BackendFuture<'_, compass_core::login_start::Status> {
+            use compass_core::login_start::{Mechanism, State};
+            let mut login = self.login.lock().unwrap();
+            let answer = match (enable, &self.login_failure) {
+                (Some(_), Some(failure)) => Err(failure.clone()),
+                (Some(on), None) => {
+                    self.login_changes.lock().unwrap().push(on);
+                    let state = if on {
+                        self.login_enabled_as.clone().unwrap_or(State::On {
+                            mechanism: Mechanism::Portal,
+                        })
+                    } else {
+                        State::Off
+                    };
+                    let status = compass_core::login_start::Status {
+                        state,
+                        ..login.clone().unwrap_or_default()
+                    };
+                    *login = Some(status.clone());
+                    Ok(status)
+                }
+                (None, _) => login
+                    .clone()
+                    .ok_or_else(|| crate::backend::LOGIN_START_NEEDS_ENGINE.to_owned()),
+            };
+            Box::pin(async move { answer })
         }
 
         fn edit_root_item(

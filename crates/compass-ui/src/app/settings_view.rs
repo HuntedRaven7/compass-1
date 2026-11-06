@@ -86,7 +86,14 @@ impl LauncherApp {
         self.panel = None;
         let _ = self.close_extension_view();
         self.page = Page::Settings(Box::new(page));
-        Task::batch([focus_search(), shown_page_changed()])
+        let login_start = match self.backend.clone() {
+            Some(backend) => Task::perform(
+                async move { backend.login_start(None).await },
+                Message::LoginStartAnswered,
+            ),
+            None => Task::none(),
+        };
+        Task::batch([focus_search(), shown_page_changed(), login_start])
     }
 
     /// Moves the settings page aside while an extension command's
@@ -291,6 +298,10 @@ impl LauncherApp {
                 self.settings_message(SettingsMessage::OpenPreferences(id))
             }
             Control::Link(url) => self.settings_message(SettingsMessage::OpenUrl(url)),
+            Control::LoginStart => {
+                let on = self.login_start_on();
+                self.update(Message::LoginStartToggled(!on))
+            }
             Control::ItemAlias(_) => Task::none(),
         }
     }
@@ -1327,7 +1338,15 @@ impl LauncherApp {
                     .collect();
                 body = body.push(self.settings_boxed(rows));
             }
-            CorePage::General | CorePage::Appearance | CorePage::Advanced => {
+            CorePage::General => {
+                body = body
+                    .push(self.settings_list(page, &SettingsPage::core_settings(core)))
+                    .push(self.settings_group(
+                        Some("Startup".to_owned()),
+                        vec![self.settings_login_start(page)],
+                    ));
+            }
+            CorePage::Appearance | CorePage::Advanced => {
                 body = body.push(self.settings_list(page, &SettingsPage::core_settings(core)));
             }
         }
@@ -1347,6 +1366,32 @@ impl LauncherApp {
             body = body.push(notes);
         }
         body.into()
+    }
+
+    /// General's Start at login row: the switch, and what the engine says
+    /// starts Compass at login, including a packaged systemd unit it leaves
+    /// alone.
+    fn settings_login_start<'a>(&'a self, page: &'a SettingsPage) -> Element<'a, Message> {
+        let palette = self.palette();
+        let on = self.login_start_on();
+        let description = self.login_start.as_ref().map_or_else(
+            || "Start Compass, hidden, when you log in.".to_owned(),
+            compass_core::login_start::Status::describe,
+        );
+        let switch = toggler(on)
+            .size(adwaita::SWITCH_SIZE)
+            .style(move |_: &iced::Theme, status| adwaita::switch(palette, status))
+            .on_toggle_maybe((!self.login_start_busy).then_some(Message::LoginStartToggled));
+        self.settings_row(
+            "Start at login".to_owned(),
+            description,
+            self.settings_ring(
+                page,
+                &Control::LoginStart,
+                switch,
+                adwaita::SWITCH_SIZE / 2.0,
+            ),
+        )
     }
 
     fn settings_provider_page<'a>(

@@ -15,22 +15,27 @@ treated as packaging evidence.
 
 After installation, open **Compass** from the application grid. Its `start`
 entrypoint reuses a running launcher or starts an engine and a resident window
-together. The engine requests the native global-shortcut permission; Escape
-hides the launcher so the granted shortcut can bring it back.
+together. On first run, the "Make it your own" step asks for the native
+global-shortcut permission when you choose Set Up Shortcut (or when the setup
+is finished or closed), and says whether the desktop granted it, left the key
+unassigned because something else has it, or was declined, with what to do
+next. Escape hides the launcher so the granted shortcut can bring it back.
 
-This is not yet the complete first-run experience (#154): start-at-login is
-not enabled automatically, and onboarding, permission-refusal guidance and
-an explicit login-start choice remain to be implemented. Closing the graphical
-session stops an engine it started itself, but does not stop an independently
-managed engine. The development `ui` and `serve` commands remain available.
-An app-grid session exits if its engine disconnects, so a subsequent app-grid
-activation can start a fresh session instead of finding an undriven window.
-The explicit `ui` command retains its previous keep-running behavior.
+Start at login is off until chosen, in the same step or in Settings, General.
+Turning it on asks the Background portal for autostart with
+`compass start --hidden` (ADR-0022 §2); the Flatpak never writes an autostart
+file itself, so without a Background portal the switch reports that it is
+unavailable. Closing the graphical session stops an engine it started itself,
+but does not stop an independently managed engine. The development `ui` and
+`serve` commands remain available. An app-grid session exits if its engine
+disconnects, so a subsequent app-grid activation can start a fresh session
+instead of finding an undriven window. The explicit `ui` command retains its
+previous keep-running behavior.
 
-`compass start --hidden` prepares a resident session without opening a window.
-This is the entrypoint for a future user-approved start-at-login flow; running
-it does not itself configure login startup. A duplicate hidden start leaves
-the existing launcher's visibility unchanged. Ordinary `start` still opens it.
+`compass start --hidden` prepares a resident session without opening a window;
+it is the command the desktop runs at login. A duplicate hidden start leaves
+the existing launcher's visibility unchanged, so a login start and a packaged
+unit never make two launchers. Ordinary `start` still opens it.
 
 The native color mode is also the default. Leave
 `launcher.appearance.color_scheme` absent (or set it to `"system"`) to follow

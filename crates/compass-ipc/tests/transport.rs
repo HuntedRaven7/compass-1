@@ -172,6 +172,13 @@ async fn echo_handler(request: Request) -> Response {
             Response::ExchangeRates { rates: None }
         }
         Request::ProbeShortcut { .. } => Response::ShortcutProbe { refusal: None },
+        Request::LauncherShortcut { .. } => Response::LauncherShortcut {
+            state: compass_ipc::LauncherShortcutState::Unavailable,
+        },
+        Request::LoginStart { .. } => Response::LoginStart {
+            state: compass_ipc::LoginStartState::Off,
+            unit: None,
+        },
         Request::TrayItems => Response::TrayItems { items: vec![] },
         Request::TrayMenu { .. } => Response::TrayMenu { entries: vec![] },
         Request::FileActions { .. } => {

@@ -353,6 +353,8 @@ struct Engine {
     settings: Mutex<Vec<(String, serde_json::Value)>>,
     providers: Mutex<Vec<(String, bool)>>,
     refuse: bool,
+    /// The login start changes asked for.
+    login: Mutex<Vec<bool>>,
 }
 
 impl crate::backend::ApplicationBackend for Engine {
@@ -395,6 +397,65 @@ impl crate::backend::ApplicationBackend for Engine {
             })
         })
     }
+    fn login_start(
+        &self,
+        enable: Option<bool>,
+    ) -> BackendFuture<'_, compass_core::login_start::Status> {
+        use compass_core::login_start::{Mechanism, State, Status, Unit};
+        let mut asked = self.login.lock().unwrap();
+        if let Some(on) = enable {
+            asked.push(on);
+        }
+        let on = asked.last().copied().unwrap_or(false);
+        Box::pin(async move {
+            Ok(Status {
+                state: if on {
+                    State::On {
+                        mechanism: Mechanism::AutostartFile,
+                    }
+                } else {
+                    State::Off
+                },
+                unit: Some(Unit::Installed),
+            })
+        })
+    }
+}
+
+#[test]
+fn general_turns_login_start_on_and_off_through_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let engine = Arc::new(Engine::default());
+    app.backend = Some(engine.clone());
+    let task = app.open_settings(None);
+    settle(&mut app, task);
+    let status = app
+        .login_start
+        .clone()
+        .expect("read when the settings open");
+    assert!(!status.state.is_on(), "off by default");
+    assert!(
+        engine.login.lock().unwrap().is_empty(),
+        "reading changes nothing"
+    );
+    assert_eq!(page(&app).controls(None).last(), Some(&Control::LoginStart));
+
+    tab_to(&mut app, &Control::LoginStart);
+    press(&mut app, Named::Space, Modifiers::empty());
+    assert!(app.login_start.as_ref().unwrap().state.is_on());
+    press(&mut app, Named::Enter, Modifiers::empty());
+    assert!(!app.login_start.as_ref().unwrap().state.is_on());
+    assert_eq!(engine.login.lock().unwrap().as_slice(), [true, false]);
+
+    let mut ui = iced_test::Simulator::with_size(
+        iced::Settings::default(),
+        iced::Size::new(800.0, 600.0),
+        app.view(),
+    );
+    let described = app.login_start.as_ref().unwrap().describe();
+    assert!(ui.find("Start at login").is_ok());
+    assert!(ui.find(described.as_str()).is_ok(), "{described}");
 }
 
 #[test]
@@ -537,7 +598,9 @@ fn tab_reaches_every_control_on_every_page_in_order_and_comes_back_to_search() {
                     Kind::Shortcut => "hotkey",
                     _ => "field",
                 },
-                Control::ProviderSwitch(_) | Control::ItemSwitch(_) => "switch",
+                Control::ProviderSwitch(_) | Control::ItemSwitch(_) | Control::LoginStart => {
+                    "switch"
+                }
                 Control::ItemAlias(_) => "field",
                 Control::ItemShortcut(_) => "record shortcut",
                 Control::ItemPreferences(_) => "preferences",

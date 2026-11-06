@@ -19,9 +19,10 @@ use std::time::Duration;
 use futures_util::StreamExt;
 
 use compass_portals::{
-    Availability, ColorScheme, DegradedFeature, FileChooserOutcome, FileChooserRequest,
-    GLOBAL_SHORTCUTS, Modifiers, NotQueryable, OpenOutcome, PortalConfig, PortalError, Portals,
-    ShortcutBinder, ShortcutDescriptor, ShortcutEvent, ShortcutsOutcome, Trigger, Unavailable,
+    Availability, BackgroundOutcome, ColorScheme, DegradedFeature, FileChooserOutcome,
+    FileChooserRequest, GLOBAL_SHORTCUTS, Modifiers, NotQueryable, OpenOutcome, PortalConfig,
+    PortalError, Portals, ShortcutBinder, ShortcutDescriptor, ShortcutEvent, ShortcutsOutcome,
+    Trigger, Unavailable,
 };
 use support::bus::{TestBus, start_or_skip};
 use support::mock::{Behaviour, MockOptions, MockPortal, start_unresponsive_portal};
@@ -1278,4 +1279,139 @@ async fn subscribing_is_not_a_read() {
         mock.settings_read().is_empty(),
         "subscribing must not perform a Read"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Background (login start)
+// ---------------------------------------------------------------------------
+
+const LOGIN_COMMAND: &[&str] = &["compass", "start", "--hidden"];
+
+#[tokio::test]
+async fn a_login_start_request_carries_autostart_and_the_command_line() {
+    let Some(bus) = start_or_skip("a_login_start_request_carries_autostart_and_the_command_line")
+    else {
+        return;
+    };
+    let mock = MockPortal::start(bus.address(), MockOptions::default())
+        .await
+        .expect("mock");
+    let portals = deadline("connect", portals(&bus)).await;
+    let background = deadline("probe", portals.background())
+        .await
+        .expect("the interface is exported");
+
+    let on = deadline("enable", background.request(true, LOGIN_COMMAND, "Why"))
+        .await
+        .expect("answered");
+    assert_eq!(
+        on,
+        BackgroundOutcome::Granted {
+            autostart: true,
+            background: true
+        }
+    );
+    let off = deadline("disable", background.request(false, LOGIN_COMMAND, "Why"))
+        .await
+        .expect("answered");
+    assert_eq!(
+        off,
+        BackgroundOutcome::Granted {
+            autostart: false,
+            background: true
+        }
+    );
+    let command: Vec<String> = LOGIN_COMMAND
+        .iter()
+        .map(|word| (*word).to_owned())
+        .collect();
+    assert_eq!(
+        mock.background_requests(),
+        [
+            (Some(true), command.clone(), Some("Why".to_owned())),
+            (Some(false), command, Some("Why".to_owned())),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_desktop_that_refuses_autostart_says_so_in_its_answer() {
+    let Some(bus) = start_or_skip("a_desktop_that_refuses_autostart_says_so_in_its_answer") else {
+        return;
+    };
+    let mock = MockPortal::start(bus.address(), MockOptions::default())
+        .await
+        .expect("mock");
+    mock.refuse_autostart();
+    let portals = deadline("connect", portals(&bus)).await;
+    let background = portals.background().await.expect("available");
+    let answer = deadline("enable", background.request(true, LOGIN_COMMAND, "Why"))
+        .await
+        .expect("answered");
+    assert_eq!(
+        answer,
+        BackgroundOutcome::Granted {
+            autostart: false,
+            background: true
+        },
+        "a success that did not grant autostart"
+    );
+}
+
+#[tokio::test]
+async fn a_declined_login_start_dialog_is_an_outcome_not_an_error() {
+    let Some(bus) = start_or_skip("a_declined_login_start_dialog_is_an_outcome_not_an_error")
+    else {
+        return;
+    };
+    let _mock = MockPortal::start(
+        bus.address(),
+        MockOptions::default().behaving(Behaviour::Deny),
+    )
+    .await
+    .expect("mock");
+    let portals = deadline("connect", portals(&bus)).await;
+    let background = portals.background().await.expect("available");
+    let answer = deadline("enable", background.request(true, LOGIN_COMMAND, "Why")).await;
+    assert_eq!(answer.expect("an outcome"), BackgroundOutcome::Denied);
+}
+
+#[tokio::test]
+async fn a_session_without_the_background_portal_is_unavailable() {
+    let Some(bus) = start_or_skip("a_session_without_the_background_portal_is_unavailable") else {
+        return;
+    };
+    let _mock = MockPortal::start(
+        bus.address(),
+        MockOptions {
+            background: false,
+            ..MockOptions::default()
+        },
+    )
+    .await
+    .expect("mock");
+    let portals = deadline("connect", portals(&bus)).await;
+    let error = deadline("probe", portals.background())
+        .await
+        .expect_err("no interface");
+    assert!(error.is_unavailable(), "{error}");
+}
+
+#[tokio::test]
+async fn a_login_start_dialog_nobody_answers_is_bounded() {
+    let Some(bus) = start_or_skip("a_login_start_dialog_nobody_answers_is_bounded") else {
+        return;
+    };
+    let _mock = MockPortal::start(
+        bus.address(),
+        MockOptions::default().behaving(Behaviour::Silent),
+    )
+    .await
+    .expect("mock");
+    let portals = deadline("connect", portals(&bus)).await;
+    let background = portals.background().await.expect("available");
+    let error = deadline("enable", background.request(true, LOGIN_COMMAND, "Why"))
+        .await
+        .expect_err("timed out");
+    assert!(matches!(error, PortalError::Timeout { .. }), "{error}");
 }

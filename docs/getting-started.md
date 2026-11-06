@@ -31,7 +31,15 @@ The examples on this page use the `compass` command. From the Flatpak, run it as
 ## Start Compass when you log in
 
 Opening Compass from the application grid starts it for the rest of the session. To start it at
-login instead, enable its systemd user unit:
+every login, turn on **Start at login**, in the first-run setup's "Make it your own" step or in
+Settings, General. It is off until you turn it on. Compass asks your desktop's Background portal,
+which shows you what it allows, to run `compass start --hidden` when you log in. Where there is no
+Background portal (some wlroots sessions) and Compass is not in the Flatpak, it writes
+`~/.config/autostart/compass.desktop` itself, and turning the switch off removes only that file.
+If your desktop declines, the switch stays off and says so.
+
+Packages also install a systemd user unit, which Compass never turns on or off. Settings says when
+it is installed and whether it is enabled. To use the unit instead of the switch:
 
 ```sh
 systemctl --user enable --now compass

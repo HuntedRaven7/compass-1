@@ -153,6 +153,8 @@ pub struct EngineState {
     global_shortcuts: Arc<crate::global_shortcuts::Control>,
     /// The calculator's exchange rates.
     exchange_rates: Arc<crate::exchange_rates::ExchangeRateService>,
+    /// Starting Compass at login; `None` in tests that do not give one.
+    login_start: Option<Arc<dyn compass_platform::LoginStarter>>,
 }
 
 // Hand-written because `dyn FrecencyStore` is not `Debug`, and widening that
@@ -292,6 +294,9 @@ impl EngineState {
             exchange_rates: Arc::new(
                 crate::exchange_rates::ExchangeRateService::from_environment(),
             ),
+            login_start: Some(Arc::new(
+                compass_platform_linux::LinuxLoginStart::from_environment(),
+            )),
             run_program_default: crate::programs::default_action(config.entrypoint_preferences(
                 compass_core::commands::COMMANDS_PROVIDER_ID,
                 crate::programs::ENTRYPOINT,
@@ -365,6 +370,7 @@ impl EngineState {
             tray_icon: Arc::default(),
             global_shortcuts: Arc::default(),
             exchange_rates: Arc::default(),
+            login_start: None,
         }
     }
 
@@ -499,6 +505,17 @@ impl EngineState {
         Arc<crate::extension_sync::Trigger>,
     ) {
         (Arc::clone(&self.stores), Arc::clone(&self.extension_sync))
+    }
+
+    /// Starting Compass at login, when this engine has a way to.
+    #[must_use]
+    pub fn login_start(&self) -> Option<Arc<dyn compass_platform::LoginStarter>> {
+        self.login_start.clone()
+    }
+
+    /// Starts Compass at login through `starter`, for tests.
+    pub fn set_login_start(&mut self, starter: Arc<dyn compass_platform::LoginStarter>) {
+        self.login_start = Some(starter);
     }
 
     /// The application and root item index.
@@ -3031,6 +3048,31 @@ pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Respo
                 refusal: control.probe(combo).await,
             }
         }
+        Request::LauncherShortcut { request } => {
+            let control = state.read().await.global_shortcuts();
+            let answer = if request {
+                control.request_launcher().await
+            } else {
+                control.launcher()
+            };
+            crate::permissions::launcher_response(answer)
+        }
+        Request::LoginStart { enable } => {
+            let Some(starter) = state.read().await.login_start() else {
+                return Response::Error(ProtocolError::new(
+                    ErrorKind::Unsupported,
+                    "This engine cannot start Compass at login.",
+                ));
+            };
+            let answer = match enable {
+                Some(enabled) => starter.set(enabled).await,
+                None => starter.status().await,
+            };
+            match answer {
+                Ok(status) => crate::permissions::login_start_response(status),
+                Err(message) => Response::Error(ProtocolError::new(ErrorKind::Internal, message)),
+            }
+        }
 
         Request::RunPowerCommand { id } => run_power_command(&id).await,
         Request::RunMediaCommand { id } => {
@@ -3905,6 +3947,11 @@ pub async fn run(socket: &SocketPath, hotkey: bool) -> Result<()> {
         tokio::spawn(crate::global_shortcuts::run(Arc::clone(&state)));
     } else {
         tracing::info!("not binding the global shortcuts (--no-hotkey)");
+        state
+            .read()
+            .await
+            .global_shortcuts()
+            .set_launcher(compass_core::launcher_shortcut::LauncherShortcut::Off);
     }
 
     let serving = {

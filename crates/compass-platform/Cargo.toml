@@ -13,6 +13,9 @@ workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# The decisions a platform carries out (`login_start::Status`); compass-core is shared, so the
+# seam holds.
+compass-core.workspace = true
 compass-xdg.workspace = true
 # A window's native handles, for `WindowMaterial` (the 0.6 iced and winit lend;
 # every platform has them, so the seam holds).

@@ -218,6 +218,8 @@ fn describe(request: &Request) -> &'static str {
         Request::ProbeShortcut { .. } => "ProbeShortcut",
         Request::ExtensionAlertRemember { .. } => "ExtensionAlertRemember",
         Request::CopyText { .. } => "CopyText",
+        Request::LauncherShortcut { .. } => "LauncherShortcut",
+        Request::LoginStart { .. } => "LoginStart",
     }
 }
 

@@ -1209,6 +1209,7 @@ name = "compass-platform"
 version = "0.28.3"
 dependencies = [
  "accesskit",
+ "compass-core",
  "compass-xdg",
  "raw-window-handle",
  "tempfile",

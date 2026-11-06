@@ -30,6 +30,19 @@ const START_TIMEOUT: Duration =
 const PROBE_TIMEOUT: Duration =
     compass_ipc::long_poll_deadline(crate::global_shortcuts::PROBE_TIMEOUT);
 
+/// How long asking the desktop for the launcher hotkey may take: the engine
+/// waits for the portal's dialog for up to
+/// [`crate::global_shortcuts::LAUNCHER_REQUEST_TIMEOUT`].
+const LAUNCHER_TIMEOUT: Duration =
+    compass_ipc::long_poll_deadline(crate::global_shortcuts::LAUNCHER_REQUEST_TIMEOUT);
+
+/// How long turning login start on or off may take: probing the portals,
+/// then the Background portal's dialog for up to
+/// [`compass_platform_linux::LOGIN_START_DIALOG_TIMEOUT`].
+const LOGIN_START_TIMEOUT: Duration = compass_ipc::long_poll_deadline(
+    compass_platform_linux::LOGIN_START_DIALOG_TIMEOUT.saturating_add(Duration::from_secs(30)),
+);
+
 /// How long the update check may take: the engine may be asking the release
 /// feed, which it allows 15 seconds.
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -598,6 +611,53 @@ impl ApplicationBackend for DaemonBackend {
                 .await?
             {
                 compass_ipc::Response::ShortcutProbe { refusal } => Ok(refusal),
+                other => Err(format!("Unexpected answer from the engine: {other:?}")),
+            }
+        })
+    }
+
+    fn launcher_shortcut(
+        &self,
+        request: bool,
+    ) -> BackendFuture<'_, compass_core::launcher_shortcut::LauncherShortcut> {
+        Box::pin(async move {
+            let deadline = if request {
+                LAUNCHER_TIMEOUT
+            } else {
+                REQUEST_TIMEOUT
+            };
+            match self
+                .ask_within(
+                    Request::LauncherShortcut { request },
+                    "Asking the desktop for the launcher hotkey",
+                    deadline,
+                )
+                .await?
+            {
+                compass_ipc::Response::LauncherShortcut { state } => {
+                    Ok(crate::permissions::launcher_from_wire(state))
+                }
+                other => Err(format!("Unexpected answer from the engine: {other:?}")),
+            }
+        })
+    }
+
+    fn login_start(
+        &self,
+        enable: Option<bool>,
+    ) -> BackendFuture<'_, compass_core::login_start::Status> {
+        Box::pin(async move {
+            match self
+                .ask_within(
+                    Request::LoginStart { enable },
+                    "Changing whether Compass starts at login",
+                    LOGIN_START_TIMEOUT,
+                )
+                .await?
+            {
+                compass_ipc::Response::LoginStart { state, unit } => {
+                    Ok(crate::permissions::login_start_from_wire(state, unit))
+                }
                 other => Err(format!("Unexpected answer from the engine: {other:?}")),
             }
         })
@@ -2194,6 +2254,14 @@ mod tests {
             (VIEW_TIMEOUT, compass_ipc::EXTENSION_VIEW_HOLD),
             (START_TIMEOUT, crate::extension_runner::LOAD_TIMEOUT),
             (PROBE_TIMEOUT, crate::global_shortcuts::PROBE_TIMEOUT),
+            (
+                LAUNCHER_TIMEOUT,
+                crate::global_shortcuts::LAUNCHER_REQUEST_TIMEOUT,
+            ),
+            (
+                LOGIN_START_TIMEOUT,
+                compass_platform_linux::LOGIN_START_DIALOG_TIMEOUT,
+            ),
         ] {
             assert!(deadline > hold, "{deadline:?} is not longer than {hold:?}");
             assert!(deadline > REQUEST_TIMEOUT);

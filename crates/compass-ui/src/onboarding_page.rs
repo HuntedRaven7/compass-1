@@ -1,11 +1,14 @@
 //! The first-run flow's state in the launcher: where the flow is, the themes
-//! the "Make it your own" step offers, and where finishing is recorded.
+//! the "Make it your own" step offers, the launcher hotkey's standing with
+//! the desktop, and where finishing is recorded.
 //!
 //! `compass_core::onboarding` decides the steps and the file; this is what the
 //! launcher's page holds around it.
 
 use std::path::PathBuf;
 
+use compass_core::hotkey_guide::Compositor;
+use compass_core::launcher_shortcut::{self, LauncherShortcut};
 use compass_core::onboarding::{Extensions, Flow};
 
 use crate::theme::Theme;
@@ -25,8 +28,12 @@ impl std::fmt::Display for ThemeOption {
 pub enum Control {
     /// The theme dropdown.
     Theme,
-    /// "Open Docs" for the hotkey.
+    /// "Open Docs" for the hotkey, where asking the desktop cannot help.
     OpenDocs,
+    /// Set Up Shortcut or Try Again: ask the desktop for the hotkey.
+    RequestShortcut,
+    /// The Start at login switch.
+    LoginStart,
     /// A recommended extension's Install, by its position.
     Install(usize),
     /// The last step's GitHub link.
@@ -54,6 +61,11 @@ pub struct OnboardingPage {
     pub focused: Option<Control>,
     /// The theme highlighted in the open theme dropdown.
     pub menu: Option<usize>,
+    /// Where the launcher hotkey stands, once the engine has said.
+    pub shortcut: Option<LauncherShortcut>,
+    /// The compositor that binds keys in its own configuration, if this
+    /// session runs one: its line is the guidance, and nothing is asked.
+    pub compositor: Option<Compositor>,
 }
 
 impl OnboardingPage {
@@ -72,6 +84,8 @@ impl OnboardingPage {
             extensions: Extensions::new(installed),
             focused: None,
             menu: None,
+            shortcut: None,
+            compositor: None,
         }
     }
 
@@ -81,7 +95,14 @@ impl OnboardingPage {
     pub fn controls(&self) -> Vec<Control> {
         use compass_core::onboarding::{Install, RECOMMENDED_EXTENSIONS, Step};
         let mut controls = match self.flow.step() {
-            Step::Personalize => vec![Control::Theme, Control::OpenDocs],
+            Step::Personalize => {
+                let hotkey = if self.offers_request() {
+                    Control::RequestShortcut
+                } else {
+                    Control::OpenDocs
+                };
+                vec![Control::Theme, hotkey, Control::LoginStart]
+            }
             Step::Extensions => (0..RECOMMENDED_EXTENSIONS.len())
                 .filter(|&index| {
                     self.extensions
@@ -99,6 +120,22 @@ impl OnboardingPage {
         }
         controls.push(Control::Continue);
         controls
+    }
+
+    /// Whether the hotkey row offers to ask the desktop
+    /// ([`launcher_shortcut::offers_request`]).
+    #[must_use]
+    pub fn offers_request(&self) -> bool {
+        launcher_shortcut::offers_request(self.shortcut.as_ref(), self.compositor)
+    }
+
+    /// Whether finishing or closing the flow should ask the desktop for the
+    /// hotkey: nobody pressed Set Up Shortcut, and the engine is, or may be,
+    /// waiting for the flow to ask.
+    #[must_use]
+    pub fn asks_on_finish(&self) -> bool {
+        self.compositor.is_none()
+            && matches!(self.shortcut, None | Some(LauncherShortcut::NotRequested))
     }
 
     /// Tab or Shift+Tab.
@@ -136,6 +173,7 @@ mod tests {
             [
                 Control::Theme,
                 Control::OpenDocs,
+                Control::LoginStart,
                 Control::Back,
                 Control::Continue
             ]
@@ -156,5 +194,37 @@ mod tests {
             installs,
             compass_core::onboarding::RECOMMENDED_EXTENSIONS.len()
         );
+    }
+
+    #[test]
+    fn the_hotkey_row_asks_only_where_asking_can_help() {
+        let mut page = OnboardingPage::new(PathBuf::from("/nonexistent"), Vec::new(), |_| false);
+        let _ = page.flow.advance();
+        assert!(page.asks_on_finish(), "nothing known: finishing asks");
+        for (state, offered) in [
+            (LauncherShortcut::NotRequested, true),
+            (LauncherShortcut::Refused, true),
+            (
+                LauncherShortcut::Conflict {
+                    reason: "Taken.".to_owned(),
+                },
+                true,
+            ),
+            (LauncherShortcut::Granted { trigger: None }, false),
+            (LauncherShortcut::Unavailable, false),
+        ] {
+            page.shortcut = Some(state.clone());
+            let hotkey = if offered {
+                Control::RequestShortcut
+            } else {
+                Control::OpenDocs
+            };
+            assert_eq!(page.controls()[1], hotkey, "{state:?}");
+        }
+        assert!(!page.asks_on_finish(), "an answer was had");
+        page.shortcut = Some(LauncherShortcut::Refused);
+        page.compositor = Some(Compositor::Niri);
+        assert_eq!(page.controls()[1], Control::OpenDocs, "niri owns the key");
+        assert!(!page.asks_on_finish());
     }
 }

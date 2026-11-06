@@ -1042,7 +1042,26 @@ Declared differences:
   Hyprland and niri the line for the compositor's configuration, elsewhere the hotkey with
   `compass toggle` as the fallback, and inside the Flatpak `flatpak run org.tunaos.compass toggle`
   (`compass_core::hotkey_guide`).
-- The macOS permissions step and Launch at login are not offered, as on the C++'s Linux build.
+- **The launcher hotkey is asked for from the flow** (#311). The C++ binds its shortcut at server
+  start; on GNOME that puts the desktop's GlobalShortcuts permission dialog beside a flow that has not
+  explained it. While the flow is due, the engine's portal backend binds nothing at start
+  (`compass::global_shortcuts::Service::defer`); "Make it your own" shows where the hotkey stands
+  (`compass_core::launcher_shortcut`: not yet asked, waiting, granted with the desktop's own words
+  for the key, left without a key because something else has it, declined, no portal, or failed,
+  each with its next step) and its Set Up Shortcut and Try Again ask (IPC v25
+  `Request::LauncherShortcut`). Finishing or closing the flow asks if nobody did. The compositor
+  hotkey protocols, which show no dialog, bind at start as before, and on Sway, Hyprland and niri
+  the row keeps the configuration line. Only Compass's own shortcuts, in its own portal session, are
+  ever bound.
+- **Start at login is a choice in the flow and in Settings, General** (#312, ADR-0022 §2). The C++
+  offers Launch at login only on macOS. Here the switch is off until turned on, and asks the
+  Background portal for autostart with `compass start --hidden`; an unsandboxed install with no
+  Background portal writes its own `$XDG_CONFIG_HOME/autostart/compass.desktop` and removes only
+  that. The row says what the desktop answered (on, declined, or unavailable, never on when it is
+  not) and reports the packaged `compass.service` user unit without touching it
+  (`compass_core::login_start`, `compass_platform::LoginStarter`,
+  `compass_platform_linux::LinuxLoginStart`, IPC v25 `Request::LoginStart`).
+- The macOS permissions step is not offered, as on the C++'s Linux build.
 - An "Add extensions" step before the last recommends `compass_core::onboarding::RECOMMENDED_EXTENSIONS`
   (store extensions Suite 1 shows rendering) with an Install button each, through the store's own
   `store_install`. The C++ flow never mentions extensions (#250). A failed install, offline

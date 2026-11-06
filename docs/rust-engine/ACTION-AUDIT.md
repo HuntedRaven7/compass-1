@@ -366,6 +366,7 @@ sidebar page, so a control is audited without anyone naming it.
 | General › SidebarSelected(12) | changes Settings | `every_control_in_the_settings_view_does_something` |
 | General › Changed("launcher.check_for_updates", Bool(false)) | changes Settings; calls engine.settings_set | `every_control_in_the_settings_view_does_something` |
 | General › Changed("launcher.clock.enabled", Bool(false)) | changes Settings; calls engine.settings_set | `every_control_in_the_settings_view_does_something` |
+| General › LoginStartToggled(true) | calls engine.login; calls engine.login_changes | `every_control_in_the_settings_view_does_something` |
 | Appearance › Changed("launcher.appearance.theme", String("system")) | changes Settings; calls engine.settings_set | `every_control_in_the_settings_view_does_something` |
 | Appearance › Changed("launcher.appearance.color_scheme", String("system")) | changes Settings; calls engine.settings_set | `every_control_in_the_settings_view_does_something` |
 | Appearance › Changed("launcher.appearance.preset", String("gnome")) | changes Settings; calls engine.settings_set | `every_control_in_the_settings_view_does_something` |

@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 percent-encoding.workspace = true
-ashpd = { workspace = true, features = ["global_shortcuts", "open_uri", "file_chooser", "settings"] }
+ashpd = { workspace = true, features = ["background", "global_shortcuts", "open_uri", "file_chooser", "settings"] }
 zbus.workspace = true
 futures-util.workspace = true
 thiserror.workspace = true

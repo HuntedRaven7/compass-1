@@ -582,6 +582,16 @@ pub enum Message {
     OnboardingInstall(usize),
     /// That install finished: the installed id and title, or why not.
     OnboardingInstalled(usize, Result<(String, String), String>),
+    /// The first-run flow's Set Up Shortcut or Try Again: ask the desktop
+    /// for the launcher hotkey.
+    OnboardingRequestShortcut,
+    /// Where the launcher hotkey stands, as the engine answered.
+    LauncherShortcutAnswered(Result<compass_core::launcher_shortcut::LauncherShortcut, String>),
+    /// The login start switch was flipped, in the first-run flow or Settings.
+    LoginStartToggled(bool),
+    /// Whether Compass starts at login, as the engine answered, or why a
+    /// change did not happen.
+    LoginStartAnswered(Result<compass_core::login_start::Status, String>),
     /// Configure Fallback Commands' filter changed.
     FallbacksQueryChanged(String),
     /// A row of Configure Fallback Commands was clicked: its action runs.
