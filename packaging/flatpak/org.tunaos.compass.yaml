@@ -83,6 +83,15 @@ finish-args:
   # sender allowlist, not by bus policy.
   - --talk-name=org.gnome.Shell
 
+  # --- Screen readers ------------------------------------------------------
+  # The launcher's accessibility tree (compass-a11y-linux, ADR-0022 §1). Flatpak already proxies
+  # the accessibility bus itself into the sandbox (AT_SPI_BUS_ADDRESS); what it does not pass is
+  # org.a11y.Bus on the session bus, whose org.a11y.Status.IsEnabled is how accesskit_unix learns
+  # that a screen reader is running. Without it the launcher never puts its tree on the bus and
+  # Orca reads nothing. The Orca gate (scripts/tier2/orca.sh, #305) found this on its first run
+  # against this bundle, and its control runs the bundle without the grant.
+  - --talk-name=org.a11y.Bus
+
   # --- The tray -----------------------------------------------------------
   # Compass's own tray icon registers with the desktop's watcher, and Search Tray asks it for
   # the other applications' icons (compass::tray_icon, compass::tray_host). The icon registers

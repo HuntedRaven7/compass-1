@@ -78,6 +78,10 @@ mod workspaces;
 /// `advanced` feature for one constant; both call sites take `impl Into<Id>`.
 const SEARCH_INPUT: &str = "compass-search-input";
 const PANEL_INPUT: &str = "compass-action-filter";
+/// How long the root's answer stands before assistive technology hears it:
+/// longer than Orca's 0.1 s between two announcements, shorter than a pause
+/// a person would notice.
+const RESULTS_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 const APP_OPEN: &str = "app.open";
 
 /// The gap between the floating action panel and the card's edges.
@@ -1024,6 +1028,12 @@ pub struct LauncherApp {
     backend: Option<Arc<dyn crate::backend::ApplicationBackend>>,
     search_generation: u64,
     search_task: Option<iced::task::Handle>,
+    /// The engine answered the root search a moment ago, and assistive
+    /// technology is not told until it has stood for [`RESULTS_SETTLE`]:
+    /// answers that arrive close together would each change the announced
+    /// count, and Orca drops an announcement within 0.1 s of the last, so the
+    /// final count was the one it lost (the Orca gate, #305).
+    results_settling: bool,
     /// The engine driving this window. See [`AppFlags::link`].
     link: Option<EngineLink>,
     exit_on_engine_disconnect: bool,
@@ -1508,6 +1518,7 @@ impl LauncherApp {
             backend: None,
             search_generation: 0,
             search_task: None,
+            results_settling: false,
             link: None,
             exit_on_engine_disconnect: false,
             window: None,
@@ -2651,7 +2662,29 @@ impl LauncherApp {
                     }
                     Err(error) => self.error = Some(format!("could not search: {error}")),
                 }
-                crate::scroll::reveal_root_selection()
+                if self.query.is_empty() {
+                    return crate::scroll::reveal_root_selection();
+                }
+                self.results_settling = true;
+                let settled = Task::perform(
+                    async move {
+                        // The launcher runs its tasks on tokio. Without a
+                        // timer (a test driving the task on a plain executor)
+                        // the answer is described at once.
+                        if tokio::runtime::Handle::try_current().is_ok() {
+                            tokio::time::sleep(RESULTS_SETTLE).await;
+                        }
+                        generation
+                    },
+                    Message::ResultsSettled,
+                );
+                Task::batch([crate::scroll::reveal_root_selection(), settled])
+            }
+            Message::ResultsSettled(generation) => {
+                if generation == self.search_generation {
+                    self.results_settling = false;
+                }
+                Task::none()
             }
             Message::ResultSelected(index) => {
                 if index < self.results.len() {
@@ -5927,6 +5960,7 @@ impl LauncherApp {
 
     fn cancel_search(&mut self) {
         self.search_generation = self.search_generation.wrapping_add(1);
+        self.results_settling = false;
         if let Some(handle) = self.search_task.take() {
             handle.abort();
         }
@@ -11300,6 +11334,53 @@ mod tests {
             assert!(app.results.is_empty());
             assert!(app.error.is_some());
         }
+    }
+
+    /// Found by the Orca gate (#305): typing empties the list until the
+    /// engine answers, and the status line said "No results" in between, so
+    /// a screen reader announced it on every keystroke before the count, and
+    /// the list was taken off the bus and put back each time. Meanwhile the
+    /// window says it is waiting, and the tree keeps what it last said.
+    #[test]
+    fn a_search_the_engine_has_not_answered_keeps_the_last_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["applications:alpha".to_owned()],
+            ..TestBackend::default()
+        });
+        let mut app = backend_app(dir.path(), backend);
+        let pending = app.update(Message::QueryChanged("Alpha".to_owned()));
+        let before = crate::semantics::Semantics {
+            status: Some("2 results".to_owned()),
+            ..crate::semantics::Semantics::default()
+        };
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, crate::semantics::Body::Pending);
+        assert_eq!(semantics.status, None);
+        let settled = semantics.settle(Some(&before));
+        assert_eq!(settled.status.as_deref(), Some("2 results"));
+        assert_eq!(settled.search.unwrap().value, "Alpha");
+        let _ = app.update(Message::SearchCompleted {
+            generation: app.search_generation,
+            result: Ok(vec!["applications:alpha".to_owned()]),
+        });
+        drop(pending);
+        // Answered, but not yet stood long enough to be announced.
+        assert_eq!(app.semantics().body, crate::semantics::Body::Pending);
+        let _ = app.update(Message::ResultsSettled(app.search_generation));
+        assert_eq!(app.semantics().status.as_deref(), Some("1 result"));
+        let _pending = app.update(Message::QueryChanged("Nothing".to_owned()));
+        let _ = app.update(Message::SearchCompleted {
+            generation: app.search_generation,
+            result: Ok(Vec::new()),
+        });
+        // A timer from an earlier answer does not release this one.
+        let _ = app.update(Message::ResultsSettled(
+            app.search_generation.wrapping_sub(1),
+        ));
+        assert_eq!(app.semantics().body, crate::semantics::Body::Pending);
+        let _ = app.update(Message::ResultsSettled(app.search_generation));
+        assert_eq!(app.semantics().status.as_deref(), Some("No results"));
     }
 
     #[test]

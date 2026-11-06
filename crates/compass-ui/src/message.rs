@@ -165,6 +165,9 @@ pub enum Message {
     /// The debounce for Search Files query `generation` ran out; ask, unless
     /// the text moved on meanwhile.
     FilesDebounced(u64),
+    /// The root's answer to search `generation` has stood long enough to be
+    /// described to assistive technology (`LauncherApp::results_settling`).
+    ResultsSettled(u64),
     /// Search Files' answer to query `generation` arrived.
     FilesLoaded {
         /// The query it answers; a stale one is dropped.

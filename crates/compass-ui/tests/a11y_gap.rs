@@ -1,13 +1,13 @@
-//! #118 — the launcher's accessibility tree, and the part of the gap that is
-//! still open.
+//! #118 — the launcher's accessibility tree, the Orca gate that proves it,
+//! and the part of the gap that is still open.
 //!
 //! The tree exists (ADR-0022 §1): `compass-ui` describes the window from its
 //! state (`compass_ui::semantics`) and `compass-a11y-linux` serves it on
-//! AT-SPI, which `compass-a11y-linux/tests/private_bus.rs` reads back off a
-//! real accessibility bus. What is still open is #305: no Orca session has
-//! read the launcher. These tests keep that written down rather than silent;
-//! #305 retires them, the doctor warning and the CUTOVER note together, once
-//! Orca reads the launcher in a real session.
+//! AT-SPI. Orca reads and operates it in a real Mutter session: the Orca gate
+//! (`scripts/tier2/orca.sh`, #305) runs per pull request against the Flatpak
+//! the pull request built. What is still open is recorded in ADR-0016's
+//! "Where it stands" and stated by `doctor`; these tests keep the three in
+//! step, so none of them can quietly claim more than the others.
 
 use std::path::Path;
 
@@ -24,11 +24,34 @@ fn workspace_file(path: &str) -> String {
 }
 
 #[test]
-fn adr_0016_records_the_tree_and_what_is_still_open() {
+fn adr_0016_records_the_tree_the_orca_gate_and_what_is_still_open() {
     let adr = workspace_file("docs/rust-engine/adr/0016-a11y-gap.md");
-    for needle in ["AccessKit", "compass-a11y-linux", "#305", "Orca", "#118"] {
+    for needle in [
+        "AccessKit",
+        "compass-a11y-linux",
+        "scripts/tier2/orca.sh",
+        "ORCA-CHECKLIST.md",
+        "#304",
+        "#118",
+    ] {
         assert!(adr.contains(needle), "ADR-0016 no longer mentions {needle}");
     }
+}
+
+#[test]
+fn the_orca_gate_runs_in_ci_against_the_flatpak() {
+    // The claim ADR-0016, CUTOVER and the doctor now make -- Orca reads the
+    // launcher -- rests on this step. If it leaves CI, the claim goes with it.
+    let tier2 = workspace_file(".github/workflows/tier2.yaml");
+    assert!(
+        tier2.contains("scripts/tier2/orca.sh"),
+        "tier2.yaml no longer runs the Orca gate — ADR-0016, CUTOVER.md and the doctor's a11y check say Orca is verified"
+    );
+    let manifest = workspace_file("packaging/flatpak/org.tunaos.compass.yaml");
+    assert!(
+        manifest.contains("- --talk-name=org.a11y.Bus"),
+        "the Flatpak lost org.a11y.Bus: inside the sandbox the launcher never learns a screen reader is on"
+    );
 }
 
 #[test]

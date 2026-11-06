@@ -234,7 +234,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Install a compositor and Flatpak
+      # orca, at-spi2-core and python3-gobject are the Orca gate's: the
+      # screen reader itself, the accessibility bus and registry it reads
+      # through, and the Atspi bindings the gate's probe reads them with.
+      - name: Install a compositor, Flatpak and a screen reader
         run: |
           dnf -y install --setopt=install_weak_deps=False \
             mutter \
@@ -245,7 +248,10 @@ jobs:
             glib2 \
             procps-ng \
             flatpak \
-            bubblewrap
+            bubblewrap \
+            orca \
+            at-spi2-core \
+            python3-gobject
 
       - name: Fetch the Flatpak bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -287,6 +293,26 @@ jobs:
           scripts/tier2/headless-gnome-spike.sh \
             scripts/tier2/session.sh
 
+      # THE ORCA GATE (#305): Orca, running, reads and operates the launcher
+      # this pull request built. Summon, type, arrow, the action panel, an
+      # action pressed through AT-SPI, a form's text field and checkbox --
+      # each checked on the AT-SPI tree and in what Orca said, from its debug
+      # log. Its control runs the same bundle without `org.a11y.Bus`, which is
+      # how it shipped until this gate's first run, and must fail.
+      #
+      # REPORT-ONLY FOR NOW (continue-on-error), with a reason: its first
+      # local rounds were not stable. On Fedora 44 the final result count was
+      # lost to Orca's own spam filter (it drops an announcement within 0.1 s
+      # of the last), since fixed in the launcher (RESULTS_SETTLE); Fedora 45
+      # (Orca 51) lacks org.a11y.Status.ScreenReaderEnabled and logs speech
+      # in another shape, both since handled. Each passed once locally after
+      # its fix; make this gating once a week of runs here is green.
+      - name: Can Orca read and operate the launcher?
+        continue-on-error: true
+        run: |
+          scripts/tier2/headless-gnome-spike.sh \
+            scripts/tier2/orca.sh
+
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -296,5 +322,8 @@ jobs:
             /tmp/gnome-shell.log
             /tmp/wayland-info.txt
             /tmp/tier2-session.log
+            /tmp/orca-debug.log
+            /tmp/orca-transcript.md
+            /tmp/tier2-orca-launcher.log
           if-no-files-found: warn
           retention-days: 7

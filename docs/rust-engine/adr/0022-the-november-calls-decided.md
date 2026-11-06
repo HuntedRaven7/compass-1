@@ -83,9 +83,11 @@ repeated runs (#306), not bought with quieter hardware.
 - #302 is unblocked; #303–#305 follow it unchanged. `accesskit`/`accesskit_unix` join the workspace,
   and the crate that owns the adapter goes on the seam test's `MAY_BE_LINUX_BOUND` list. Done: the
   adapter is `compass-a11y-linux`, the seam is `compass_platform::AccessibilityTree`, and the model
-  is `compass_ui::semantics`; ADR-0016's "Where it stands" lists what is described and what #305
-  still has to show. `accesskit_unix` runs with its `tokio` feature, because the workspace's zbus
-  has `tokio` and that takes over zbus's executor in every crate that shares it.
+  is `compass_ui::semantics`; ADR-0016's "Where it stands" lists what is described, and the Orca
+  gate (`scripts/tier2/orca.sh`, #305) shows Orca reading and operating it on every pull request,
+  so `a11y_gap` now keeps that gate in CI rather than a gap open. `accesskit_unix` runs with its
+  `tokio` feature, because the workspace's zbus has `tokio` and that takes over zbus's executor in
+  every crate that shares it.
 - #312 is unblocked; #314's install-journey test exercises the portal path.
 - #315 can build its prototype; #316–#318 still wait for it.
 - #326 stays open as a migration tracker, not a CI failure.

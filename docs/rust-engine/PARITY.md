@@ -1621,24 +1621,26 @@ IPC v22: `ExtensionAlert::remember_text` and `Request::ExtensionAlertRemember`
 and Search against a Linuxbrew `brew`; Suite 1's ledger is unchanged, since its
 corpus leaves macOS-only listings out.
 
-### The accessibility tree (2026-11-05)
+### The accessibility tree (2026-11-06)
 
 Against what the C++'s QML exposed through Qt's `Accessible` properties (ADR-0018 counts 15 files:
 the query field, the results and the action panel), and the form controls #304 asks for. The
 route is ADR-0022 §1 — AccessKit's Unix adapter over a model of our own, since Iced 0.14 has no
 tree — and ADR-0016's "Where it stands" is the full account. #302, #303 and #304 are done, and
-#305 (Orca in a real session) is what is left.
+#305's Orca gate reads and operates the launcher with Orca in a real session on every pull request
+([ORCA-CHECKLIST.md](./ORCA-CHECKLIST.md) has the manual pass and the Bluefin run).
 
 | Area | Rust | Tests that would fail on a regression |
 |---|---|---|
 | The window on AT-SPI, open and closed with the launcher | `compass_a11y_linux::AtspiTree`, `compass_platform::AccessibilityTree`, `compass_ui::accessibility` | `the_launcher_is_read_off_a_private_accessibility_bus` (private session and accessibility bus, `at-spi2-registryd`) |
-| Query, results, selection, count, empty/loading/error status | `compass_ui::semantics`, `LauncherApp::semantics` | `the_query_is_an_editable_search_field_with_its_text`, `results_are_a_list_of_named_described_options_with_their_count`, `a_status_is_a_polite_live_region_and_absent_without_one`, `a_query_describes_its_results_their_count_and_the_selection`, `no_results_is_said_once_and_an_error_replaces_it`, `focus_is_on_the_field_while_typing_and_follows_the_selection_once_moved` |
+| Query, results, selection, count, empty/loading/error status | `compass_ui::semantics`, `LauncherApp::semantics` | `the_query_is_an_editable_search_field_with_its_text`, `results_are_a_list_of_named_described_options_with_their_count`, `a_status_is_a_polite_live_region_and_absent_without_one`, `a_query_describes_its_results_their_count_and_the_selection`, `no_results_is_said_once_and_an_error_replaces_it`, `focus_is_on_the_field_while_typing_and_follows_the_selection_once_moved`, `results_arriving_after_typing_cleared_the_list_leave_the_focus_on_the_field`, `a_pending_body_keeps_what_was_said_under_the_field`, `a_search_the_engine_has_not_answered_keeps_the_last_description` |
 | Action panel: menu, items, current item, shortcuts, press | same | `the_action_panel_is_a_menu_with_its_current_item`, `the_action_panel_is_described_as_a_menu_with_its_current_action`, `requests_do_what_the_keyboard_would` |
 | Forms: text, password, text area, checkbox, dropdown, tags, files, notes; required, invalid; focus order | same | `form_controls_have_their_roles_values_and_states`, `a_preference_form_has_its_controls_in_order_and_follows_the_keyboard`, `an_extension_form_names_each_control_and_its_value` |
 | Confirmations and extension alerts | same | `a_question_is_an_alert_with_the_keys_that_answer_it` |
 | Builtin views: every list's rows with selection and press, grids, the preview or detail beside a list, text pages | same, each view's `*_semantics` beside its drawing | `a_grid_is_rows_of_cells_that_say_where_they_are`, `a_document_is_its_headings_paragraphs_and_metadata`, `a_lists_detail_is_beside_it`, `a_builtin_lists_rows_are_clicked_and_focused_as_its_rows`, and a test per view in its own module |
 | Extension Detail and Grid | same | `an_extension_detail_is_read_as_its_markdown_and_metadata`, `an_extension_grid_is_rows_of_each_sections_columns`, `markdown_is_read_without_its_markup` |
 | Settings and the first-run flow: sidebar, switches, combo boxes that open, buttons | `app::settings_a11y` | `the_settings_are_their_pages_beside_the_page_shown_as_a_form`, `the_first_run_flow_is_a_form_whose_buttons_press`, `a_list_beside_a_form_takes_requests_for_both_and_an_open_dropdown_its_option`, `switches_and_buttons_are_pressed` |
+| Orca reads and operates the search, results, panel and a form: summon, type, count, arrow, panel, an action pressed through AT-SPI, a form's text field and checkbox, hide | the Flatpak, on real Mutter with Orca 50 (GNOME 50 and 51) | the Orca gate, `scripts/tier2/orca.sh` (`tier2.yaml`), whose control is the bundle without `org.a11y.Bus` (report-only in CI until it has a week of green runs); `the_orca_gate_runs_in_ci_against_the_flatpak` |
 
 Declared differences:
 
@@ -1647,7 +1649,15 @@ Declared differences:
   focus on the field while the person types and on the selected result once they move through the
   results; the open panel, a dialog and a form's current field take it while they are there.
   Typing hands it back to the field, so the typed text is echoed rather than the top result read
-  out at every keystroke; the result count is announced instead, politely, once it changes.
+  out at every keystroke; the result count is announced instead, politely, once it changes. While
+  the engine has not answered a search, and for 250 ms after it has, the tree keeps what it last
+  said, so the rows are relabelled in place rather than removed and added at every keystroke, and
+  answers that come close together are announced once, with the last count (Orca drops an
+  announcement within 0.1 s of the last).
+- **Orca follows a selection that changes on its own.** When the selection moves without a key
+  from the person (clearing the query after moving through the results), Orca leaves the field and
+  reads the new row. GTK's entry completion avoids that with the autocompletion state and a
+  controlled-by relation, which `accesskit_unix` 0.24 does not expose.
 - **No child bounds.** Nodes carry no screen rectangle, so flat review cannot place them. Iced 0.14
   does not give the application its widgets' layout, and recomputing it from the geometry would be
   a second layout that drifts from the drawn one. Under Wayland a window does not know its

@@ -22,6 +22,18 @@
 //! while it is open, on a dialog while one asks. Typing puts it back on the
 //! field, which is what keeps the typed text echoed rather than the top
 //! result read out at every keystroke.
+//!
+//! # While a search is in flight
+//!
+//! Typing clears the results and the engine answers a moment later. Said
+//! as it happens, that is the list and the status line removed and added
+//! again at every keystroke, a "No results" before each count, and a new
+//! first row selected each time, which Orca follows out of the field and
+//! then loses when the row goes. So the root describes that moment as
+//! [`Body::Pending`], and [`Semantics::settle`] keeps the last description
+//! under the field until the answer arrives: the rows are relabelled in
+//! place, and the count is said once, when it changes. Found by the Orca
+//! gate (`scripts/tier2/orca.sh`, #305).
 
 use accesskit::{
     Action, Invalid, Live, Node, NodeId, Role, TextPosition, TextSelection, Toggled, TreeId,
@@ -75,6 +87,10 @@ pub enum Body {
     /// A list beside the form for its selected entry, as the settings show
     /// their pages and the page chosen.
     ListAndForm(List, Form),
+    /// Being recomputed: typing cleared the results and the engine has not
+    /// answered yet. Described as whatever was there before
+    /// ([`Semantics::settle`]).
+    Pending,
 }
 
 /// A list of results.
@@ -430,6 +446,24 @@ impl Semantics {
         }
     }
 
+    /// This description, with a [`Body::Pending`] replaced by what `last`
+    /// said under the field (its body, status and detail), or by nothing when there
+    /// was no last description. See the module documentation.
+    #[must_use]
+    pub fn settle(mut self, last: Option<&Semantics>) -> Self {
+        if self.body == Body::Pending {
+            match last {
+                Some(last) => {
+                    self.body = last.body.clone();
+                    self.status = last.status.clone();
+                    self.detail = last.detail.clone();
+                }
+                None => self.body = Body::Empty,
+            }
+        }
+        self
+    }
+
     /// The whole tree, with the keyboard focus on `focus`.
     #[must_use]
     pub fn tree_update(&self, focus: NodeId) -> TreeUpdate {
@@ -451,7 +485,7 @@ impl Semantics {
         }
 
         match &self.body {
-            Body::Empty => {}
+            Body::Empty | Body::Pending => {}
             Body::List(list) => {
                 children.push(LIST);
                 list_nodes(list, &mut nodes);
@@ -912,8 +946,12 @@ impl FocusTracker {
             .and_then(|list| list.selected.filter(|&s| s < list.items.len()));
         match &self.last {
             Some((last_query, _)) if *last_query != query => self.on_results = false,
-            Some((_, last_selected)) if *last_selected != selected && selected.is_some() => {
-                self.on_results = true;
+            // A move is from one selected row to another. A list arriving
+            // where there was none (the search's answer, after typing
+            // cleared the old one) selects its first row without anyone
+            // having moved, and the focus stays on the field.
+            Some((_, Some(last_selected))) if Some(*last_selected) != selected => {
+                self.on_results = selected.is_some();
             }
             _ => {}
         }
@@ -1578,6 +1616,43 @@ mod tests {
         assert_eq!(focus.focus(&root("f", &items[..1], Some(0))), item_id(0));
         // Typing takes it back to the field.
         assert_eq!(focus.focus(&root("fi", &items, Some(0))), SEARCH);
+    }
+
+    #[test]
+    fn results_arriving_after_typing_cleared_the_list_leave_the_focus_on_the_field() {
+        // The engine answers a search asynchronously: typing empties the
+        // list, and the answer fills it with its first row selected. Found
+        // by the Orca gate (#305), where the focus jumped to that row on
+        // every keystroke.
+        let mut focus = FocusTracker::new();
+        let items = [("Firefox", None), ("Files", None)];
+        assert_eq!(focus.focus(&root("", &items, Some(0))), SEARCH);
+        let searching = Semantics {
+            body: Body::Empty,
+            ..root("f", &[], None)
+        };
+        assert_eq!(focus.focus(&searching), SEARCH);
+        assert_eq!(focus.focus(&root("f", &items, Some(0))), SEARCH);
+        assert_eq!(focus.focus(&root("f", &items, Some(1))), item_id(1));
+    }
+
+    #[test]
+    fn a_pending_body_keeps_what_was_said_under_the_field() {
+        let items = [("Firefox", None), ("Files", None)];
+        let mut before = root("f", &items, Some(0));
+        before.status = Some("2 results".to_owned());
+        let pending = Semantics {
+            body: Body::Pending,
+            ..root("fi", &[], None)
+        };
+        let settled = pending.clone().settle(Some(&before));
+        assert_eq!(settled.search.as_ref().unwrap().value, "fi");
+        assert_eq!(settled.body, before.body);
+        assert_eq!(settled.status, before.status);
+        assert_eq!(pending.settle(None).body, Body::Empty);
+        // An answered search is described as it is.
+        let answered = root("fi", &items[..1], Some(0));
+        assert_eq!(answered.clone().settle(Some(&before)), answered);
     }
 
     #[test]

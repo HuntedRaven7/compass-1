@@ -241,6 +241,15 @@ impl LauncherApp {
                 ..PageSemantics::default()
             };
         }
+        // Typing clears the list and the engine answers later, and its answer
+        // is described once it has stood a moment (`results_settling`);
+        // meanwhile what is described is what was there (`Semantics::settle`).
+        if (self.search_task.is_some() && self.results.is_empty()) || self.results_settling {
+            return PageSemantics {
+                body: Body::Pending,
+                ..PageSemantics::default()
+            };
+        }
         if self.results.is_empty() {
             let status = if self.query.is_empty() {
                 "Type to search"

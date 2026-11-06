@@ -19,7 +19,7 @@ use compass_platform::AccessibilityTree;
 use tokio::sync::mpsc;
 
 use crate::message::Message;
-use crate::semantics::{FocusTracker, Semantics};
+use crate::semantics::{Body, FocusTracker, Semantics};
 
 struct Installed {
     tree: Box<dyn AccessibilityTree>,
@@ -99,7 +99,16 @@ impl TreeSync {
             }
             return;
         }
-        let semantics = describe();
+        let described = describe();
+        if !self.open && described.body == Body::Pending {
+            // A window that opens on a search in flight (its initial
+            // suggestions) goes on the bus once the answer is in, whole. Its
+            // rows are then the window's content rather than a selection
+            // appearing under the field, which Orca reads before the field
+            // (the Orca gate on Bluefin, #305).
+            return;
+        }
+        let semantics = described.settle(self.last.as_ref());
         if !self.open {
             self.open = true;
             self.focus = FocusTracker::new();

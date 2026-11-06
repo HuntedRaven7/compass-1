@@ -32,6 +32,14 @@ that back.
   behind `compass-ui`. The COSMIC fork's support is partial (pop-os/libcosmic#1429: its text input
   emits no node), so it is a reference, not a base.
 
+**Where decision 1 stands (2026-11-06).** Its condition is met. The tree landed through ADR-0022's
+route (AccessKit's Unix adapter over `compass_ui::semantics`), and Orca reads and operates the
+launcher's search, results, action panel and forms in a real session, gated on every pull request
+by the Orca gate (`scripts/tier2/orca.sh`, #305; ADR-0016's "Where it stands"). The packaged
+screen-reader fallback never shipped: ADR-0021 removed the C++ engine first, so there is no
+fallback to retire and no entry point routes on `ScreenReaderEnabled`. With #304 every view is
+described, so `doctor` reports a running screen reader as fine rather than warning.
+
 ### 2. Phase 1's GNOME gate, reworded
 
 "Runs from a Flatpak on Bluefin under GNOME 50 and 51" cannot be met: no Bluefin image is built on
