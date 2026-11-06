@@ -185,6 +185,20 @@ impl DmenuPage {
             .as_deref()
             .unwrap_or(DEFAULT_PLACEHOLDER)
     }
+
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that nothing matches; `None` while it shows entries.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Loading entries…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.shown.is_empty() => {
+                Some("No entries match. Enter passes the search text.")
+            }
+            Status::Ready => None,
+        }
+    }
 }
 
 /// An entry's title and second line: a path shows its last component, and

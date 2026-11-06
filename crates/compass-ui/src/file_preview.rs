@@ -41,6 +41,22 @@ pub struct FilePreview {
     pub content: Content,
 }
 
+impl FilePreview {
+    /// The metadata listed under the preview, as `(label, value)`.
+    #[must_use]
+    pub fn fields(&self) -> Vec<(&'static str, &str)> {
+        let mut fields = vec![
+            ("Name", self.name.as_str()),
+            ("Path", self.path.as_str()),
+            ("Type", self.mime.as_str()),
+        ];
+        if let Some(modified) = &self.modified {
+            fields.push(("Last modified", modified.as_str()));
+        }
+        fields
+    }
+}
+
 /// Whether a MIME type is text, as `QMimeType::inherits("text/plain")`
 /// answers for the types a file's extension gives.
 #[must_use]

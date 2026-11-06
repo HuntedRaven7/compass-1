@@ -17,6 +17,20 @@ pub struct ThemeRow {
     pub heading: Option<&'static str>,
 }
 
+impl ThemeRow {
+    /// The subtitle the row shows: the theme's description, or the stock
+    /// one when it has none.
+    #[must_use]
+    pub fn subtitle(&self) -> &'static str {
+        let description = self.theme.description();
+        if description.is_empty() {
+            theme_picker::DEFAULT_DESCRIPTION
+        } else {
+            description
+        }
+    }
+}
+
 /// The view's state.
 #[derive(Debug, Clone)]
 pub struct ThemesPage {
@@ -94,6 +108,12 @@ impl ThemesPage {
     #[must_use]
     pub fn selected_theme(&self) -> Option<Theme> {
         self.rows.get(self.selected).map(|row| row.theme)
+    }
+
+    /// What the view says in place of the list when no theme matches.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&'static str> {
+        self.rows.is_empty().then_some("No themes match")
     }
 }
 

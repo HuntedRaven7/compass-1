@@ -210,8 +210,8 @@ impl LauncherApp {
 
     /// The view's body.
     pub(super) fn themes_body<'a>(&'a self, page: &'a ThemesPage) -> Element<'a, Message> {
-        if page.rows.is_empty() {
-            return self.notice("No themes match");
+        if let Some(notice) = page.empty_notice() {
+            return self.notice(notice);
         }
         let mut list = column![].spacing(f32::from(self.geometry.row_spacing));
         for (position, row) in page.rows.iter().enumerate() {
@@ -230,13 +230,7 @@ impl LauncherApp {
             let item = self.list_row(
                 self.initial_badge(row.theme.title(), selected),
                 row.theme.title().to_owned(),
-                self.subtitles.then(|| {
-                    if row.theme.description().is_empty() {
-                        theme_picker::DEFAULT_DESCRIPTION.to_owned()
-                    } else {
-                        row.theme.description().to_owned()
-                    }
-                }),
+                self.subtitles.then(|| row.subtitle().to_owned()),
                 selected,
             );
             let item: Element<Message> = match row.theme.swatches() {
@@ -288,5 +282,50 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The view, for assistive technology.
+    pub(super) fn themes_semantics(&self, page: &ThemesPage) -> super::a11y::PageSemantics {
+        let items = page
+            .rows
+            .iter()
+            .map(|row| super::a11y::item(row.theme.title(), Some(row.subtitle().to_owned())))
+            .collect();
+        super::a11y::PageSemantics::list("Themes", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantics::Body;
+    use crate::theme::Theme;
+
+    #[test]
+    fn the_themes_are_a_list_with_their_descriptions_and_say_when_none_match() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        app.page = Page::Themes(ThemesPage::new(Theme::System, Vec::new()));
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Themes");
+        assert_eq!(list.items.len(), Theme::ALL.len());
+        assert_eq!(list.items[0].name, "System");
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some("Follow OS (Adwaita)")
+        );
+        assert_eq!(list.selected, Some(0));
+
+        let Page::Themes(page) = &mut app.page else {
+            unreachable!("the page was just set");
+        };
+        page.query = "%%%%".into();
+        page.refilter();
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No themes match"));
     }
 }

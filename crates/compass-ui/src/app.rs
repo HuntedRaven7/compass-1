@@ -50,6 +50,7 @@ mod rhai;
 mod root;
 mod runtime;
 mod scripts;
+mod settings_a11y;
 mod settings_view;
 mod shortcuts;
 mod snippets;
@@ -4809,8 +4810,8 @@ impl LauncherApp {
     /// The emoji picker's rows: the character in the icon slot, its name.
     fn emoji_body<'a>(&'a self, page: &'a crate::emoji_page::EmojiPage) -> Element<'a, Message> {
         let geometry = self.geometry;
-        if page.shown.is_empty() {
-            return self.notice("No matching emojis or symbols");
+        if let Some(empty) = page.empty_notice() {
+            return self.notice(empty);
         }
         let glyphs = compass_core::glyph::glyphs();
         let mut list = column![].spacing(f32::from(geometry.row_spacing));
@@ -4880,16 +4881,9 @@ impl LauncherApp {
         &'a self,
         page: &'a crate::windows_page::WindowsPage,
     ) -> Element<'a, Message> {
-        use crate::windows_page::Status;
         let geometry = self.geometry;
-        match &page.status {
-            Status::Loading => return self.notice("Loading windows…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready if page.all.is_empty() => {
-                return self.notice("No other windows are open");
-            }
-            Status::Ready if page.shown.is_empty() => return self.notice("No matching windows"),
-            Status::Ready => {}
+        if let Some(empty) = page.empty_notice() {
+            return self.notice(empty);
         }
         let mut list = column![].spacing(f32::from(geometry.row_spacing));
         for (position, &index) in page.shown.iter().enumerate() {
@@ -4897,11 +4891,7 @@ impl LauncherApp {
                 continue;
             };
             let selected = position == page.selected;
-            let title = if window.title.is_empty() {
-                window.app.clone()
-            } else {
-                window.title.clone()
-            };
+            let title = crate::windows_page::title(window).to_owned();
             let row = self.list_row(
                 self.window_icon(window, selected),
                 title,
@@ -4927,9 +4917,25 @@ impl LauncherApp {
         }
     }
 
+    /// The window switcher's list, for assistive technology.
+    fn windows_semantics(&self, page: &crate::windows_page::WindowsPage) -> a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                page.all
+                    .get(index)
+                    .map_or_else(crate::semantics::Item::default, |window| {
+                        a11y::item(crate::windows_page::title(window), Some(window.app.clone()))
+                    })
+            })
+            .collect();
+        a11y::PageSemantics::list("Windows", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+
     /// Search Files' body: its state, or its heading and rows.
     fn files_body<'a>(&'a self, page: &'a crate::files_page::FilesPage) -> Element<'a, Message> {
-        use crate::files_page::Status;
         let geometry = self.geometry;
         let key = page
             .category
@@ -4960,20 +4966,14 @@ impl LauncherApp {
         .padding(Padding::new(4.0).right(10));
         // The loading indicator (`setLoading`): a query is out.
         let indicator = container(
-            text(if page.searching { "Searching…" } else { "" })
+            text(page.indicator().unwrap_or_default())
                 .font(self.font())
                 .size(12)
                 .color(self.palette().muted.to_iced()),
         )
         .padding(Padding::new(8.0).left(12));
         let filter = row![indicator, filter];
-        let empty = match &page.status {
-            Status::Loading => Some("Searching files…"),
-            Status::Failed(reason) => Some(reason.as_str()),
-            Status::Ready if page.rows.is_empty() => Some("No files found"),
-            Status::Ready => None,
-        };
-        if let Some(empty) = empty {
+        if let Some(empty) = page.empty_notice() {
             return column![filter, self.notice(empty)].into();
         }
         let home =
@@ -5028,30 +5028,48 @@ impl LauncherApp {
         }
     }
 
+    /// Search Files' list and the selected file's preview, for assistive
+    /// technology.
+    fn files_semantics(&self, page: &crate::files_page::FilesPage) -> a11y::PageSemantics {
+        let home =
+            compass_core::xdg_dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
+        let items = page
+            .rows
+            .iter()
+            .map(|file| {
+                a11y::item(
+                    file.name.clone(),
+                    Some(crate::files_page::subtitle(file, home.as_deref())),
+                )
+            })
+            .collect();
+        let label = if page.heading.is_empty() {
+            "Files"
+        } else {
+            page.heading.as_str()
+        };
+        let notice = page.notice.as_deref().or(page.indicator());
+        a11y::PageSemantics::list(label, items, page.selected, page.empty_notice())
+            .with_status(notice, &page.query)
+            .with_detail(
+                page.preview
+                    .as_ref()
+                    .map(|preview| a11y::file_preview_document(preview, true)),
+            )
+    }
+
     /// Clipboard history's body: its state, or its rows.
     fn clipboard_body<'a>(
         &'a self,
         page: &'a crate::clipboard_page::ClipboardPage,
     ) -> Element<'a, Message> {
-        use crate::clipboard_page::Status;
         let geometry = self.geometry;
         let filter = self.clipboard_filter(page);
         let status = page
             .monitoring
             .and_then(crate::clipboard_page::monitoring_notice)
             .map(|line| self.section_heading(line.to_owned()));
-        let empty = match &page.status {
-            Status::Loading => Some("Loading clipboard history…"),
-            Status::Failed(reason) => Some(reason.as_str()),
-            Status::Ready
-                if page.rows.is_empty() && page.query.is_empty() && page.kind.is_none() =>
-            {
-                Some("Nothing copied yet")
-            }
-            Status::Ready if page.rows.is_empty() => Some("No matching entries"),
-            Status::Ready => None,
-        };
-        if let Some(empty) = empty {
+        if let Some(empty) = page.empty_notice() {
             return column![filter].push(status).push(self.notice(empty)).into();
         }
         let mut list = column![].spacing(f32::from(geometry.row_spacing));
@@ -19454,5 +19472,121 @@ mod cold_start_tests {
             app.first_frame_at.is_some(),
             "the latch still closes, or the subscription would never stop"
         );
+    }
+}
+
+#[cfg(test)]
+mod windows_and_files_semantics_tests {
+    use super::*;
+    use crate::backend::{FileResults, FileRow, WindowRow};
+    use crate::semantics::Body;
+
+    fn app() -> LauncherApp {
+        LauncherApp::with_index(AppIndex::builder().build())
+    }
+
+    fn window(id: u32, title: &str, app: &str) -> WindowRow {
+        WindowRow {
+            id,
+            title: title.into(),
+            app: app.into(),
+            wm_class: app.to_lowercase(),
+            pid: Some(id + 10),
+            can_close: true,
+            app_known: true,
+        }
+    }
+
+    #[test]
+    fn the_switcher_names_each_window_and_its_application() {
+        let mut app = app();
+        let mut page = crate::windows_page::WindowsPage::default();
+        assert_eq!(
+            app.windows_semantics(&page).status.as_deref(),
+            Some("Loading windows…")
+        );
+        page.apply(
+            Ok(vec![
+                window(1, "Downloads", "Files"),
+                window(2, "", "Text Editor"),
+            ]),
+            99,
+        );
+        page.selected = 1;
+        let semantics = app.windows_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Windows");
+        assert_eq!(list.items[0].name, "Downloads");
+        assert_eq!(list.items[0].description.as_deref(), Some("Files"));
+        assert_eq!(
+            list.items[1].name, "Text Editor",
+            "untitled: its application"
+        );
+        assert_eq!(list.selected, Some(1));
+        assert_eq!(semantics.status, None);
+
+        page.query = "zzzz".into();
+        page.refilter();
+        app.page = Page::Windows(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No matching windows"));
+    }
+
+    #[test]
+    fn search_files_describes_its_rows_and_the_selected_files_preview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let notes = dir.path().join("notes.md");
+        std::fs::write(&notes, "# Title\n\nbody").expect("write notes");
+        let mut app = app();
+        let mut page = crate::files_page::FilesPage::default();
+        assert_eq!(
+            app.files_semantics(&page).status.as_deref(),
+            Some("Searching files…")
+        );
+        let row = FileRow {
+            path: notes.to_string_lossy().into_owned(),
+            name: "notes.md".into(),
+            category: "Documents".into(),
+        };
+        let generation = page.generation;
+        assert!(page.apply(
+            generation,
+            Ok(FileResults {
+                heading: "Recently Accessed".into(),
+                files: vec![row.clone()],
+            }),
+        ));
+        let semantics = app.files_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Recently Accessed");
+        assert_eq!(list.items[0].name, "notes.md");
+        let home =
+            compass_core::xdg_dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
+        assert_eq!(
+            list.items[0].description,
+            Some(crate::files_page::subtitle(&row, home.as_deref()))
+        );
+        assert_eq!(list.selected, Some(0));
+        let detail = semantics.detail.expect("the preview");
+        assert_eq!(detail.label, "notes.md");
+        assert!(detail.blocks.iter().any(|block| block.text == "body"));
+        assert!(
+            detail
+                .metadata
+                .iter()
+                .any(|entry| entry.label == "Name" && entry.value == "notes.md")
+        );
+
+        let generation = page.set_query("zzzz".into());
+        assert!(page.apply(generation, Ok(FileResults::default())));
+        app.page = Page::Files(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No files found"));
     }
 }

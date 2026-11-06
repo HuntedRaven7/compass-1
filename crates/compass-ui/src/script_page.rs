@@ -146,6 +146,19 @@ impl ScriptOutputPage {
         }
     }
 
+    /// The line above the output, as the view draws it: the script, then
+    /// how the run stands.
+    #[must_use]
+    pub fn heading_line(&self) -> String {
+        format!("{} — {}", self.title, self.heading())
+    }
+
+    /// The output without its styling.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.runs.iter().map(|run| run.text.as_str()).collect()
+    }
+
     /// Whether the run has ended in failure: a non-zero exit, or stopped.
     #[must_use]
     pub fn failed(&self) -> bool {

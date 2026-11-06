@@ -263,10 +263,11 @@ impl LauncherApp {
     /// The list's body: the category filter, the heading, and each family
     /// named in its own font beside its glyph.
     pub(super) fn fonts_body<'a>(&'a self, page: &'a FontsPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Reading the installed fonts…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready => {}
+        let empty = page.empty_notice();
+        if let Some(notice) = empty
+            && page.status != Status::Ready
+        {
+            return self.notice(notice);
         }
         let palette = self.palette();
         let (title, families) = page.shown();
@@ -296,8 +297,8 @@ impl LauncherApp {
             .padding(Padding::new(4.0).left(10).right(10))
         ]
         .spacing(f32::from(self.geometry.row_spacing));
-        if families.is_empty() {
-            return column![list, self.notice("No fonts match")].into();
+        if let Some(notice) = empty {
+            return column![list, self.notice(notice)].into();
         }
         for (row_index, chunk) in families.chunks(COLUMNS).enumerate() {
             let mut line = row![].spacing(6);
@@ -317,6 +318,23 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The tiles, for assistive technology: a grid of [`COLUMNS`] to a row,
+    /// under the heading the view shows.
+    pub(super) fn fonts_semantics(&self, page: &FontsPage) -> super::a11y::PageSemantics {
+        let (title, families) = page.shown();
+        let items = families
+            .iter()
+            .map(|family| super::a11y::item(family.name.clone(), None))
+            .collect();
+        let mut semantics =
+            super::a11y::PageSemantics::list(title, items, page.selected, page.empty_notice())
+                .with_status(page.notice.as_deref(), &page.query);
+        if let crate::semantics::Body::List(list) = &mut semantics.body {
+            list.grid = Some(crate::semantics::List::grid_of(list.items.len(), COLUMNS));
+        }
+        semantics
     }
 
     /// One tile of the grid: the family's glyph drawn in it, its name under.
@@ -410,13 +428,10 @@ impl LauncherApp {
         let font = iced::Font::with_name(family);
         let palette = self.palette();
         let mut body = column![
-            text(compass_core::font_browser::navigation_title(
-                "Browse Fonts",
-                Some(&page.name)
-            ))
-            .font(self.font())
-            .size(12)
-            .color(palette.muted.to_iced())
+            text(page.title())
+                .font(self.font())
+                .size(12)
+                .color(palette.muted.to_iced())
         ]
         .spacing(8);
         for line in &page.lines {
@@ -445,5 +460,130 @@ impl LauncherApp {
             .id(crate::scroll::ROOT_RESULTS)
             .height(Length::Shrink)
             .into()
+    }
+
+    /// The specimen, for assistive technology: its samples as text, under
+    /// the title the view shows above them.
+    pub(super) fn font_preview_semantics(
+        &self,
+        page: &FontPreviewPage,
+    ) -> super::a11y::PageSemantics {
+        let blocks = page
+            .lines
+            .iter()
+            .filter_map(|line| {
+                // The view's title is the document's label, so a sample's
+                // heading is one level under it.
+                let (sample, heading) = match line {
+                    SpecimenLine::Heading(sample) => (sample, Some(2)),
+                    SpecimenLine::Regular(sample)
+                    | SpecimenLine::Bold(sample)
+                    | SpecimenLine::Italic(sample) => (sample, None),
+                    SpecimenLine::Rule => return None,
+                };
+                Some(crate::semantics::Block {
+                    text: sample.clone(),
+                    heading,
+                })
+            })
+            .collect();
+        super::a11y::PageSemantics {
+            body: crate::semantics::Body::Document(crate::semantics::Document {
+                label: page.title(),
+                blocks,
+                metadata: Vec::new(),
+            }),
+            status: None,
+            detail: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{FontList, FontListEntry};
+    use crate::semantics::{Block, Body};
+
+    fn fonts(names: &[&str]) -> FontList {
+        let font = |name: &&str| FontListEntry {
+            name: (*name).to_owned(),
+            family: (*name).to_owned(),
+            glyph: Some("Aa".into()),
+            color: false,
+            primary: "Latin".into(),
+            categories: vec!["Latin".into()],
+        };
+        FontList {
+            fonts: names.iter().map(font).collect(),
+            categories: vec!["Latin".into()],
+        }
+    }
+
+    #[test]
+    fn the_fonts_are_a_grid_of_rows_as_the_tiles_are_laid_out() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = FontsPage::default();
+        assert_eq!(
+            app.fonts_semantics(&page).status.as_deref(),
+            Some("Reading the installed fonts…")
+        );
+        page.apply(Ok(fonts(&[
+            "Font A", "Font B", "Font C", "Font D", "Font E", "Font F", "Font G", "Font H",
+        ])));
+        page.selected = 7;
+        app.page = Page::Fonts(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a grid, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "All Fonts (8)");
+        assert_eq!(list.items.len(), 8);
+        assert_eq!(list.items[0].name, "Font A");
+        assert_eq!(list.selected, Some(7));
+        assert_eq!(
+            list.grid,
+            Some(vec![vec![0, 1, 2, 3, 4, 5], vec![6, 7]]),
+            "six tiles to a row, the last one short"
+        );
+
+        let Page::Fonts(page) = &mut app.page else {
+            unreachable!("the page was just set");
+        };
+        page.query = "%%%%".into();
+        page.refilter();
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No fonts match"));
+    }
+
+    #[test]
+    fn the_specimen_is_a_document_of_its_samples_without_the_rules() {
+        let app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let page = FontPreviewPage {
+            name: "Inter".into(),
+            family: "Inter".into(),
+            lines: fonts_page::specimen_lines(
+                "# Latin\nThe quick brown fox\n**Bold sample**\n---\n*Italic sample*",
+            ),
+        };
+        let semantics = app.font_preview_semantics(&page);
+        let Body::Document(document) = &semantics.body else {
+            panic!("expected a document, got {:?}", semantics.body);
+        };
+        assert_eq!(document.label, "Browse Fonts - Inter");
+        let block = |text: &str, heading| Block {
+            text: text.into(),
+            heading,
+        };
+        assert_eq!(
+            document.blocks,
+            [
+                block("Latin", Some(2)),
+                block("The quick brown fox", None),
+                block("Bold sample", None),
+                block("Italic sample", None),
+            ]
+        );
     }
 }

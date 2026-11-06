@@ -15,7 +15,7 @@ use super::{
 };
 use crate::action_panel::Action;
 use crate::preferences_page::Purpose;
-use crate::snippets_page::{self, SnippetsPage, Status};
+use crate::snippets_page::{self, SnippetsPage};
 
 const COPY: &str = "snippet.copy";
 const PASTE: &str = "snippet.paste";
@@ -290,23 +290,8 @@ impl LauncherApp {
                 .into(),
             Err(reason) => muted(reason.clone()).into(),
         };
-        let date = |at: u64| {
-            crate::file_preview::qt_text_date(
-                std::time::UNIX_EPOCH + std::time::Duration::from_secs(at),
-            )
-            .unwrap_or_default()
-        };
-        let app_name = |id: &str| {
-            self.app_index
-                .applications()
-                .find(|item| {
-                    item.desktop_id() == id
-                        || item.desktop_id().strip_suffix(".desktop") == Some(id)
-                })
-                .map(|item| item.display_name())
-        };
         let mut fields = column![].spacing(4);
-        for (label, value) in snippets_page::detail_fields(snippet, app_name, date) {
+        for (label, value) in self.snippet_detail_fields(snippet) {
             fields = fields.push(
                 row![
                     muted(label.to_owned()),
@@ -338,6 +323,30 @@ impl LauncherApp {
             .height(Length::Fixed(320.0))
             .padding(Padding::new(6.0).top(8))
             .into()
+    }
+
+    /// The detail pane's metadata, the applications by name and the dates
+    /// written as the C++ writes them.
+    fn snippet_detail_fields(
+        &self,
+        snippet: &crate::backend::Snippet,
+    ) -> Vec<(&'static str, String)> {
+        let date = |at: u64| {
+            crate::file_preview::qt_text_date(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(at),
+            )
+            .unwrap_or_default()
+        };
+        let app_name = |id: &str| {
+            self.app_index
+                .applications()
+                .find(|item| {
+                    item.desktop_id() == id
+                        || item.desktop_id().strip_suffix(".desktop") == Some(id)
+                })
+                .map(|item| item.display_name())
+        };
+        snippets_page::detail_fields(snippet, app_name, date)
     }
 
     /// Submits a snippet form: its arguments, to copy or paste it, or its
@@ -496,16 +505,8 @@ impl LauncherApp {
 
     /// Manage Snippets' body.
     pub(super) fn snippets_body<'a>(&'a self, page: &'a SnippetsPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Loading snippets…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready if page.all.is_empty() => {
-                return self.notice("No snippets. Create one with Create Snippet.");
-            }
-            Status::Ready if page.shown.is_empty() => {
-                return self.notice("No snippets match");
-            }
-            Status::Ready => {}
+        if let Some(empty) = page.empty_notice() {
+            return self.notice(empty);
         }
         let mut list = column![].spacing(f32::from(self.geometry.row_spacing));
         for (position, &index) in page.shown.iter().enumerate() {
@@ -532,17 +533,132 @@ impl LauncherApp {
         let rows = scrollable(container(list).padding(Padding::new(6.0).top(8)))
             .id(crate::scroll::ROOT_RESULTS)
             .height(Length::Shrink);
-        let rows: Element<Message> = match (&page.detail, page.selected_snippet()) {
-            (Some(detail), Some(snippet)) if detail.id == snippet.id => row![
+        let rows: Element<Message> = match snippet_detail_shown(page) {
+            Some((snippet, detail)) => row![
                 container(rows).width(Length::FillPortion(super::preview::LIST_PORTION)),
                 self.snippet_detail_pane(snippet, detail),
             ]
             .into(),
-            _ => rows.into(),
+            None => rows.into(),
         };
         match &page.notice {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows,
         }
+    }
+
+    /// Manage Snippets' rows and the selected one's detail, for assistive
+    /// technology.
+    pub(super) fn snippets_semantics(&self, page: &SnippetsPage) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                page.all
+                    .get(index)
+                    .map_or_else(crate::semantics::Item::default, |snippet| {
+                        super::a11y::item(
+                            snippet.name.clone(),
+                            Some(snippets_page::subtitle(snippet)),
+                        )
+                    })
+            })
+            .collect();
+        let detail = snippet_detail_shown(page).map(|(snippet, detail)| {
+            let text = match &detail.expanded {
+                Ok(expanded) => expanded,
+                Err(reason) => reason,
+            };
+            crate::semantics::Document {
+                label: snippet.name.clone(),
+                blocks: crate::semantics::text_blocks(text),
+                metadata: super::a11y::metadata(self.snippet_detail_fields(snippet)),
+            }
+        });
+        super::a11y::PageSemantics::list("Snippets", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+            .with_detail(detail)
+    }
+}
+
+/// The selected snippet and its detail, when the detail that arrived is
+/// still the selected one's and so is drawn beside the list.
+fn snippet_detail_shown(
+    page: &SnippetsPage,
+) -> Option<(&crate::backend::Snippet, &snippets_page::Detail)> {
+    let snippet = page.selected_snippet()?;
+    let detail = page
+        .detail
+        .as_ref()
+        .filter(|detail| detail.id == snippet.id)?;
+    Some((snippet, detail))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Snippet;
+    use crate::semantics::Body;
+    use compass_core::snippet_store::{SnippetData, StoredExpansion};
+
+    fn snippet(id: &str, name: &str, text: &str, keyword: Option<&str>) -> Snippet {
+        Snippet {
+            id: id.into(),
+            name: name.into(),
+            data: SnippetData::Text { text: text.into() },
+            expansion: keyword.map(|keyword| StoredExpansion {
+                keyword: keyword.into(),
+                apps: Vec::new(),
+                word: false,
+            }),
+            ..Snippet::default()
+        }
+    }
+
+    #[test]
+    fn manage_snippets_describes_its_rows_and_the_selected_detail() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = SnippetsPage::default();
+        assert_eq!(
+            app.snippets_semantics(&page).status.as_deref(),
+            Some("Loading snippets…")
+        );
+        page.apply(Ok(vec![
+            snippet("a", "Signature", "Best regards", Some(";sig")),
+            snippet("b", "Address", "1 Main Street\nSpringfield", None),
+        ]));
+        page.selected = 1;
+        page.detail = Some(snippets_page::Detail {
+            id: "b".into(),
+            expanded: Ok("1 Main Street\nSpringfield".into()),
+        });
+        let semantics = app.snippets_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.items[0].name, "Signature");
+        assert_eq!(
+            list.items[0].description,
+            Some(snippets_page::subtitle(&page.all[0]))
+        );
+        assert_eq!(list.selected, Some(1));
+        let detail = semantics.detail.expect("the detail pane");
+        assert_eq!(detail.label, "Address");
+        let blocks: Vec<&str> = detail.blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(blocks, ["1 Main Street", "Springfield"]);
+        assert_eq!(detail.metadata[0].label, "Type");
+        assert_eq!(detail.metadata[0].value, "Text");
+
+        page.selected = 0;
+        assert_eq!(app.snippets_semantics(&page).detail, None);
+
+        page.apply(Ok(Vec::new()));
+        app.page = Page::Snippets(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("No snippets. Create one with Create Snippet.")
+        );
     }
 }

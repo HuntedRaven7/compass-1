@@ -54,6 +54,9 @@ accesskit.workspace = true
 # A text field's characters as a screen reader moves through them: grapheme
 # clusters, not bytes (already in the tree through iced's text stack).
 unicode-segmentation = "1"
+# Markdown as plain text for a screen reader: a detail's body without its
+# markup (already in the tree through iced's `markdown`, and in `compass`).
+pulldown-cmark = { version = "0.12", default-features = false }
 
 # The layer-shell presentation for wlroots compositors (PLAN.md Phase 5 Track
 # B). Linux-only by target so the platform seam holds: macOS and Windows never

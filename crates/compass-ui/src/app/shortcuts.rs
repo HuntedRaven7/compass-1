@@ -569,13 +569,7 @@ impl LauncherApp {
             Err(reason) => muted(reason.clone()).into(),
         };
         let mut fields = column![].spacing(4);
-        let date = |at: u64| {
-            crate::file_preview::qt_text_date(
-                std::time::UNIX_EPOCH + std::time::Duration::from_secs(at),
-            )
-            .unwrap_or_default()
-        };
-        for (label, value) in shortcuts_page::detail_fields(shortcut, detail.app.as_deref(), date) {
+        for (label, value) in shortcut_detail_fields(shortcut, detail) {
             fields = fields.push(
                 row![
                     muted(label.to_owned()),
@@ -611,12 +605,7 @@ impl LauncherApp {
 
     /// Manage Shortcuts' body.
     pub(super) fn shortcuts_body<'a>(&'a self, page: &'a ShortcutsPage) -> Element<'a, Message> {
-        if page.shown.is_empty() {
-            let message = if self.app_index.shortcuts().is_empty() {
-                "No shortcuts yet. Create one with Create Shortcut."
-            } else {
-                "No shortcuts match"
-            };
+        if let Some(message) = self.shortcuts_empty_notice(page) {
             return match &page.notice {
                 Some(notice) => column![self.notice(message), self.notice(notice)].into(),
                 None => self.notice(message),
@@ -648,20 +637,177 @@ impl LauncherApp {
         let rows = scrollable(container(list).padding(Padding::new(6.0).top(8)))
             .id(crate::scroll::ROOT_RESULTS)
             .height(Length::Shrink);
-        let shortcut = page
-            .selected_index()
-            .and_then(|index| self.app_index.shortcuts().get(index));
-        let rows: Element<Message> = match (&page.detail, shortcut) {
-            (Some(detail), Some(shortcut)) if detail.id == shortcut.id => row![
+        let rows: Element<Message> = match self.shortcut_detail_shown(page) {
+            Some((shortcut, detail)) => row![
                 container(rows).width(Length::FillPortion(super::preview::LIST_PORTION)),
                 self.shortcut_detail_pane(shortcut, detail),
             ]
             .into(),
-            _ => rows.into(),
+            None => rows.into(),
         };
         match &page.notice {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows,
         }
+    }
+
+    /// What Manage Shortcuts says in place of the list: that there are none
+    /// yet, or that none match.
+    fn shortcuts_empty_notice(&self, page: &ShortcutsPage) -> Option<&'static str> {
+        if !page.shown.is_empty() {
+            return None;
+        }
+        Some(if self.app_index.shortcuts().is_empty() {
+            "No shortcuts yet. Create one with Create Shortcut."
+        } else {
+            "No shortcuts match"
+        })
+    }
+
+    /// The selected shortcut and its detail, when the detail that arrived is
+    /// still the selected one's and so is drawn beside the list.
+    fn shortcut_detail_shown<'a>(
+        &'a self,
+        page: &'a ShortcutsPage,
+    ) -> Option<(
+        &'a compass_core::shortcut_service::CachedShortcut,
+        &'a shortcuts_page::Detail,
+    )> {
+        let shortcut = self.app_index.shortcuts().get(page.selected_index()?)?;
+        let detail = page
+            .detail
+            .as_ref()
+            .filter(|detail| detail.id == shortcut.id)?;
+        Some((shortcut, detail))
+    }
+
+    /// Manage Shortcuts' rows and the selected one's detail, for assistive
+    /// technology.
+    pub(super) fn shortcuts_semantics(&self, page: &ShortcutsPage) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                self.app_index.shortcuts().get(index).map_or_else(
+                    crate::semantics::Item::default,
+                    |shortcut| {
+                        super::a11y::item(
+                            shortcuts_page::display_name(shortcut),
+                            Some(shortcut.link.raw.clone()),
+                        )
+                    },
+                )
+            })
+            .collect();
+        let detail = self.shortcut_detail_shown(page).map(|(shortcut, detail)| {
+            let text = match &detail.expanded {
+                Ok(link) => link,
+                Err(reason) => reason,
+            };
+            crate::semantics::Document {
+                label: shortcuts_page::display_name(shortcut).to_owned(),
+                blocks: crate::semantics::text_blocks(text),
+                metadata: super::a11y::metadata(shortcut_detail_fields(shortcut, detail)),
+            }
+        });
+        super::a11y::PageSemantics::list(
+            "Shortcuts",
+            items,
+            page.selected,
+            self.shortcuts_empty_notice(page),
+        )
+        .with_status(page.notice.as_deref(), &page.query)
+        .with_detail(detail)
+    }
+}
+
+/// The detail pane's metadata, its dates written as the C++ writes them.
+fn shortcut_detail_fields(
+    shortcut: &compass_core::shortcut_service::CachedShortcut,
+    detail: &shortcuts_page::Detail,
+) -> Vec<(&'static str, String)> {
+    let date = |at: u64| {
+        crate::file_preview::qt_text_date(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(at),
+        )
+        .unwrap_or_default()
+    };
+    shortcuts_page::detail_fields(shortcut, detail.app.as_deref(), date)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantics::Body;
+    use compass_core::shortcut_service::from_serialized;
+    use compass_core::shortcut_store::SerializedShortcut;
+
+    #[test]
+    fn manage_shortcuts_describes_its_rows_and_the_selected_detail() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = ShortcutsPage::default();
+        page.refilter(app.app_index.shortcuts());
+        assert_eq!(
+            app.shortcuts_semantics(&page).status.as_deref(),
+            Some("No shortcuts yet. Create one with Create Shortcut.")
+        );
+
+        app.app_index.set_shortcuts(vec![
+            from_serialized(&SerializedShortcut {
+                id: "a".into(),
+                name: "GitHub Search".into(),
+                icon: "icon://omnicast/link".into(),
+                url: "https://github.com/search?q={q}".into(),
+                app: "default".into(),
+                ..SerializedShortcut::default()
+            }),
+            from_serialized(&SerializedShortcut {
+                id: "b".into(),
+                name: "Docs".into(),
+                icon: "icon://omnicast/link".into(),
+                url: "https://docs.rs/{crate}".into(),
+                app: "default".into(),
+                ..SerializedShortcut::default()
+            }),
+        ]);
+        page.refilter(app.app_index.shortcuts());
+        page.selected = 1;
+        page.detail = Some(shortcuts_page::Detail {
+            id: "b".into(),
+            expanded: Ok("https://docs.rs/serde".into()),
+            app: Some("Firefox (Default)".into()),
+        });
+        let semantics = app.shortcuts_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.items[1].name, "Docs");
+        assert_eq!(
+            list.items[1].description.as_deref(),
+            Some(app.app_index.shortcuts()[1].link.raw.as_str())
+        );
+        assert_eq!(list.selected, Some(1));
+        let detail = semantics.detail.expect("the detail pane");
+        assert_eq!(detail.label, "Docs");
+        assert_eq!(detail.blocks[0].text, "https://docs.rs/serde");
+        let fields: Vec<(&str, &str)> = detail
+            .metadata
+            .iter()
+            .map(|m| (m.label.as_str(), m.value.as_str()))
+            .collect();
+        assert_eq!(fields[0], ("Name", "Docs"));
+        assert_eq!(fields[1], ("Application", "Firefox (Default)"));
+        assert!(fields.contains(&("Last Opened", "Never")), "{fields:?}");
+
+        // A detail for a row no longer selected is not drawn, so not described.
+        page.selected = 0;
+        assert_eq!(app.shortcuts_semantics(&page).detail, None);
+
+        page.query = "zzzz".into();
+        page.refilter(app.app_index.shortcuts());
+        app.page = Page::Shortcuts(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No shortcuts match"));
     }
 }

@@ -82,6 +82,25 @@ impl FilesPage {
         self.rows.get(self.selected)
     }
 
+    /// What the view says in place of the list: searching, why it failed,
+    /// or that nothing was found.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Searching files…"),
+            Status::Failed(reason) => Some(reason.as_str()),
+            Status::Ready if self.rows.is_empty() => Some("No files found"),
+            Status::Ready => None,
+        }
+    }
+
+    /// The loading indicator beside the filter (`setLoading`), while a
+    /// query is out.
+    #[must_use]
+    pub fn indicator(&self) -> Option<&'static str> {
+        self.searching.then_some("Searching…")
+    }
+
     /// Takes new search text, returning the generation its answer must carry.
     pub fn set_query(&mut self, query: String) -> u64 {
         self.query = query;

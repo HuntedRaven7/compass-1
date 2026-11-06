@@ -40,6 +40,12 @@ pub const CONFIRM_TITLE: &str = "Are you sure?";
 pub const CONFIRM_MESSAGE: &str = "All this extension data will be permanently lost. If you just \
      want the extension to not appear in the root search anymore, consider disabling it instead.";
 
+/// The button that answers [`CONFIRM_TITLE`] yes, and what Enter does.
+#[must_use]
+pub fn confirm_button(title: &str) -> String {
+    format!("Uninstall {title}")
+}
+
 /// What a successful uninstall says.
 pub const UNINSTALLED: &str = "Extension uninstalled";
 
@@ -120,6 +126,18 @@ pub fn accessory(row: &StoreRow) -> String {
         parts.push(compat_label(tier).to_owned());
     }
     parts.join(" · ")
+}
+
+/// The line under a detail page's title, and what it is: the row's
+/// [`accessory`], or its author when that says nothing.
+#[must_use]
+pub fn detail_status(row: &StoreRow) -> (&'static str, String) {
+    let status = accessory(row);
+    if status.is_empty() {
+        ("Author", row.author_name.clone())
+    } else {
+        ("Status", status)
+    }
 }
 
 /// The icon URL a row shows under the theme.
@@ -273,6 +291,18 @@ impl StorePage {
     #[must_use]
     pub fn selected_row(&self) -> Option<&StoreRow> {
         self.rows.get(self.selected)
+    }
+
+    /// What the view says in place of the rows: loading, why the first
+    /// fetch failed, or that nothing matches; `None` while rows show.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Loading extensions…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.rows.is_empty() => Some("No extensions match"),
+            Status::Ready => None,
+        }
     }
 
     /// Records that `id` was installed (at the store's current build) or

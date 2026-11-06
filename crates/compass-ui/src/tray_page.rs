@@ -213,6 +213,26 @@ impl TrayPage {
             Mode::Items => None,
         }
     }
+
+    /// What the view says in place of the list: loading, why it cannot be
+    /// read, that it is empty, or that nothing matches; `None` while it
+    /// shows rows.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        let in_menu = matches!(self.mode, Mode::Menu { .. });
+        let unfiltered = self.query.is_empty();
+        match &self.status {
+            Status::Loading if in_menu => Some("Loading the menu…"),
+            Status::Loading => Some("Looking for tray items…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.shown.is_empty() && unfiltered && in_menu => {
+                Some("This menu is empty")
+            }
+            Status::Ready if self.shown.is_empty() && unfiltered => Some("No tray items"),
+            Status::Ready if self.shown.is_empty() => Some("No matches"),
+            Status::Ready => None,
+        }
+    }
 }
 
 /// The actions an item offers, in the C++'s order: a menu-only item can only

@@ -2,10 +2,13 @@
 //! ([`crate::semantics`]), and what it does when assistive technology asks
 //! something of it.
 //!
-//! What is described: the root search (its field, results, selection and
-//! status), the action panel, the questions asked before an action, an
-//! extension's list, alert and form, and the preference and argument forms.
-//! Every other view describes its search field and nothing under it yet.
+//! Every view is described: the root search (its field, results, selection
+//! and status), the action panel, the questions asked before an action, an
+//! extension's list, grid, detail, alert and form, the preference and
+//! argument forms, the settings, and each builtin view's list or text, with
+//! the preview or detail beside a list. Each builtin view's description is
+//! next to its drawing, in its own module (`*_semantics`), so the two are
+//! changed together.
 
 use accesskit::{Action, ActionData, ActionRequest};
 use iced::Task;
@@ -15,9 +18,121 @@ use super::{
 };
 use crate::message::Message;
 use crate::semantics::{
-    Body, Dialog, Field, FieldKind, FieldTarget, Form, Item, List, Menu, MenuItem, SearchField,
-    Semantics, Target, result_count,
+    Body, Dialog, Document, Field, FieldKind, FieldTarget, Form, Item, List, Menu, MenuItem,
+    Metadata, SearchField, Semantics, Target, markdown_blocks, result_count,
 };
+
+/// What a view shows under the search field, for assistive technology.
+#[derive(Debug, Clone, Default)]
+pub(super) struct PageSemantics {
+    /// The list, document or form.
+    pub body: Body,
+    /// What the view says about its state: loading, empty, failed, a count.
+    pub status: Option<String>,
+    /// The pane beside the list.
+    pub detail: Option<Document>,
+}
+
+impl PageSemantics {
+    /// A list of `items` under `label`, with `selected` selected, or the
+    /// `empty` notice in its place when the view shows one.
+    pub(super) fn list(
+        label: &str,
+        items: Vec<Item>,
+        selected: usize,
+        empty: Option<&str>,
+    ) -> Self {
+        if let Some(empty) = empty {
+            return Self {
+                status: Some(empty.to_owned()),
+                ..Self::default()
+            };
+        }
+        let selected = (selected < items.len()).then_some(selected);
+        Self {
+            body: Body::List(List {
+                label: label.to_owned(),
+                items,
+                selected,
+                grid: None,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// The same, with the view's `notice` as its status, or the count when
+    /// `query` is not empty and there is no notice.
+    #[must_use]
+    pub(super) fn with_status(mut self, notice: Option<&str>, query: &str) -> Self {
+        if self.status.is_some() {
+            return self;
+        }
+        self.status = match (notice, &self.body) {
+            (Some(notice), _) => Some(notice.to_owned()),
+            (None, Body::List(list)) if !query.is_empty() => Some(result_count(list.items.len())),
+            _ => None,
+        };
+        self
+    }
+
+    /// The same, with `detail` beside the list.
+    #[must_use]
+    pub(super) fn with_detail(mut self, detail: Option<Document>) -> Self {
+        if matches!(self.body, Body::List(_)) {
+            self.detail = detail;
+        }
+        self
+    }
+}
+
+/// An item named `name` and described by `description`, when it says
+/// something.
+pub(super) fn item(name: impl Into<String>, description: Option<String>) -> Item {
+    Item {
+        name: name.into(),
+        description: description.filter(|d| !d.is_empty()),
+    }
+}
+
+/// Metadata from `(label, value)` pairs, leaving out the empty ones.
+pub(super) fn metadata<L: Into<String>, V: Into<String>>(
+    pairs: impl IntoIterator<Item = (L, V)>,
+) -> Vec<Metadata> {
+    pairs
+        .into_iter()
+        .map(|(label, value)| Metadata {
+            label: label.into(),
+            value: value.into(),
+        })
+        .filter(|entry| !entry.value.is_empty())
+        .collect()
+}
+
+/// A file's preview as a document: the start of a text file, line by line,
+/// or what the pane shows in place of an image or anything else, then its
+/// metadata unless `metadata` is off (dmenu's `--no-metadata`).
+pub(super) fn file_preview_document(
+    preview: &crate::file_preview::FilePreview,
+    metadata: bool,
+) -> Document {
+    use crate::file_preview::Content;
+    let blocks = match &preview.content {
+        Content::Text(text) => crate::semantics::text_blocks(text),
+        // An image is described by its name, which the document is labelled
+        // with; the pane shows nothing but the type for anything else.
+        Content::Image(_) => Vec::new(),
+        Content::None => crate::semantics::text_blocks(&preview.mime),
+    };
+    Document {
+        label: preview.name.clone(),
+        blocks,
+        metadata: if metadata {
+            self::metadata(preview.fields())
+        } else {
+            Vec::new()
+        },
+    }
+}
 
 impl LauncherApp {
     /// Keeps the platform's accessibility tree in step with the window
@@ -44,44 +159,87 @@ impl LauncherApp {
                 editable: on_input.is_some() || matches!(page, Page::Root),
             }),
         };
-        let (body, status) = self.body_semantics();
+        let PageSemantics {
+            body,
+            status,
+            detail,
+        } = self.body_semantics();
         Semantics {
             window: self.title(),
             search,
             body,
             status,
             panel: self.panel_semantics(),
+            detail,
         }
     }
 
-    fn body_semantics(&self) -> (Body, Option<String>) {
+    fn body_semantics(&self) -> PageSemantics {
+        let dialog = |dialog: Dialog| PageSemantics {
+            body: Body::Dialog(dialog),
+            ..PageSemantics::default()
+        };
         if let Some(confirm) = &self.confirm {
-            let dialog = Dialog {
+            return dialog(Dialog {
                 title: confirm.title.clone(),
                 message: confirm.message.clone(),
                 keys: answer_keys(&confirm.confirm_text),
-            };
-            return (Body::Dialog(dialog), None);
+            });
         }
         if let Some(power) = self.power_confirm {
-            let dialog = Dialog {
+            return dialog(Dialog {
                 title: compass_core::power_commands::CONFIRM_TITLE.to_owned(),
                 message: compass_core::power_commands::CONFIRM_BODY.to_owned(),
                 keys: answer_keys(power.name),
-            };
-            return (Body::Dialog(dialog), None);
+            });
         }
         match &self.page {
             Page::Root => self.root_semantics(),
             Page::Extension(page) => extension_semantics(page),
-            Page::Preferences(page) => (Body::Form(preferences_form(page)), page.notice.clone()),
-            _ => (Body::Empty, None),
+            Page::Preferences(page) => PageSemantics {
+                body: Body::Form(preferences_form(page)),
+                status: page.notice.clone(),
+                detail: None,
+            },
+            Page::Settings(page) => self.settings_semantics(page),
+            Page::Onboarding(page) => self.onboarding_semantics(page),
+            Page::Clipboard(page) => self.clipboard_semantics(page),
+            Page::Windows(page) => self.windows_semantics(page),
+            Page::Workspaces(page) => self.workspaces_semantics(page),
+            Page::OpenWith(page) => self.open_with_semantics(page),
+            Page::Emoji(page) => self.emoji_semantics(page),
+            Page::Files(page) => self.files_semantics(page),
+            Page::Shortcuts(page) => self.shortcuts_semantics(page),
+            Page::Snippets(page) => self.snippets_semantics(page),
+            Page::ScriptOutput(page) => self.script_output_semantics(page),
+            Page::Programs(page) => self.programs_semantics(page),
+            Page::Dmenu(page) => self.dmenu_semantics(page),
+            Page::Themes(page) => self.themes_semantics(page),
+            Page::Created(page) => self.created_semantics(page),
+            Page::Fonts(page) => self.fonts_semantics(page),
+            Page::FontPreview(page) => self.font_preview_semantics(page),
+            Page::Store(page) => self.store_semantics(page),
+            Page::StoreDetail(page) => self.store_detail_semantics(page),
+            Page::NowPlaying(page) => self.now_playing_semantics(page),
+            Page::Grants(page) => self.grants_semantics(page),
+            Page::Tray(page) => self.tray_semantics(page),
+            Page::Apps(page) => self.apps_semantics(page),
+            Page::Calculator(page) => self.calculator_semantics(page),
+            Page::Fallbacks(page) => self.fallbacks_semantics(page),
+            Page::Extensions(page) => self.extensions_semantics(page),
+            Page::Icons(page) => self.icons_semantics(page),
+            Page::Storage(page) => self.storage_semantics(page),
+            Page::Tokens(page) => self.tokens_semantics(page),
+            Page::StoreIntro(page) => self.store_intro_semantics(page),
         }
     }
 
-    fn root_semantics(&self) -> (Body, Option<String>) {
+    fn root_semantics(&self) -> PageSemantics {
         if let Some(error) = &self.error {
-            return (Body::Empty, Some(error.clone()));
+            return PageSemantics {
+                status: Some(error.clone()),
+                ..PageSemantics::default()
+            };
         }
         if self.results.is_empty() {
             let status = if self.query.is_empty() {
@@ -89,7 +247,10 @@ impl LauncherApp {
             } else {
                 "No results"
             };
-            return (Body::Empty, Some(status.to_owned()));
+            return PageSemantics {
+                status: Some(status.to_owned()),
+                ..PageSemantics::default()
+            };
         }
         let items: Vec<Item> = self
             .results
@@ -98,13 +259,7 @@ impl LauncherApp {
             .collect();
         // The count only once something is typed: it answers the query, and
         // an empty query's favourites are not an answer to anything.
-        let status = (!self.query.is_empty()).then(|| result_count(items.len()));
-        let list = List {
-            label: "Results".to_owned(),
-            items,
-            selected: Some(self.selected),
-        };
-        (Body::List(list), status)
+        PageSemantics::list("Results", items, self.selected, None).with_status(None, &self.query)
     }
 
     /// A root row's title and subtitle, as the row shows them; `None` for a
@@ -203,13 +358,15 @@ impl LauncherApp {
         let Some(target) = semantics.target(request.target_node) else {
             return Task::none();
         };
-        let field = match target {
-            Target::Field(index) => match &semantics.body {
-                Body::Form(form) => form.fields.get(index).cloned(),
-                _ => None,
-            },
-            _ => None,
+        let (field, option) = match target {
+            Target::Field(index) => (index, None),
+            Target::Option { field, option } => (field, Some(option)),
+            _ => (usize::MAX, None),
         };
+        let field = semantics
+            .form()
+            .and_then(|form| form.fields.get(field))
+            .cloned();
         let menu_row = match target {
             Target::MenuItem(index) => semantics
                 .panel
@@ -238,22 +395,21 @@ impl LauncherApp {
                 };
                 self.update(on_input(text))
             }
-            (Target::Item(position), Action::Click) => match &self.page {
-                Page::Root => self.update(Message::ResultClicked(position)),
-                Page::Extension(_) => self.update(Message::ExtensionItemSelected(position)),
-                _ => Task::none(),
+            (Target::Item(position), action @ (Action::Click | Action::Focus))
+                if matches!(self.page, Page::Settings(_)) =>
+            {
+                self.settings_sidebar_request(position, action)
+            }
+            (Target::Item(position), Action::Click) => match self.item_click(position) {
+                Some(message) => self.update(message),
+                None => Task::none(),
             },
-            (Target::Item(position), Action::Focus) => match &mut self.page {
-                Page::Root => {
-                    self.selected = position;
-                    crate::scroll::reveal_root_selection()
+            (Target::Item(position), Action::Focus) => {
+                if let Some(selected) = self.selection_mut() {
+                    *selected = position;
                 }
-                Page::Extension(page) => {
-                    page.selected = position;
-                    crate::scroll::reveal_root_selection()
-                }
-                _ => Task::none(),
-            },
+                crate::scroll::reveal_root_selection()
+            }
             (Target::MenuItem(_), Action::Click) => match menu_row {
                 Some(row) => self.update(Message::PanelClicked(row)),
                 None => Task::none(),
@@ -266,22 +422,125 @@ impl LauncherApp {
                 }
                 crate::scroll::reveal_panel_selection()
             }
-            (Target::Field(_), action) => match field {
-                Some(field) => self.field_request(field, action, value),
+            (Target::Field(_) | Target::Option { .. }, action) => match field {
+                Some(field) => self.field_request(field, option, action, value),
                 None => Task::none(),
             },
             _ => Task::none(),
         }
     }
 
+    /// What clicking the `position`th item of the view's list sends, as a
+    /// click on its row does; `None` for a view without one.
+    fn item_click(&self, position: usize) -> Option<Message> {
+        Some(match &self.page {
+            Page::Root => Message::ResultClicked(position),
+            Page::Extension(_) => Message::ExtensionItemSelected(position),
+            Page::Clipboard(_) => Message::ClipboardSelected(position),
+            Page::Windows(_) => Message::WindowSelected(position),
+            Page::Workspaces(_) => Message::WorkspaceSelected(position),
+            Page::OpenWith(_) => Message::OpenWithSelected(position),
+            Page::Emoji(_) => Message::EmojiSelected(position),
+            Page::Files(_) => Message::FilesSelected(position),
+            Page::Shortcuts(_) => Message::ShortcutSelected(position),
+            Page::Snippets(_) => Message::SnippetSelected(position),
+            Page::Programs(_) => Message::ProgramSelected(position),
+            Page::Dmenu(_) => Message::DmenuSelected(position),
+            Page::Themes(_) => Message::ThemeSelected(position),
+            Page::Fonts(_) => Message::FontSelected(position),
+            Page::Store(_) => Message::StoreSelected(position),
+            Page::NowPlaying(_) => Message::NowPlayingSelected(position),
+            Page::Grants(_) => Message::GrantSelected(position),
+            Page::Tray(_) => Message::TraySelected(position),
+            Page::Apps(_) => Message::AppsSelected(position),
+            Page::Calculator(_) => Message::CalculatorSelected(position),
+            Page::Fallbacks(_) => Message::FallbackSelected(position),
+            Page::Extensions(_) | Page::Icons(_) | Page::Storage(_) | Page::Tokens(_) => {
+                Message::CompassRowSelected(position)
+            }
+            Page::ScriptOutput(_)
+            | Page::Created(_)
+            | Page::FontPreview(_)
+            | Page::StoreDetail(_)
+            | Page::StoreIntro(_)
+            | Page::Preferences(_)
+            | Page::Settings(_)
+            | Page::Onboarding(_) => return None,
+        })
+    }
+
+    /// The view's selected row, which moving the selection moves.
+    fn selection_mut(&mut self) -> Option<&mut usize> {
+        Some(match &mut self.page {
+            Page::Root => &mut self.selected,
+            Page::Extension(page) => &mut page.selected,
+            Page::Clipboard(page) => &mut page.selected,
+            Page::Windows(page) => &mut page.selected,
+            Page::Workspaces(page) => &mut page.selected,
+            Page::OpenWith(page) => &mut page.selected,
+            Page::Emoji(page) => &mut page.selected,
+            Page::Files(page) => &mut page.selected,
+            Page::Shortcuts(page) => &mut page.selected,
+            Page::Snippets(page) => &mut page.selected,
+            Page::Programs(page) => &mut page.selected,
+            Page::Dmenu(page) => &mut page.selected,
+            Page::Themes(page) => &mut page.selected,
+            Page::Fonts(page) => &mut page.selected,
+            Page::Store(page) => &mut page.selected,
+            Page::NowPlaying(page) => &mut page.selected,
+            Page::Grants(page) => &mut page.selected,
+            Page::Tray(page) => &mut page.selected,
+            Page::Apps(page) => &mut page.selected,
+            Page::Calculator(page) => &mut page.selected,
+            Page::Fallbacks(page) => &mut page.selected,
+            Page::Extensions(page) => &mut page.selected,
+            Page::Icons(page) => &mut page.selected,
+            Page::Storage(page) => &mut page.selected,
+            Page::Tokens(page) => &mut page.selected,
+            Page::ScriptOutput(_)
+            | Page::Created(_)
+            | Page::FontPreview(_)
+            | Page::StoreDetail(_)
+            | Page::StoreIntro(_)
+            | Page::Preferences(_)
+            | Page::Settings(_)
+            | Page::Onboarding(_) => return None,
+        })
+    }
+
     fn field_request(
         &mut self,
         field: Field,
+        option: Option<usize>,
         action: Action,
         value: Option<String>,
     ) -> Task<Message> {
         use crate::preferences_page::FieldValue;
         match (field.target, field.kind, action) {
+            (FieldTarget::Control(position), _, action) => match &self.page {
+                Page::Settings(_) => self.settings_request(position, option, action, value),
+                Page::Onboarding(_) => self.onboarding_request(position, option, action),
+                _ => Task::none(),
+            },
+            (FieldTarget::Preference(index), FieldKind::Dropdown { .. }, Action::Click) => {
+                let Page::Preferences(page) = &self.page else {
+                    return Task::none();
+                };
+                let chosen = match (page.fields.get(index).map(|f| &f.kind), option) {
+                    (
+                        Some(crate::backend::PreferenceInputKind::Dropdown { options }),
+                        Some(option),
+                    ) => options.get(option).map(|(_, value)| value.clone()),
+                    _ => None,
+                };
+                match chosen {
+                    Some(chosen) => self.update(Message::PreferenceEdited(
+                        index,
+                        FieldValue::Choice(Some(chosen)),
+                    )),
+                    None => Task::none(),
+                }
+            }
             (FieldTarget::Preference(index), _, Action::Focus) => {
                 let Page::Preferences(page) = &mut self.page else {
                     return Task::none();
@@ -325,28 +584,106 @@ impl LauncherApp {
                 Some(value) => self.update(Message::ExtensionFieldEdited(name, value.into())),
                 None => Task::none(),
             },
+            (
+                FieldTarget::Extension(name),
+                FieldKind::Dropdown { .. } | FieldKind::Tags { .. } | FieldKind::Files { .. },
+                Action::Click,
+            ) => match self.extension_choice(&name, option) {
+                Some(message) => self.update(message),
+                None => Task::none(),
+            },
             _ => Task::none(),
+        }
+    }
+
+    /// What choosing `option` of the extension form's field `name` sends, as
+    /// clicking it does: a dropdown's value, a tag toggled, or the file
+    /// chooser for a file picker (which has no options).
+    fn extension_choice(&self, name: &str, option: Option<usize>) -> Option<Message> {
+        use compass_extension_api::View;
+        use compass_extension_api::view::{FieldKind as Kind, FormItem};
+        let Page::Extension(page) = &self.page else {
+            return None;
+        };
+        let Some(View::Form(form)) = &page.view else {
+            return None;
+        };
+        let field = form.items.iter().find_map(|item| match item {
+            FormItem::Field(field) if field.name == name => Some(field),
+            _ => None,
+        })?;
+        let value = page.form_values.get(name);
+        match (&field.kind, option) {
+            (Kind::Dropdown(dropdown), Some(option)) => {
+                let chosen = dropdown
+                    .sections
+                    .iter()
+                    .flat_map(|section| &section.options)
+                    .nth(option)?;
+                Some(Message::ExtensionFieldEdited(
+                    name.to_owned(),
+                    chosen.value.clone().into(),
+                ))
+            }
+            (Kind::TagPicker { options, .. }, Some(option)) => {
+                let tag = options.get(option)?;
+                let chosen = crate::extension_fields::strings(value);
+                let next = crate::extension_fields::toggle_tag(options, &chosen, &tag.value);
+                Some(Message::ExtensionFieldEdited(
+                    name.to_owned(),
+                    serde_json::Value::from(next),
+                ))
+            }
+            (
+                Kind::FilePicker {
+                    allow_multiple,
+                    allow_directories,
+                    allow_files,
+                },
+                None,
+            ) => Some(Message::ExtensionChooseFiles {
+                name: name.to_owned(),
+                choice: crate::extension_fields::FileChoice {
+                    multiple: *allow_multiple,
+                    directories: *allow_directories,
+                    files: *allow_files,
+                },
+            }),
+            _ => None,
         }
     }
 }
 
-fn extension_semantics(page: &crate::extension_page::ExtensionPage) -> (Body, Option<String>) {
+fn extension_semantics(page: &crate::extension_page::ExtensionPage) -> PageSemantics {
     use crate::extension_page::Status;
     use compass_extension_api::View;
     if let Some(alert) = &page.alert {
-        let dialog = Dialog {
-            title: alert.title.clone(),
-            message: alert.message.clone(),
-            keys: alert_keys(alert),
+        return PageSemantics {
+            body: Body::Dialog(Dialog {
+                title: alert.title.clone(),
+                message: alert.message.clone(),
+                keys: alert_keys(alert),
+            }),
+            ..PageSemantics::default()
         };
-        return (Body::Dialog(dialog), None);
     }
+    let status = |status: &str| PageSemantics {
+        status: Some(status.to_owned()),
+        ..PageSemantics::default()
+    };
     match (&page.status, &page.view) {
-        (Status::Loading, _) => (Body::Empty, Some("Loading…".to_owned())),
-        (Status::Stopped(why), _) => (Body::Empty, Some(why.clone())),
-        (Status::Ready, Some(View::Form(form))) => {
-            (Body::Form(extension_form(page, form)), page.notice.clone())
-        }
+        (Status::Loading, _) => status("Loading…"),
+        (Status::Stopped(why), _) => status(why),
+        (Status::Ready, Some(View::Form(form))) => PageSemantics {
+            body: Body::Form(extension_form(page, form)),
+            status: page.notice.clone(),
+            detail: None,
+        },
+        (Status::Ready, Some(View::Detail(detail))) => PageSemantics {
+            body: Body::Document(extension_detail(page, detail)),
+            status: page.notice.clone(),
+            detail: None,
+        },
         (Status::Ready, Some(View::List(list))) => {
             let items: Vec<Item> = page
                 .shown
@@ -376,16 +713,64 @@ fn extension_semantics(page: &crate::extension_page::ExtensionPage) -> (Body, Op
                 .clone()
                 .unwrap_or_else(|| page.title.clone());
             let selected = (!items.is_empty()).then_some(page.selected);
-            (
-                Body::List(List {
+            // A grid's rows are its sections' cells in rows of each
+            // section's columns, as `extension_grid` lays them out.
+            let grid = page.grid_columns.as_ref().map(|_| {
+                page.grid_groups()
+                    .into_iter()
+                    .flat_map(|(section, positions)| {
+                        positions
+                            .chunks(page.section_columns(section).max(1))
+                            .map(<[usize]>::to_vec)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            });
+            PageSemantics {
+                body: Body::List(List {
                     label,
                     items,
                     selected,
+                    grid,
                 }),
                 status,
-            )
+                detail: None,
+            }
         }
-        (Status::Ready, _) => (Body::Empty, page.notice.clone()),
+        (Status::Ready, _) => PageSemantics {
+            status: page.notice.clone(),
+            ..PageSemantics::default()
+        },
+    }
+}
+
+/// An extension's detail: its markdown as text, and its metadata as label
+/// and value, a tag list's tags together.
+fn extension_detail(
+    page: &crate::extension_page::ExtensionPage,
+    detail: &compass_extension_api::view::Detail,
+) -> Document {
+    use compass_extension_api::view::MetadataItem;
+    let entries = detail.metadata.iter().filter_map(|entry| match entry {
+        MetadataItem::Label { title, text, .. } | MetadataItem::Link { title, text, .. } => {
+            Some((title.clone(), text.clone()))
+        }
+        MetadataItem::TagList { title, tags } => Some((
+            title.clone(),
+            tags.iter()
+                .map(|tag| tag.text.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
+        MetadataItem::Separator => None,
+    });
+    Document {
+        label: detail
+            .navigation_title
+            .clone()
+            .unwrap_or_else(|| page.title.clone()),
+        blocks: markdown_blocks(detail.markdown.as_deref().unwrap_or_default()),
+        metadata: metadata(entries),
     }
 }
 
@@ -440,16 +825,24 @@ fn extension_form(
                     checked: value.and_then(serde_json::Value::as_bool).unwrap_or(false),
                 }
             }
-            Kind::Dropdown(dropdown) => FieldKind::Dropdown {
-                value: dropdown
+            Kind::Dropdown(dropdown) => {
+                let options: Vec<_> = dropdown
                     .sections
                     .iter()
                     .flat_map(|section| &section.options)
-                    .find(|option| {
-                        Some(option.value.as_str()) == value.and_then(serde_json::Value::as_str)
-                    })
-                    .map(|option| option.title.clone()),
-            },
+                    .collect();
+                FieldKind::Dropdown {
+                    value: options
+                        .iter()
+                        .find(|option| {
+                            Some(option.value.as_str()) == value.and_then(serde_json::Value::as_str)
+                        })
+                        .map(|option| option.title.clone()),
+                    options: options.iter().map(|option| option.title.clone()).collect(),
+                    expanded: None,
+                    highlighted: None,
+                }
+            }
             Kind::DatePicker { precision, .. } => FieldKind::Date {
                 value: page.date_shown(&field.name, *precision),
                 format: crate::extension_fields::date_format(*precision).to_owned(),
@@ -530,6 +923,9 @@ fn preferences_form(page: &crate::preferences_page::PreferencesPage) -> Form {
                                 .find(|(_, value)| value == choice)
                                 .map(|(title, _)| title.clone())
                         }),
+                        options: options.iter().map(|(title, _)| title.clone()).collect(),
+                        expanded: None,
+                        highlighted: None,
                     }
                 }
                 (PreferenceInputKind::Unsupported { declared }, _) => FieldKind::Note {
@@ -797,7 +1193,15 @@ mod tests {
         ));
         assert!(form.fields[0].required);
         assert_eq!(form.fields[1].kind, FieldKind::Checkbox { checked: false });
-        assert_eq!(form.fields[2].kind, FieldKind::Dropdown { value: None });
+        assert_eq!(
+            form.fields[2].kind,
+            FieldKind::Dropdown {
+                value: None,
+                options: vec!["Stars".to_owned()],
+                expanded: None,
+                highlighted: None,
+            }
+        );
         // The field the keyboard is on is the one said to have the focus.
         let focused = FocusTracker::new().focus(&semantics);
         assert_eq!(focused, node_of(&semantics, Role::CheckBox, "PRIVATE"));
@@ -808,6 +1212,17 @@ mod tests {
             panic!("still a form");
         };
         assert_eq!(form.fields[1].kind, FieldKind::Checkbox { checked: true });
+
+        // Choosing a dropdown's option sets it, though its list stays shut.
+        let stars = node_of(&app.semantics(), Role::MenuListOption, "Stars");
+        let _ = app.update(request(stars, Action::Click, None));
+        let Body::Form(form) = app.semantics().body else {
+            panic!("still a form");
+        };
+        assert!(matches!(
+            &form.fields[2].kind,
+            FieldKind::Dropdown { value: Some(value), .. } if value == "Stars"
+        ));
     }
 
     #[test]
@@ -917,6 +1332,255 @@ mod tests {
             page.form_values.get("title"),
             Some(&serde_json::json!("Bills"))
         );
+
+        // Pressing a chosen tag unchooses it, as clicking it does.
+        let work = node_of(&app.semantics(), Role::ListBoxOption, "Work");
+        let _ = app.update(request(work, Action::Click, None));
+        let Page::Extension(page) = &app.page else {
+            panic!("still the extension");
+        };
+        assert_eq!(page.form_values.get("tags"), Some(&serde_json::json!([])));
+    }
+
+    fn extension_page(view: compass_extension_api::View) -> LauncherApp {
+        let mut page = crate::extension_page::ExtensionPage::new(1, "Weather");
+        page.apply(crate::backend::ExtensionViewState {
+            version: 1,
+            view: Some(Box::new(view)),
+            depth: 1,
+            ..Default::default()
+        });
+        let mut app = LauncherApp::with_index(AppIndex::builder().build());
+        app.page = Page::Extension(Box::new(page));
+        app
+    }
+
+    #[test]
+    fn an_extension_detail_is_read_as_its_markdown_and_metadata() {
+        use compass_extension_api::View;
+        use compass_extension_api::view::{Detail, MetadataItem, MetadataTag};
+        let app = extension_page(View::Detail(Detail {
+            markdown: Some("# Berlin\n\nSunny, **21°C**.".to_owned()),
+            metadata: vec![
+                MetadataItem::Label {
+                    title: "Wind".to_owned(),
+                    text: "12 km/h".to_owned(),
+                    icon: None,
+                    color: None,
+                },
+                MetadataItem::Separator,
+                MetadataItem::TagList {
+                    title: "Alerts".to_owned(),
+                    tags: ["Heat", "UV"]
+                        .into_iter()
+                        .map(|text| MetadataTag {
+                            text: text.to_owned(),
+                            icon: None,
+                            color: None,
+                            handler: None,
+                        })
+                        .collect(),
+                },
+            ],
+            ..Detail::default()
+        }));
+        let semantics = app.semantics();
+        let Body::Document(document) = &semantics.body else {
+            panic!("expected a document, got {:?}", semantics.body);
+        };
+        assert_eq!(document.label, "Weather");
+        let text: Vec<&str> = document.blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(text, ["Berlin", "Sunny, 21°C."]);
+        assert_eq!(document.blocks[0].heading, Some(1));
+        let facts: Vec<(&str, &str)> = document
+            .metadata
+            .iter()
+            .map(|m| (m.label.as_str(), m.value.as_str()))
+            .collect();
+        assert_eq!(facts, [("Wind", "12 km/h"), ("Alerts", "Heat, UV")]);
+    }
+
+    #[test]
+    fn an_extension_grid_is_rows_of_each_sections_columns() {
+        use compass_extension_api::View;
+        use compass_extension_api::view::{GridContent, GridItem, GridSection, GridView};
+        let cell = |title: &str| GridItem {
+            id: Default::default(),
+            key: None,
+            title: title.to_owned(),
+            subtitle: None,
+            content: GridContent::Image(compass_extension_api::view::Image::builtin("circle")),
+            tooltip: None,
+            keywords: Vec::new(),
+            actions: None,
+        };
+        let mut app = extension_page(View::Grid(GridView {
+            columns: Some(2),
+            sections: vec![GridSection {
+                items: ["Red", "Green", "Blue"].into_iter().map(cell).collect(),
+                ..GridSection::default()
+            }],
+            ..GridView::default()
+        }));
+        let semantics = app.semantics();
+        let list = list(&semantics);
+        let names: Vec<&str> = list.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["Red", "Green", "Blue"]);
+        assert_eq!(list.grid, Some(vec![vec![0, 1], vec![2]]));
+        let blue = node_of(&semantics, Role::GridCell, "Blue");
+        let _ = app.update(request(blue, Action::Focus, None));
+        let Page::Extension(page) = &app.page else {
+            panic!("still the extension");
+        };
+        assert_eq!(page.selected, 2);
+    }
+
+    #[test]
+    fn the_settings_are_their_pages_beside_the_page_shown_as_a_form() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = app(dir.path());
+        let _ = app.open_settings(Some("appearance"));
+        let semantics = app.semantics();
+        let Body::ListAndForm(pages, form) = &semantics.body else {
+            panic!("expected the settings, got {:?}", semantics.body);
+        };
+        let names: Vec<&str> = pages.items.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"General"), "{names:?}");
+        assert_eq!(
+            pages.selected.and_then(|s| names.get(s).copied()),
+            Some("Appearance")
+        );
+        assert_eq!(form.label, "Appearance");
+        let (position, theme) = form
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| matches!(field.kind, FieldKind::Dropdown { .. }))
+            .expect("a dropdown on Appearance");
+        let FieldKind::Dropdown {
+            options, expanded, ..
+        } = &theme.kind
+        else {
+            unreachable!()
+        };
+        assert!(!options.is_empty());
+        assert_eq!(*expanded, Some(false));
+
+        // Pressing it opens its list on the option the keyboard is on.
+        let combo = node_of(&semantics, Role::ComboBox, &theme.label);
+        let _ = app.update(request(combo, Action::Click, None));
+        let semantics = app.semantics();
+        let form = semantics.form().expect("still a form");
+        assert_eq!(form.focused, Some(position));
+        assert!(matches!(
+            form.fields[position].kind,
+            FieldKind::Dropdown {
+                expanded: Some(true),
+                highlighted: Some(_),
+                ..
+            }
+        ));
+        let _ = app.update(request(combo, Action::Collapse, None));
+        let Page::Settings(page) = &app.page else {
+            panic!("still the settings");
+        };
+        assert_eq!(page.menu, None);
+
+        // Choosing a page from the sidebar shows it.
+        let general = node_of(&app.semantics(), Role::ListBoxOption, "General");
+        let _ = app.update(request(general, Action::Click, None));
+        let semantics = app.semantics();
+        let general = semantics.form().expect("General");
+        assert_eq!(general.label, "General");
+        // Startup's switch, which the engine rather than a setting keeps.
+        assert!(
+            general
+                .fields
+                .iter()
+                .any(|field| field.label == "Start at login"
+                    && matches!(field.kind, FieldKind::Switch { on: false })
+                    && matches!(field.target, FieldTarget::Control(_)))
+        );
+        let login = node_of(&semantics, Role::Switch, "Start at login");
+        let _ = app.update(request(login, Action::Focus, None));
+        let Page::Settings(page) = &app.page else {
+            panic!("still the settings");
+        };
+        assert_eq!(
+            page.focused,
+            Some(crate::settings_page::Control::LoginStart)
+        );
+    }
+
+    #[test]
+    fn the_first_run_flow_is_a_form_whose_buttons_press() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = app(dir.path());
+        app.open_onboarding(dir.path().join("onboarding.json"));
+        let semantics = app.semantics();
+        assert_eq!(semantics.search, None);
+        let form = semantics.form().expect("a form");
+        let first = form.label.clone();
+        let continue_label = form.fields.last().expect("Continue").label.clone();
+        let next = node_of(&semantics, Role::Button, &continue_label);
+        let _ = app.update(request(next, Action::Click, None));
+        let semantics = app.semantics();
+        let form = semantics.form().expect("a form");
+        assert_ne!(form.label, first, "the next step");
+        assert!(form.fields.iter().any(|field| field.label == "Theme"
+            && matches!(
+                field.kind,
+                FieldKind::Dropdown {
+                    expanded: Some(false),
+                    ..
+                }
+            )));
+        assert!(form.fields.iter().any(|field| field.label == "Back"));
+        // The hotkey row's button, and the Start at login switch.
+        assert!(form.fields.iter().any(|field| {
+            field.label == "Open Docs"
+                && field
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("Global hotkey: "))
+        }));
+        let login = node_of(&semantics, Role::Switch, "Start at login");
+        let _ = app.update(request(login, Action::Focus, None));
+        let Page::Onboarding(page) = &app.page else {
+            panic!("still the flow");
+        };
+        assert_eq!(
+            page.focused,
+            Some(crate::onboarding_page::Control::LoginStart)
+        );
+    }
+
+    #[test]
+    fn a_builtin_lists_rows_are_clicked_and_focused_as_its_rows() {
+        let mut app = LauncherApp::with_index(AppIndex::builder().build());
+        let mut page = crate::windows_page::WindowsPage::default();
+        let window = |id: u32, title: &str, app: &str| crate::backend::WindowRow {
+            id,
+            title: title.into(),
+            app: app.into(),
+            wm_class: app.to_lowercase(),
+            pid: None,
+            can_close: true,
+            app_known: true,
+        };
+        page.apply(
+            Ok(vec![window(1, "Inbox", "Mail"), window(2, "", "Terminal")]),
+            0,
+        );
+        app.page = Page::Windows(page);
+        let semantics = app.semantics();
+        let terminal = node_of(&semantics, Role::ListBoxOption, "Terminal");
+        let _ = app.update(request(terminal, Action::Focus, None));
+        let Page::Windows(page) = &app.page else {
+            panic!("still the window switcher");
+        };
+        assert_eq!(page.selected, 1);
+        assert_eq!(list(&app.semantics()).selected, Some(1));
     }
 
     #[test]

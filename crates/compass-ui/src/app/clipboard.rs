@@ -521,4 +521,169 @@ impl LauncherApp {
             .padding(Padding::new(6.0).top(8))
             .into()
     }
+
+    /// Clipboard history's rows and the selected entry's detail, for
+    /// assistive technology.
+    pub(super) fn clipboard_semantics(&self, page: &ClipboardPage) -> super::a11y::PageSemantics {
+        let items = page
+            .rows
+            .iter()
+            .map(|entry| {
+                super::a11y::item(entry.preview.clone(), Some(clipboard_page::subtitle(entry)))
+            })
+            .collect();
+        // The line about monitoring sits above the list for as long as copies
+        // are not recorded, so it is the status whenever nothing else is.
+        let notice = page
+            .notice
+            .as_deref()
+            .or_else(|| page.monitoring.and_then(clipboard_page::monitoring_notice));
+        super::a11y::PageSemantics::list(
+            "Clipboard history",
+            items,
+            page.selected,
+            page.empty_notice(),
+        )
+        .with_status(notice, &page.query)
+        .with_detail(
+            page.detail
+                .as_ref()
+                .map(|detail| clipboard_detail_document(page, detail)),
+        )
+    }
+}
+
+/// The detail pane as a document: what it draws above the metadata, then the
+/// metadata, or a copied file's preview as Search Files describes it.
+fn clipboard_detail_document(
+    page: &ClipboardPage,
+    detail: &clipboard_page::Detail,
+) -> crate::semantics::Document {
+    use crate::semantics::text_blocks;
+    let blocks = match &detail.pane {
+        Some(DetailContent::File(preview)) => {
+            return super::a11y::file_preview_document(preview, true);
+        }
+        Some(DetailContent::Text(body)) => text_blocks(body),
+        Some(DetailContent::Error(title, reason)) => {
+            let mut blocks = text_blocks(title);
+            blocks.extend(text_blocks(reason));
+            blocks
+        }
+        // An image says nothing beyond the entry it is, which labels the
+        // document.
+        Some(DetailContent::Image(_) | DetailContent::None) | None => Vec::new(),
+    };
+    let metadata = match &detail.info {
+        Some(Ok(info)) => super::a11y::metadata(clipboard_page::detail_fields(info)),
+        _ => Vec::new(),
+    };
+    let label = page
+        .rows
+        .iter()
+        .find(|row| row.id == detail.id)
+        .map_or_else(|| "Clipboard entry".to_owned(), |row| row.preview.clone());
+    crate::semantics::Document {
+        label,
+        blocks,
+        metadata,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{ClipboardDetail, ClipboardMonitoring, ClipboardRow, ClipboardRowKind};
+    use crate::clipboard_page::Status;
+    use crate::semantics::Body;
+
+    fn entry(id: &str, preview: &str, pinned: bool) -> ClipboardRow {
+        ClipboardRow {
+            id: id.into(),
+            preview: preview.into(),
+            kind: ClipboardRowKind::Text,
+            pinned,
+            url_host: None,
+        }
+    }
+
+    #[test]
+    fn history_describes_its_entries_and_the_selected_ones_detail() {
+        let app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = ClipboardPage {
+            rows: vec![entry("1", "hello world", true), entry("2", "second", false)],
+            selected: 1,
+            status: Status::Ready,
+            monitoring: Some(ClipboardMonitoring {
+                supported: true,
+                enabled: false,
+            }),
+            ..ClipboardPage::default()
+        };
+        page.detail = Some(clipboard_page::Detail {
+            id: "2".into(),
+            info: Some(Ok(ClipboardDetail {
+                id: "2".into(),
+                mime_type: "text/plain".into(),
+                kind: ClipboardRowKind::Text,
+                size: 6,
+                md5: String::new(),
+                updated_at: 0,
+                encrypted: false,
+                keywords: String::new(),
+            })),
+            content: None,
+            pane: Some(DetailContent::Text("second\n\nline".into())),
+            image: None,
+        });
+        let semantics = app.clipboard_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Clipboard history");
+        assert_eq!(list.items[0].name, "hello world");
+        assert_eq!(list.items[0].description.as_deref(), Some("Text · Pinned"));
+        assert_eq!(list.items[1].description.as_deref(), Some("Text"));
+        assert_eq!(list.selected, Some(1));
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("Clipboard monitoring is paused")
+        );
+        let detail = semantics.detail.expect("the detail pane");
+        assert_eq!(detail.label, "second");
+        let blocks: Vec<&str> = detail.blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(blocks, ["second", "line"]);
+        let labels: Vec<&str> = detail.metadata.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels.first(), Some(&"Type"));
+        assert!(
+            detail
+                .metadata
+                .iter()
+                .any(|m| m.label == "MIME type" && m.value == "text/plain"),
+            "{labels:?}"
+        );
+        assert!(!labels.contains(&"MD5"), "an empty value is left out");
+
+        page.notice = Some("Images cannot be copied back yet.".into());
+        assert_eq!(
+            app.clipboard_semantics(&page).status.as_deref(),
+            Some("Images cannot be copied back yet.")
+        );
+    }
+
+    #[test]
+    fn history_says_what_the_view_shows_in_place_of_the_list() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = ClipboardPage::default();
+        assert_eq!(
+            app.clipboard_semantics(&page).status.as_deref(),
+            Some("Loading clipboard history…")
+        );
+        page.status = Status::Ready;
+        app.page = Page::Clipboard(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("Nothing copied yet"));
+        assert_eq!(semantics.detail, None);
+    }
 }

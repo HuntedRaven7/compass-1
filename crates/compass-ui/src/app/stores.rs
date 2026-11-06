@@ -13,6 +13,7 @@ use super::{
 };
 use crate::action_panel::Action;
 use crate::backend::Store;
+use crate::semantics::{Body, Dialog, Document, markdown_blocks};
 use crate::store_page::{self, Confirm, Status, StoreDetailPage, StorePage, actions};
 
 const NEEDS_ENGINE: &str = "The extension stores need the Compass engine";
@@ -238,7 +239,7 @@ impl LauncherApp {
                 row![
                     iced::widget::Space::new().width(Length::Fill),
                     button("Cancel".to_owned(), false),
-                    button(format!("Uninstall {title}"), true),
+                    button(store_page::confirm_button(title), true),
                 ]
                 .spacing(8),
             ]
@@ -752,10 +753,11 @@ impl LauncherApp {
     /// The list's body: the heading, then each extension with its icon,
     /// description and accessory.
     pub(super) fn store_body<'a>(&'a self, page: &'a StorePage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Loading extensions…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready => {}
+        let empty = page.empty_notice();
+        if let Some(notice) = empty
+            && page.status != Status::Ready
+        {
+            return self.notice(notice);
         }
         let palette = self.palette();
         let dark = self.store_prefers_dark();
@@ -774,8 +776,8 @@ impl LauncherApp {
             .padding(Padding::new(4.0).left(10).right(10))
         ]
         .spacing(f32::from(self.geometry.row_spacing));
-        if page.rows.is_empty() {
-            list = list.push(self.notice("No extensions match"));
+        if let Some(notice) = empty {
+            list = list.push(self.notice(notice));
         }
         for (position, entry) in page.rows.iter().enumerate() {
             let selected = position == page.selected;
@@ -829,10 +831,7 @@ impl LauncherApp {
                 || self.initial_badge(&page.detail.row.title, false),
                 |art| self.extension_icon(art, false),
             );
-        let mut status = store_page::accessory(&page.detail.row);
-        if status.is_empty() {
-            status = page.detail.row.author_name.clone();
-        }
+        let (_, status) = store_page::detail_status(&page.detail.row);
         let header = row![
             icon,
             column![
@@ -884,5 +883,194 @@ impl LauncherApp {
         } else {
             content
         }
+    }
+
+    /// The list, for assistive technology; the uninstall question in its
+    /// place while it is asked.
+    pub(super) fn store_semantics(&self, page: &StorePage) -> super::a11y::PageSemantics {
+        if let Some(confirm) = &page.confirm
+            && page.status == Status::Ready
+        {
+            return store_confirm_semantics(&confirm.title);
+        }
+        let items = page
+            .rows
+            .iter()
+            .map(|entry| {
+                let accessory = store_page::accessory(entry);
+                let description = [entry.description.as_str(), accessory.as_str()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                super::a11y::item(entry.title.clone(), Some(description))
+            })
+            .collect();
+        super::a11y::PageSemantics::list(&page.heading, items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+
+    /// The detail page, for assistive technology: its README with the
+    /// header's status line and the links as its facts, or the uninstall
+    /// question while it is asked.
+    pub(super) fn store_detail_semantics(
+        &self,
+        page: &StoreDetailPage,
+    ) -> super::a11y::PageSemantics {
+        if page.confirm {
+            return store_confirm_semantics(&page.detail.row.title);
+        }
+        let detail = &page.detail;
+        let link = |url: Option<&String>| url.cloned().unwrap_or_default();
+        let metadata = super::a11y::metadata([
+            store_page::detail_status(&detail.row),
+            ("README", link(detail.readme_url.as_ref())),
+            ("Source code", link(detail.source_url.as_ref())),
+            ("Store page", link(detail.store_url.as_ref())),
+        ]);
+        super::a11y::PageSemantics {
+            body: Body::Document(Document {
+                label: page.title.clone(),
+                blocks: markdown_blocks(&detail.markdown),
+                metadata,
+            }),
+            status: page
+                .busy
+                .as_deref()
+                .or(page.notice.as_deref())
+                .map(str::to_owned),
+            detail: None,
+        }
+    }
+}
+
+/// The uninstall question for the extension titled `title`, as the dialog
+/// over a store page asks it.
+fn store_confirm_semantics(title: &str) -> super::a11y::PageSemantics {
+    super::a11y::PageSemantics {
+        body: Body::Dialog(Dialog {
+            title: store_page::CONFIRM_TITLE.to_owned(),
+            message: store_page::CONFIRM_MESSAGE.to_owned(),
+            keys: super::answer_keys(&store_page::confirm_button(title)),
+        }),
+        ..super::a11y::PageSemantics::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{StoreDetail, StoreList, StoreRow};
+
+    fn row(id: &str, description: &str) -> StoreRow {
+        StoreRow {
+            id: id.into(),
+            title: id.into(),
+            description: description.into(),
+            downloads: "1.1K".into(),
+            ..StoreRow::default()
+        }
+    }
+
+    #[test]
+    fn the_store_lists_each_extension_with_its_accessory_and_asks_before_uninstalling() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = StorePage::new(Store::Vicinae);
+        assert_eq!(
+            app.store_semantics(&page).status.as_deref(),
+            Some("Loading extensions…")
+        );
+        let mut installed = row("Notes", "");
+        installed.installed = true;
+        page.apply(
+            0,
+            Ok(StoreList {
+                heading: "Extensions".into(),
+                rows: vec![row("Clock", "Shows the time"), installed],
+            }),
+        );
+        page.selected = 1;
+        app.page = Page::Store(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Extensions");
+        assert_eq!(list.items[0].name, "Clock");
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some("Shows the time · ↓ 1.1K")
+        );
+        assert_eq!(
+            list.items[1].description.as_deref(),
+            Some("Installed · ↓ 1.1K")
+        );
+        assert_eq!(list.selected, Some(1));
+
+        let Page::Store(page) = &mut app.page else {
+            unreachable!("the page was just set");
+        };
+        page.confirm = Some(Confirm {
+            id: "Notes".into(),
+            title: "Notes".into(),
+        });
+        assert_eq!(
+            app.semantics().body,
+            Body::Dialog(Dialog {
+                title: store_page::CONFIRM_TITLE.into(),
+                message: store_page::CONFIRM_MESSAGE.into(),
+                keys: "Enter: Uninstall Notes    Esc: cancel".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_store_detail_is_its_readme_with_the_status_line_and_links() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = StoreDetailPage::new(
+            Store::Vicinae,
+            StoreDetail {
+                row: row("Clock", "Shows the time"),
+                markdown: "# Clock\n\nShows the time in the menu.".into(),
+                source_url: Some("https://example.com/clock".into()),
+                ..StoreDetail::default()
+            },
+        );
+        page.busy = Some(store_page::DOWNLOADING.to_owned());
+        let semantics = app.store_detail_semantics(&page);
+        let Body::Document(document) = &semantics.body else {
+            panic!("expected a document, got {:?}", semantics.body);
+        };
+        assert_eq!(document.label, "Vicinae Store - Clock");
+        assert_eq!(
+            document.blocks,
+            [
+                crate::semantics::Block {
+                    text: "Clock".into(),
+                    heading: Some(1),
+                },
+                crate::semantics::Block {
+                    text: "Shows the time in the menu.".into(),
+                    heading: None,
+                },
+            ]
+        );
+        let facts: Vec<(&str, &str)> = document
+            .metadata
+            .iter()
+            .map(|fact| (fact.label.as_str(), fact.value.as_str()))
+            .collect();
+        assert_eq!(
+            facts,
+            [
+                ("Status", "↓ 1.1K"),
+                ("Source code", "https://example.com/clock")
+            ]
+        );
+        assert_eq!(semantics.status.as_deref(), Some(store_page::DOWNLOADING));
+
+        page.confirm = true;
+        app.page = Page::StoreDetail(Box::new(page));
+        assert!(matches!(app.semantics().body, Body::Dialog(_)));
     }
 }

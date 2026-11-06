@@ -190,6 +190,18 @@ impl ProgramsPage {
     pub fn selected_row(&self) -> Option<&RunRow> {
         self.rows.get(self.selected)
     }
+
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that nothing matches; `None` while it shows rows.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Looking for programs…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.rows.is_empty() => Some("No programs match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 /// A row's title and second line (`~` for the home directory).

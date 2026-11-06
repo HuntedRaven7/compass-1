@@ -250,10 +250,11 @@ impl LauncherApp {
 
     /// The list itself.
     fn dmenu_list<'a>(&'a self, page: &'a DmenuPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Loading entries…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready => {}
+        let empty = page.empty_notice();
+        if let Some(notice) = empty
+            && page.status != Status::Ready
+        {
+            return self.notice(notice);
         }
         let quick_look = !page.list.no_quick_look;
         let mut list = column![].spacing(f32::from(self.geometry.row_spacing));
@@ -268,12 +269,8 @@ impl LauncherApp {
                 .padding(Padding::new(4.0).left(10)),
             );
         }
-        if page.shown.is_empty() {
-            return column![
-                list,
-                self.notice("No entries match. Enter passes the search text.")
-            ]
-            .into();
+        if let Some(notice) = empty {
+            return column![list, self.notice(notice)].into();
         }
         for (position, &index) in page.shown.iter().enumerate() {
             let selected = position == page.selected;
@@ -298,5 +295,74 @@ impl LauncherApp {
             .id(crate::scroll::ROOT_RESULTS)
             .height(Length::Shrink)
             .into()
+    }
+
+    /// The view, for assistive technology: the entries under their heading,
+    /// and quick look's preview beside them.
+    pub(super) fn dmenu_semantics(&self, page: &DmenuPage) -> super::a11y::PageSemantics {
+        let quick_look = !page.list.no_quick_look;
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                let (title, subtitle) = dmenu_page::entry_text(&page.entries[index], quick_look);
+                super::a11y::item(title, subtitle)
+            })
+            .collect();
+        let label = page.heading().unwrap_or_else(|| "Entries".to_owned());
+        let detail = page
+            .preview
+            .as_ref()
+            .map(|preview| super::a11y::file_preview_document(preview, !page.list.no_metadata));
+        super::a11y::PageSemantics::list(&label, items, page.selected, page.empty_notice())
+            .with_status(None, &page.query)
+            .with_detail(detail)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantics::Body;
+
+    #[test]
+    fn the_entries_are_a_list_under_their_heading_with_the_file_preview_beside_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "first line\nsecond line\n").expect("write file");
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = DmenuPage::loading(1);
+        assert_eq!(
+            app.dmenu_semantics(&page).status.as_deref(),
+            Some("Loading entries…")
+        );
+        page.apply(Ok(crate::backend::DmenuList {
+            content: format!("{}\nplain entry\n", file.display()),
+            ..crate::backend::DmenuList::default()
+        }));
+        app.page = Page::Dmenu(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Entries (2)");
+        let names: Vec<&str> = list.items.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, ["notes.txt", "plain entry"]);
+        assert_eq!(list.selected, Some(0));
+        let detail = semantics.detail.as_ref().expect("the preview is described");
+        assert_eq!(detail.label, "notes.txt");
+        assert!(!detail.metadata.is_empty(), "metadata is on by default");
+
+        let Page::Dmenu(page) = &mut app.page else {
+            unreachable!("the page was just set");
+        };
+        page.query = "%%%%".into();
+        page.refilter();
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("No entries match. Enter passes the search text.")
+        );
     }
 }

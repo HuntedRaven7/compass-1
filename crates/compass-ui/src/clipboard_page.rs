@@ -320,6 +320,23 @@ impl ClipboardPage {
         self.rows.get(self.selected)
     }
 
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that there is nothing to show.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Loading clipboard history…"),
+            Status::Failed(reason) => Some(reason.as_str()),
+            Status::Ready
+                if self.rows.is_empty() && self.query.is_empty() && self.kind.is_none() =>
+            {
+                Some("Nothing copied yet")
+            }
+            Status::Ready if self.rows.is_empty() => Some("No matching entries"),
+            Status::Ready => None,
+        }
+    }
+
     /// The id whose detail should be fetched, when the pane is not already
     /// showing (or fetching) the selected entry's; `None` clears nothing and
     /// asks for nothing.

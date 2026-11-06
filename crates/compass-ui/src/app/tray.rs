@@ -13,7 +13,7 @@ use super::{
 };
 use crate::action_panel::Action;
 use crate::backend::TrayItemRow;
-use crate::tray_page::{self, ItemAction, Mode, Status, TrayPage};
+use crate::tray_page::{self, ItemAction, Mode, TrayPage};
 
 const ACTIVATE: &str = "tray.activate";
 const BROWSE: &str = "tray.browse";
@@ -288,20 +288,7 @@ impl LauncherApp {
     /// The view's body.
     pub(super) fn tray_body<'a>(&'a self, page: &'a TrayPage) -> Element<'a, Message> {
         let in_menu = matches!(page.mode, Mode::Menu { .. });
-        let empty = match &page.status {
-            Status::Loading if in_menu => Some("Loading the menu…"),
-            Status::Loading => Some("Looking for tray items…"),
-            Status::Failed(reason) => Some(reason.as_str()),
-            Status::Ready if page.shown.is_empty() && page.query.is_empty() && in_menu => {
-                Some("This menu is empty")
-            }
-            Status::Ready if page.shown.is_empty() && page.query.is_empty() => {
-                Some("No tray items")
-            }
-            Status::Ready if page.shown.is_empty() => Some("No matches"),
-            Status::Ready => None,
-        };
-        if let Some(empty) = empty {
+        if let Some(empty) = page.empty_notice() {
             return match &page.notice {
                 Some(notice) => column![self.notice(empty), self.notice(notice)].into(),
                 None => self.notice(empty),
@@ -383,5 +370,117 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The items or a menu's entries, for assistive technology; a toggle
+    /// says whether it is on, as its mark shows.
+    pub(super) fn tray_semantics(&self, page: &TrayPage) -> super::a11y::PageSemantics {
+        let (label, items): (&str, Vec<crate::semantics::Item>) = match &page.mode {
+            Mode::Menu { title, .. } => (
+                title.as_str(),
+                page.shown
+                    .iter()
+                    .filter_map(|&index| page.entries.get(index))
+                    .map(|entry| {
+                        let state = entry.toggled.map(|on| if on { "On" } else { "Off" });
+                        super::a11y::item(entry.label.clone(), state.map(str::to_owned))
+                    })
+                    .collect(),
+            ),
+            Mode::Items => (
+                "Tray items",
+                page.shown
+                    .iter()
+                    .filter_map(|&index| page.items.get(index))
+                    .map(|row| {
+                        let attention = row.attention.then_some(tray_page::ATTENTION);
+                        let description = [Some(row.subtitle.as_str()), attention]
+                            .into_iter()
+                            .flatten()
+                            .filter(|part| !part.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        super::a11y::item(row.title.clone(), Some(description))
+                    })
+                    .collect(),
+            ),
+        };
+        super::a11y::PageSemantics::list(label, items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::TrayMenuRow;
+    use crate::semantics::Body;
+
+    fn list(app: &LauncherApp) -> crate::semantics::List {
+        match app.semantics().body {
+            Body::List(list) => list,
+            other => panic!("expected a list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_tray_items_and_a_menu_are_lists_with_attention_and_toggles() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = TrayPage::default();
+        assert_eq!(
+            app.tray_semantics(&page).status.as_deref(),
+            Some("Looking for tray items…")
+        );
+        page.apply_items(Ok(vec![
+            TrayItemRow {
+                key: ":1.1".into(),
+                title: "Network".into(),
+                subtitle: "Wired connection".into(),
+                attention: true,
+                has_menu: true,
+                ..TrayItemRow::default()
+            },
+            TrayItemRow {
+                key: ":1.2".into(),
+                title: "Steam".into(),
+                ..TrayItemRow::default()
+            },
+        ]));
+        app.page = Page::Tray(page);
+        let items = list(&app);
+        assert_eq!(items.label, "Tray items");
+        assert_eq!(
+            items.items[0].description.as_deref(),
+            Some("Wired connection · Attention")
+        );
+        assert_eq!(items.items[1].name, "Steam");
+        assert_eq!(items.items[1].description, None);
+        assert_eq!(items.selected, Some(0));
+
+        let Page::Tray(page) = &mut app.page else {
+            unreachable!("the page was just set");
+        };
+        assert_eq!(page.push_menu().as_deref(), Some(":1.1"));
+        page.apply_menu(
+            ":1.1",
+            Ok(vec![
+                TrayMenuRow {
+                    id: 3,
+                    label: "Wi-Fi".into(),
+                    toggled: Some(false),
+                    ..TrayMenuRow::default()
+                },
+                TrayMenuRow {
+                    id: 4,
+                    label: "Settings".into(),
+                    ..TrayMenuRow::default()
+                },
+            ]),
+        );
+        let menu = list(&app);
+        assert_eq!(menu.label, "Network");
+        assert_eq!(menu.items[0].name, "Wi-Fi");
+        assert_eq!(menu.items[0].description.as_deref(), Some("Off"));
+        assert_eq!(menu.items[1].description, None);
     }
 }

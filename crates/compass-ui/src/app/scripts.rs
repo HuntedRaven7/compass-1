@@ -9,6 +9,7 @@ use compass_core::script_command::OutputMode;
 use compass_core::script_output::Color as OutputColor;
 use iced::keyboard::{Key, Modifiers, key::Named};
 
+use super::a11y::PageSemantics;
 use super::{
     Element, LauncherApp, Length, Message, Padding, Page, PanelSection, PanelState, RootRow, Task,
     column, container, scrollable, text,
@@ -16,6 +17,7 @@ use super::{
 use crate::action_panel::Action;
 use crate::preferences_page::Purpose;
 use crate::script_page::{self, ScriptOutputPage};
+use crate::semantics::{Body, Document, text_blocks};
 
 const RUN: &str = "script.run";
 const COPY_PATH: &str = "script.copy-path";
@@ -451,14 +453,15 @@ impl LauncherApp {
                 span
             })
             .collect();
-        let heading = text(format!("{} — {}", page.title, page.heading()))
-            .font(self.font())
-            .size(12)
-            .color(if page.failed() {
-                colour(OutputColor::Red)
-            } else {
-                palette.muted.to_iced()
-            });
+        let heading =
+            text(page.heading_line())
+                .font(self.font())
+                .size(12)
+                .color(if page.failed() {
+                    colour(OutputColor::Red)
+                } else {
+                    palette.muted.to_iced()
+                });
         let output = iced::widget::rich_text(spans)
             .size(13)
             .width(Length::Fill)
@@ -477,6 +480,20 @@ impl LauncherApp {
         .height(Length::Shrink)
         .into()
     }
+
+    /// The full-output view for assistive technology: the output a line at
+    /// a time, under the line that says how the run stands.
+    pub(super) fn script_output_semantics(&self, page: &ScriptOutputPage) -> PageSemantics {
+        PageSemantics {
+            body: Body::Document(Document {
+                label: page.heading_line(),
+                blocks: text_blocks(&page.text()),
+                metadata: Vec::new(),
+            }),
+            status: page.notice.clone(),
+            detail: None,
+        }
+    }
 }
 
 /// What a finished one-line run says in the root list: its line, or the
@@ -491,4 +508,41 @@ fn one_line_message(mode: OutputMode, ok: bool, line: &str) -> String {
         (_, false) => "Script execution failed",
     }
     .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantics::Block;
+
+    #[test]
+    fn the_full_output_is_read_a_line_at_a_time_under_how_the_run_ended() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page =
+            ScriptOutputPage::new("report.sh".into(), Vec::new(), "Disk Report".into(), 1);
+        page.apply(
+            1,
+            crate::backend::ScriptOutputState {
+                output: "\x1b[31mDisk\x1b[0m usage\n\n/home 40%\n".into(),
+                finished: true,
+                exit_code: Some(0),
+                elapsed_ms: 1200,
+            },
+        );
+        page.notice = Some("Copied to clipboard".into());
+        let semantics = app.script_output_semantics(&page);
+        let Body::Document(document) = &semantics.body else {
+            panic!("expected a document, got {:?}", semantics.body);
+        };
+        assert_eq!(document.label, "Disk Report — Done in 1.2s (exit=0)");
+        let lines: Vec<&str> = document
+            .blocks
+            .iter()
+            .map(|block: &Block| block.text.as_str())
+            .collect();
+        assert_eq!(lines, ["Disk usage", "/home 40%"]);
+        assert_eq!(semantics.status.as_deref(), Some("Copied to clipboard"));
+        app.page = Page::ScriptOutput(page);
+        assert!(matches!(app.semantics().body, Body::Document(_)));
+    }
 }

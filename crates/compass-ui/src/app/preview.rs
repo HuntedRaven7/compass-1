@@ -61,16 +61,8 @@ impl LauncherApp {
         };
         let mut pane = column![drawn].spacing(6);
         if metadata {
-            let mut fields = vec![
-                ("Name", preview.name.as_str()),
-                ("Path", preview.path.as_str()),
-                ("Type", preview.mime.as_str()),
-            ];
-            if let Some(modified) = &preview.modified {
-                fields.push(("Last modified", modified.as_str()));
-            }
             let mut rows = column![].spacing(4);
-            for (label, value) in fields {
+            for (label, value) in preview.fields() {
                 rows = rows.push(
                     row![
                         text(label)

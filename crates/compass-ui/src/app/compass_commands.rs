@@ -7,6 +7,7 @@
 
 use iced::keyboard::{Key, Modifiers, key::Named};
 
+use super::a11y::{PageSemantics, item};
 use super::{
     Direction, Element, LauncherApp, Length, Message, Padding, Page, PanelSection, PanelState,
     Task, chord_direction, column, container, focus_search, mouse_area, next_selection, scrollable,
@@ -14,6 +15,7 @@ use super::{
 use crate::action_panel::Action;
 use crate::compass_pages::{ExtensionsPage, IconsPage, StoragePage, TokensPage, provenance_badge};
 use crate::fallbacks_page::{Candidate, FallbacksPage};
+use crate::semantics::{Block, Body, Document, markdown_blocks};
 use compass_core::root_items::RootEdit;
 
 /// The fallback manager's one action.
@@ -459,16 +461,34 @@ impl LauncherApp {
     ) -> Element<'a, Message> {
         let markdown = iced::widget::markdown::view(&page.markdown, self.markdown_settings())
             .map(Message::ExtensionLinkClicked);
-        let hint = iced::widget::text(format!(
-            "Enter: {}    Esc: back",
-            crate::compass_pages::CONTINUE_TO_STORE
-        ))
-        .font(self.font())
-        .size(12);
+        let hint = iced::widget::text(crate::compass_pages::intro_hint())
+            .font(self.font())
+            .size(12);
         scrollable(container(column![markdown, hint].spacing(10)).padding(Padding::new(14.0)))
             .id(crate::scroll::ROOT_RESULTS)
             .height(Length::Shrink)
             .into()
+    }
+
+    /// The intro for assistive technology: its text, then how to go on.
+    pub(super) fn store_intro_semantics(
+        &self,
+        page: &crate::compass_pages::StoreIntroPage,
+    ) -> PageSemantics {
+        let mut blocks = markdown_blocks(crate::compass_pages::intro_text(page.store));
+        blocks.push(Block {
+            text: crate::compass_pages::intro_hint(),
+            heading: None,
+        });
+        PageSemantics {
+            body: Body::Document(Document {
+                label: crate::compass_pages::store_name(page.store).to_owned(),
+                blocks,
+                metadata: Vec::new(),
+            }),
+            status: None,
+            detail: None,
+        }
     }
 
     /// Opens one of the inspection views, by its C++ id.
@@ -782,8 +802,8 @@ impl LauncherApp {
         let mut list = column![].spacing(f32::from(self.geometry.row_spacing));
         let notice = match &self.page {
             Page::Icons(page) => {
-                if page.shown.is_empty() {
-                    return Some(self.notice("No icons match"));
+                if let Some(empty) = page.empty_notice() {
+                    return Some(self.notice(empty));
                 }
                 let names = compass_core::builtin_icon::names();
                 for (position, &index) in page.shown.iter().enumerate() {
@@ -802,14 +822,8 @@ impl LauncherApp {
                 None
             }
             Page::Storage(page) => {
-                if page.shown.is_empty() {
-                    return Some(self.notice(page.notice.as_deref().unwrap_or(
-                        if page.browsing.is_some() {
-                            "No items"
-                        } else {
-                            "No namespaces"
-                        },
-                    )));
+                if let Some(empty) = page.empty_notice() {
+                    return Some(self.notice(empty));
                 }
                 for (position, title) in page.titles().into_iter().enumerate() {
                     let selected = position == page.selected;
@@ -824,8 +838,8 @@ impl LauncherApp {
                 page.notice.as_deref()
             }
             Page::Tokens(page) => {
-                if page.shown.is_empty() {
-                    return Some(self.notice(page.notice.as_deref().unwrap_or("No token sets")));
+                if let Some(empty) = page.empty_notice() {
+                    return Some(self.notice(empty));
                 }
                 for (position, &index) in page.shown.iter().enumerate() {
                     let Some(set) = page.sets.get(index) else {
@@ -847,11 +861,8 @@ impl LauncherApp {
                 page.notice.as_deref()
             }
             Page::Extensions(page) => {
-                if page.all.is_empty() {
-                    return Some(self.notice("No extensions are installed"));
-                }
-                if page.shown.is_empty() {
-                    return Some(self.notice("No extensions match"));
+                if let Some(empty) = page.empty_notice() {
+                    return Some(self.notice(empty));
                 }
                 for (position, &index) in page.shown.iter().enumerate() {
                     let Some(extension) = page.all.get(index) else {
@@ -879,6 +890,90 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         })
+    }
+
+    /// Show Installed Extensions for assistive technology: each row's title,
+    /// then its description and where it came from.
+    pub(super) fn extensions_semantics(&self, page: &ExtensionsPage) -> PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                page.all
+                    .get(index)
+                    .map(|extension| {
+                        item(
+                            extension.title.clone(),
+                            Some(joined(&[
+                                extension.description.as_str(),
+                                provenance_badge(extension.provenance),
+                            ])),
+                        )
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        PageSemantics::list("Extensions", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+
+    /// Search Builtin Icons for assistive technology: the icons' names.
+    pub(super) fn icons_semantics(&self, page: &IconsPage) -> PageSemantics {
+        let names = compass_core::builtin_icon::names();
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                names
+                    .get(index)
+                    .map(|name| item(*name, None))
+                    .unwrap_or_default()
+            })
+            .collect();
+        PageSemantics::list("Icons", items, page.selected, page.empty_notice())
+            .with_status(None, &page.query)
+    }
+
+    /// Inspect Local Storage for assistive technology: the namespaces, or
+    /// the keys of the one being browsed.
+    pub(super) fn storage_semantics(&self, page: &StoragePage) -> PageSemantics {
+        let label = if page.browsing.is_some() {
+            "Items"
+        } else {
+            "Namespaces"
+        };
+        let items = page
+            .titles()
+            .into_iter()
+            .map(|title| item(title, None))
+            .collect();
+        PageSemantics::list(label, items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+
+    /// Manage OAuth Token Sets for assistive technology: each set's
+    /// extension, then its provider and whether it has expired.
+    pub(super) fn tokens_semantics(&self, page: &TokensPage) -> PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                page.sets
+                    .get(index)
+                    .map(|set| {
+                        item(
+                            set.extension_id.clone(),
+                            Some(joined(&[
+                                set.provider_id.as_deref().unwrap_or_default(),
+                                if set.expired { "Expired" } else { "" },
+                            ])),
+                        )
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        PageSemantics::list("Token sets", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
     }
 
     /// A row of an inspection view: clickable, and marked for scrolling
@@ -970,12 +1065,8 @@ impl LauncherApp {
 
     /// The fallback manager's body: "Enabled", then "Available".
     pub(super) fn fallbacks_body<'a>(&'a self, page: &'a FallbacksPage) -> Element<'a, Message> {
-        if page.rows.is_empty() {
-            return self.notice(if page.candidates.is_empty() {
-                "Nothing can be a fallback"
-            } else {
-                "No commands match"
-            });
+        if let Some(empty) = page.empty_notice() {
+            return self.notice(empty);
         }
         let mut list = column![].spacing(f32::from(self.geometry.row_spacing));
         for (position, row) in page.rows.iter().enumerate() {
@@ -1014,6 +1105,41 @@ impl LauncherApp {
             None => rows.into(),
         }
     }
+
+    /// The fallback manager for assistive technology: every row, enabled
+    /// then available, by its title and subtitle.
+    pub(super) fn fallbacks_semantics(&self, page: &FallbacksPage) -> PageSemantics {
+        let items = page
+            .rows
+            .iter()
+            .map(|row| {
+                page.candidates
+                    .get(row.candidate)
+                    .map(|candidate| {
+                        item(candidate.title.clone(), Some(candidate.subtitle.clone()))
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        PageSemantics::list(
+            "Fallback commands",
+            items,
+            page.selected,
+            page.empty_notice(),
+        )
+        .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+/// A row's subtitle and accessory text as one description, leaving out the
+/// empty ones.
+fn joined(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .copied()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// A token set's expiry as `QDateTime::toString()` writes it.
@@ -1090,6 +1216,7 @@ fn system_info() -> compass_core::bug_report::SystemInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::manifest::{ExtensionManifest, Provenance};
 
     #[test]
     fn the_default_config_is_written_read_only_and_replaced() {
@@ -1106,5 +1233,242 @@ mod tests {
         let info = system_info();
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
         assert!(info.build_info.starts_with("rustc - "));
+    }
+
+    fn app() -> LauncherApp {
+        LauncherApp::with_index(compass_core::AppIndex::builder().build())
+    }
+
+    fn list(semantics: &PageSemantics) -> &crate::semantics::List {
+        match &semantics.body {
+            Body::List(list) => list,
+            other => panic!("expected a list, got {other:?}"),
+        }
+    }
+
+    fn manifest(id: &str, title: &str, description: &str) -> ExtensionManifest {
+        ExtensionManifest {
+            path: std::path::PathBuf::from("/extensions").join(id),
+            id: id.into(),
+            name: id.into(),
+            title: title.into(),
+            description: description.into(),
+            icon: String::new(),
+            author: "someone".into(),
+            owner: None,
+            categories: Vec::new(),
+            preferences: Vec::new(),
+            commands: Vec::new(),
+            needs_raycast_api: false,
+            provenance: Provenance::from_id(id),
+        }
+    }
+
+    #[test]
+    fn the_fallback_manager_describes_every_row_in_its_order() {
+        let candidate = |id: &str, title: &str, subtitle: &str, enabled: bool| Candidate {
+            id: id.into(),
+            title: title.into(),
+            subtitle: subtitle.into(),
+            keywords: Vec::new(),
+            icon: None,
+            enabled_as: enabled.then(|| id.to_owned()),
+        };
+        let app = app();
+        let mut page = FallbacksPage::new(
+            vec![
+                candidate("shortcuts:google", "Google", "Quicklink", false),
+                candidate("files:search", "Search Files", "Command", true),
+            ],
+            vec!["files:search".into()],
+        );
+        page.selected = 1;
+        let semantics = app.fallbacks_semantics(&page);
+        let rows = list(&semantics);
+        assert_eq!(
+            rows.items,
+            [
+                item("Search Files", Some("Command".into())),
+                item("Google", Some("Quicklink".into())),
+            ],
+            "enabled first, as drawn, without the section headings"
+        );
+        assert_eq!(rows.selected, Some(1));
+        assert_eq!(semantics.status, None);
+
+        page.query = "zzzz".into();
+        page.refilter();
+        let semantics = app.fallbacks_semantics(&page);
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No commands match"));
+        let nothing = FallbacksPage::new(Vec::new(), Vec::new());
+        assert_eq!(
+            app.fallbacks_semantics(&nothing).status.as_deref(),
+            Some("Nothing can be a fallback")
+        );
+    }
+
+    #[test]
+    fn installed_extensions_are_described_with_where_they_came_from() {
+        let app = app();
+        let none = ExtensionsPage::new(Vec::new());
+        assert_eq!(
+            app.extensions_semantics(&none).status.as_deref(),
+            Some("No extensions are installed")
+        );
+        let mut page = ExtensionsPage::new(vec![
+            manifest("store.raycast.github", "GitHub", "Work with issues"),
+            manifest("notes", "Notes", ""),
+        ]);
+        page.notice = Some(crate::store_page::UNINSTALLED.to_owned());
+        let semantics = app.extensions_semantics(&page);
+        assert_eq!(
+            list(&semantics).items,
+            [
+                item("GitHub", Some("Work with issues · Raycast".into())),
+                item("Notes", Some("Local".into())),
+            ]
+        );
+        assert_eq!(list(&semantics).selected, Some(0));
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some(crate::store_page::UNINSTALLED)
+        );
+        page.query = "zzzz".into();
+        page.refilter();
+        assert_eq!(
+            app.extensions_semantics(&page).status.as_deref(),
+            Some("No extensions match")
+        );
+    }
+
+    #[test]
+    fn builtin_icons_are_described_by_name_and_counted_when_searched() {
+        let app = app();
+        let mut page = IconsPage::new();
+        let names = compass_core::builtin_icon::names();
+        let semantics = app.icons_semantics(&page);
+        assert_eq!(list(&semantics).items.len(), names.len());
+        assert_eq!(list(&semantics).items[0], item(names[page.shown[0]], None));
+        assert_eq!(semantics.status, None, "nothing typed, nothing counted");
+
+        page.query = "copy-clipboard".into();
+        page.refilter();
+        let semantics = app.icons_semantics(&page);
+        assert_eq!(list(&semantics).items[0].name, "copy-clipboard");
+        assert_eq!(
+            semantics.status,
+            Some(crate::semantics::result_count(list(&semantics).items.len()))
+        );
+        page.query = "zzzzqqqq".into();
+        page.refilter();
+        assert_eq!(
+            app.icons_semantics(&page).status.as_deref(),
+            Some("No icons match")
+        );
+    }
+
+    #[test]
+    fn local_storage_describes_namespaces_then_the_keys_of_one() {
+        use crate::backend::StorageItemRow;
+        let app = app();
+        let mut page = StoragePage::default();
+        assert_eq!(
+            app.storage_semantics(&page).status.as_deref(),
+            Some("No namespaces")
+        );
+        page.notice = Some("The engine is not running".into());
+        assert_eq!(
+            app.storage_semantics(&page).status.as_deref(),
+            Some("The engine is not running"),
+            "why nothing could be read, in place of the list"
+        );
+        page.notice = None;
+        page.set_namespaces(vec!["@a/notes".into(), "core".into()]);
+        let semantics = app.storage_semantics(&page);
+        assert_eq!(list(&semantics).label, "Namespaces");
+        assert_eq!(
+            list(&semantics).items,
+            [item("@a/notes", None), item("core", None)]
+        );
+        page.browse(
+            "@a/notes".into(),
+            vec![StorageItemRow {
+                key: "draft".into(),
+                value: "hello".into(),
+            }],
+        );
+        page.notice = Some("hello".into());
+        let semantics = app.storage_semantics(&page);
+        assert_eq!(list(&semantics).label, "Items");
+        assert_eq!(list(&semantics).items, [item("draft", None)]);
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("hello"),
+            "the value shown"
+        );
+    }
+
+    #[test]
+    fn token_sets_are_described_with_their_provider_and_expiry() {
+        use crate::backend::TokenSetRow;
+        let mut app = app();
+        let mut page = TokensPage::default();
+        assert_eq!(
+            app.tokens_semantics(&page).status.as_deref(),
+            Some("No token sets")
+        );
+        page.set_sets(vec![
+            TokenSetRow {
+                extension_id: "github".into(),
+                provider_id: Some("GitHub".into()),
+                expired: true,
+                ..TokenSetRow::default()
+            },
+            TokenSetRow {
+                extension_id: "linear".into(),
+                ..TokenSetRow::default()
+            },
+        ]);
+        page.selected = 1;
+        app.page = Page::Tokens(page);
+        let semantics = app.semantics();
+        let Body::List(rows) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(
+            rows.items,
+            [
+                item("github", Some("GitHub · Expired".into())),
+                item("linear", None),
+            ]
+        );
+        assert_eq!(rows.selected, Some(1));
+    }
+
+    #[test]
+    fn a_store_intro_is_read_as_its_text_then_its_keys() {
+        let mut app = app();
+        let page = crate::compass_pages::StoreIntroPage::new(crate::backend::Store::Raycast);
+        let semantics = app.store_intro_semantics(&page);
+        let Body::Document(document) = &semantics.body else {
+            panic!("expected a document, got {:?}", semantics.body);
+        };
+        assert_eq!(document.label, "Raycast Store");
+        assert_eq!(
+            document.blocks.first(),
+            Some(&Block {
+                text: "Welcome to the Raycast Extension Store".to_owned(),
+                heading: Some(1),
+            })
+        );
+        assert_eq!(
+            document.blocks.last().map(|block| block.text.clone()),
+            Some(crate::compass_pages::intro_hint())
+        );
+        app.page = Page::StoreIntro(page);
+        let semantics = app.semantics();
+        assert!(semantics.search.is_none());
+        assert!(matches!(semantics.body, Body::Document(_)));
     }
 }

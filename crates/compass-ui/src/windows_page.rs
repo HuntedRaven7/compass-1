@@ -106,6 +106,30 @@ impl WindowsPage {
     pub fn selected_row(&self) -> Option<&WindowRow> {
         self.all.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that there is nothing to show.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Loading windows…"),
+            Status::Failed(reason) => Some(reason.as_str()),
+            Status::Ready if self.all.is_empty() => Some("No other windows are open"),
+            Status::Ready if self.shown.is_empty() => Some("No matching windows"),
+            Status::Ready => None,
+        }
+    }
+}
+
+/// What a window's row is titled: its title, or its application's name when
+/// it has none.
+#[must_use]
+pub fn title(row: &WindowRow) -> &str {
+    if row.title.is_empty() {
+        &row.app
+    } else {
+        &row.title
+    }
 }
 
 #[cfg(test)]

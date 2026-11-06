@@ -49,6 +49,33 @@ fn settings(message: SettingsMessage) -> Message {
     Message::Settings(message)
 }
 
+/// What General's Start at login row says before the engine has.
+pub(super) const LOGIN_START_DEFAULT: &str = "Start Compass, hidden, when you log in.";
+
+/// What a shortcut button says: the shortcut `stored`, or that one can be
+/// recorded.
+pub(super) fn shortcut_label(stored: Option<&str>) -> String {
+    stored
+        .and_then(compass_core::key_combo::KeyCombo::parse)
+        .map_or_else(
+            || "Record Shortcut".to_owned(),
+            |combo| combo.display_tokens().join(" "),
+        )
+}
+
+/// What a setting's text field says while it is empty.
+pub(super) fn field_placeholder(setting: &Setting) -> &'static str {
+    if setting.placeholder.is_empty() {
+        match setting.kind {
+            Kind::Paths => "Folders, separated by colons",
+            Kind::Names => "Application IDs, separated by commas",
+            _ => "",
+        }
+    } else {
+        setting.placeholder
+    }
+}
+
 impl LauncherApp {
     /// Opens the settings at `tab` (`SettingsController::openTab`,
     /// `openExtensionPreferences`), reading the configuration file afresh.
@@ -121,7 +148,7 @@ impl LauncherApp {
     }
 
     /// The update's release notes, which About offers as a link.
-    fn release_url(&self) -> Option<String> {
+    pub(super) fn release_url(&self) -> Option<String> {
         self.update.as_ref().map(|offer| offer.release_url.clone())
     }
 
@@ -233,7 +260,7 @@ impl LauncherApp {
     /// Puts Iced's focus where the page's is: in the control's field, or in
     /// no field for a switch or a button, or in the search field; and
     /// scrolls the control into view.
-    fn settings_focus_task(&self) -> Task<Message> {
+    pub(super) fn settings_focus_task(&self) -> Task<Message> {
         let Page::Settings(page) = &self.page else {
             return Task::none();
         };
@@ -248,7 +275,7 @@ impl LauncherApp {
     }
 
     /// Space or Enter on a control that is not a field.
-    fn activate_settings_control(&mut self, control: Control) -> Task<Message> {
+    pub(super) fn activate_settings_control(&mut self, control: Control) -> Task<Message> {
         let Page::Settings(page) = &mut self.page else {
             return Task::none();
         };
@@ -1136,32 +1163,15 @@ impl LauncherApp {
                 .menu_style(move |_: &iced::Theme| crate::design::dropdown_menu(palette))
                 .into()
             }
-            Kind::Shortcut => {
-                let current = value
-                    .as_str()
-                    .and_then(compass_core::key_combo::KeyCombo::parse)
-                    .map_or_else(
-                        || "Record Shortcut".to_owned(),
-                        |combo| combo.display_tokens().join(" "),
-                    );
-                self.settings_button(current, 13.0)
-                    .on_press(settings(SettingsMessage::Record(RecordTarget::Setting(
-                        key,
-                    ))))
-                    .into()
-            }
+            Kind::Shortcut => self
+                .settings_button(shortcut_label(value.as_str()), 13.0)
+                .on_press(settings(SettingsMessage::Record(RecordTarget::Setting(
+                    key,
+                ))))
+                .into(),
             Kind::Number { .. } | Kind::Text | Kind::Paths | Kind::Names | Kind::Font => {
                 let submit = key.clone();
-                let placeholder = if setting.placeholder.is_empty() {
-                    match setting.kind {
-                        Kind::Paths => "Folders, separated by colons",
-                        Kind::Names => "Application IDs, separated by commas",
-                        _ => "",
-                    }
-                } else {
-                    setting.placeholder
-                };
-                text_input(placeholder, &page.text_of(setting))
+                text_input(field_placeholder(setting), &page.text_of(setting))
                     .id(target.field_id().unwrap_or_default())
                     .font(self.font())
                     .size(13)
@@ -1374,10 +1384,7 @@ impl LauncherApp {
     fn settings_login_start<'a>(&'a self, page: &'a SettingsPage) -> Element<'a, Message> {
         let palette = self.palette();
         let on = self.login_start_on();
-        let description = self.login_start.as_ref().map_or_else(
-            || "Start Compass, hidden, when you log in.".to_owned(),
-            compass_core::login_start::Status::describe,
-        );
+        let description = self.login_start_line(LOGIN_START_DEFAULT);
         let switch = toggler(on)
             .size(adwaita::SWITCH_SIZE)
             .style(move |_: &iced::Theme, status| adwaita::switch(palette, status))
@@ -1449,14 +1456,7 @@ impl LauncherApp {
             .get(&alias)
             .cloned()
             .unwrap_or_else(|| item.alias.clone().unwrap_or_default());
-        let shortcut = item
-            .shortcut
-            .as_deref()
-            .and_then(compass_core::key_combo::KeyCombo::parse)
-            .map_or_else(
-                || "Record Shortcut".to_owned(),
-                |combo| combo.display_tokens().join(" "),
-            );
+        let shortcut = shortcut_label(item.shortcut.as_deref());
         let alias_target = Control::ItemAlias(id.clone());
         let mut controls = row![
             self.settings_ring(

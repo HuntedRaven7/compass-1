@@ -22,6 +22,20 @@ pub enum CalcRow<'a> {
     Record(&'a CalculatorRow),
 }
 
+impl CalcRow<'_> {
+    /// The row's title and second line, as the view draws them.
+    #[must_use]
+    pub fn text(&self) -> (String, String) {
+        match self {
+            Self::Live(live) => (
+                compass_core::calculator_history::live_result_title(&live.question, &live.answer),
+                "Copy to keep it".to_owned(),
+            ),
+            Self::Record(record) => (record.question.clone(), record.answer.clone()),
+        }
+    }
+}
+
 /// The view's state.
 #[derive(Debug, Clone, Default)]
 pub struct CalculatorPage {
@@ -113,6 +127,22 @@ impl CalculatorPage {
     #[must_use]
     pub fn selected_row(&self) -> Option<CalcRow<'_>> {
         self.rows().into_iter().nth(self.selected)
+    }
+
+    /// What the view says in place of the rows: why there are none, that
+    /// the history is being read, that nothing is remembered, or that
+    /// nothing matches; `None` while there are rows.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        if !self.is_empty() {
+            return None;
+        }
+        Some(match (&self.failure, self.loaded) {
+            (Some(reason), _) => reason,
+            (None, false) => "Reading the calculator history…",
+            (None, true) if self.query.is_empty() => EMPTY,
+            (None, true) => "No calculations match",
+        })
     }
 }
 

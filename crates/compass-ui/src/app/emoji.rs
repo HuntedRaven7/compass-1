@@ -233,4 +233,71 @@ impl LauncherApp {
         self.page = Page::Emoji(self.parked_emoji.take().unwrap_or_default());
         Some(focus_search())
     }
+
+    /// The picker's rows, for assistive technology: each glyph's name, with
+    /// its category as the row's second line says.
+    pub(super) fn emoji_semantics(&self, page: &EmojiPage) -> super::a11y::PageSemantics {
+        let glyphs = compass_core::glyph::glyphs();
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                glyphs
+                    .get(index)
+                    .map_or_else(crate::semantics::Item::default, |glyph| {
+                        super::a11y::item(glyph.name, Some(glyph.category.label().to_owned()))
+                    })
+            })
+            .collect();
+        // The notice is the heading over the rows, so it is the view's status.
+        super::a11y::PageSemantics::list(
+            "Emojis and symbols",
+            items,
+            page.selected,
+            page.empty_notice(),
+        )
+        .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantics::Body;
+
+    #[test]
+    fn the_picker_names_each_glyph_with_its_category_and_says_when_none_match() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = EmojiPage::new();
+        page.query = "thumbs up".into();
+        page.refilter();
+        page.notice = Some("The keywords could not be saved.".into());
+        let thumbs = page.selected_glyph().expect("a match");
+        let semantics = app.emoji_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.items.len(), page.shown.len());
+        assert_eq!(list.items[0].name, thumbs.name);
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some(thumbs.category.label())
+        );
+        assert_eq!(list.selected, Some(0));
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("The keywords could not be saved.")
+        );
+
+        page.query = "zzzqqqxx".into();
+        page.refilter();
+        page.notice = None;
+        app.page = Page::Emoji(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("No matching emojis or symbols")
+        );
+    }
 }

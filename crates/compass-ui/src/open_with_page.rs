@@ -103,6 +103,19 @@ impl OpenWithPage {
     pub fn selected_row(&self) -> Option<&OpenerRow> {
         self.all.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that there is nothing to show.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Finding applications…"),
+            Status::Failed(reason) => Some(reason.as_str()),
+            Status::Ready if self.all.is_empty() => Some("No application opens this"),
+            Status::Ready if self.shown.is_empty() => Some("No applications match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 #[cfg(test)]

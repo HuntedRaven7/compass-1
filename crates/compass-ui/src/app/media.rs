@@ -14,7 +14,7 @@ use super::{
 };
 use crate::action_panel::Action;
 use crate::backend::{MediaAction, PreferenceInput, PreferenceInputKind};
-use crate::media_page::{self, NowPlayingPage, Status};
+use crate::media_page::{self, NowPlayingPage};
 use crate::preferences_page::{FieldValue, PreferencesPage, Purpose};
 use compass_core::commands::{BuiltinCommand, CommandKind};
 
@@ -302,14 +302,8 @@ impl LauncherApp {
 
     /// Now Playing's body.
     pub(super) fn now_playing_body<'a>(&'a self, page: &'a NowPlayingPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Looking for media players…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready if page.all.is_empty() => {
-                return self.notice("No media player is running");
-            }
-            Status::Ready if page.shown.is_empty() => return self.notice("No players match"),
-            Status::Ready => {}
+        if let Some(notice) = page.empty_notice() {
+            return self.notice(notice);
         }
         let mut list = column![
             container(
@@ -325,12 +319,7 @@ impl LauncherApp {
             let row = &page.all[index];
             let selected = position == page.selected;
             let title = media_page::title(row).to_owned();
-            let subtitle = match (row.artist.is_empty(), media_page::accessory(row)) {
-                (false, Some(state)) => Some(format!("{}  ·  {state}", row.artist)),
-                (false, None) => Some(row.artist.clone()),
-                (true, Some(state)) => Some(state.to_owned()),
-                (true, None) => None,
-            };
+            let subtitle = media_page::subtitle(row);
             let badge = self.initial_badge(&row.identity, selected);
             let item = self.list_row(badge, title, subtitle.filter(|_| self.subtitles), selected);
             let item: Element<Message> = mouse_area(item)
@@ -350,5 +339,72 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// Now Playing, for assistive technology.
+    pub(super) fn now_playing_semantics(
+        &self,
+        page: &NowPlayingPage,
+    ) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .filter_map(|&index| page.all.get(index))
+            .map(|row| super::a11y::item(media_page::title(row), media_page::subtitle(row)))
+            .collect();
+        super::a11y::PageSemantics::list(
+            media_page::SECTION,
+            items,
+            page.selected,
+            page.empty_notice(),
+        )
+        .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::MediaPlayerRow;
+    use crate::semantics::Body;
+
+    #[test]
+    fn the_players_are_a_list_with_artist_and_state() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = NowPlayingPage::default();
+        page.apply(Ok(Vec::new()));
+        assert_eq!(
+            app.now_playing_semantics(&page).status.as_deref(),
+            Some("No media player is running")
+        );
+        page.apply(Ok(vec![
+            MediaPlayerRow {
+                id: "a".into(),
+                identity: "Firefox".into(),
+                ..MediaPlayerRow::default()
+            },
+            MediaPlayerRow {
+                id: "b".into(),
+                identity: "Spotify".into(),
+                title: "Blue Monday".into(),
+                artist: "New Order".into(),
+                playing: true,
+                ..MediaPlayerRow::default()
+            },
+        ]));
+        app.page = Page::NowPlaying(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Players");
+        assert_eq!(list.items[0].name, "Firefox");
+        assert_eq!(list.items[0].description, None);
+        assert_eq!(list.items[1].name, "Blue Monday");
+        assert_eq!(
+            list.items[1].description.as_deref(),
+            Some("New Order  ·  Playing")
+        );
+        assert_eq!(list.selected, Some(0));
     }
 }

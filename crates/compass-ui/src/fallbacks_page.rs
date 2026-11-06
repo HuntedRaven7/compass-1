@@ -135,6 +135,18 @@ impl FallbacksPage {
         Some((row, self.candidates.get(row.candidate)?))
     }
 
+    /// What the view shows in place of the list when it has nothing to list.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&'static str> {
+        if !self.rows.is_empty() {
+            None
+        } else if self.candidates.is_empty() {
+            Some("Nothing can be a fallback")
+        } else {
+            Some("No commands match")
+        }
+    }
+
     /// The heading above the row at `position`, when it starts its section.
     #[must_use]
     pub fn heading_at(&self, position: usize) -> Option<&'static str> {

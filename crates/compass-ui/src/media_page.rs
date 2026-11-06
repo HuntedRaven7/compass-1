@@ -112,6 +112,20 @@ impl NowPlayingPage {
     pub fn selected_row(&self) -> Option<&MediaPlayerRow> {
         self.all.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view says in place of the list: loading, why the players
+    /// cannot be listed, that none is running, or that none matches; `None`
+    /// while it shows players.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Looking for media players…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.all.is_empty() => Some("No media player is running"),
+            Status::Ready if self.shown.is_empty() => Some("No players match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 /// A row's title: the track, or the player's name when nothing is loaded.
@@ -134,6 +148,17 @@ pub fn accessory(row: &MediaPlayerRow) -> Option<&'static str> {
         Some("Paused")
     } else {
         None
+    }
+}
+
+/// A row's second line: the artist and the [`accessory`], whichever it has.
+#[must_use]
+pub fn subtitle(row: &MediaPlayerRow) -> Option<String> {
+    match (row.artist.is_empty(), accessory(row)) {
+        (false, Some(state)) => Some(format!("{}  ·  {state}", row.artist)),
+        (false, None) => Some(row.artist.clone()),
+        (true, Some(state)) => Some(state.to_owned()),
+        (true, None) => None,
     }
 }
 

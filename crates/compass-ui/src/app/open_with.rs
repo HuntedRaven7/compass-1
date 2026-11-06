@@ -9,7 +9,7 @@ use super::{
     container, focus_search, mouse_area, next_selection, scrollable,
 };
 use crate::backend::OPEN_WITH_NEEDS_ENGINE;
-use crate::open_with_page::{OpenWithPage, Status};
+use crate::open_with_page::OpenWithPage;
 
 impl LauncherApp {
     /// Opens the selector for `target`, its applications looked up by
@@ -144,14 +144,8 @@ impl LauncherApp {
 
     /// The selector's body.
     pub(super) fn open_with_body<'a>(&'a self, page: &'a OpenWithPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Finding applications…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready if page.all.is_empty() => {
-                return self.notice("No application opens this");
-            }
-            Status::Ready if page.shown.is_empty() => return self.notice("No applications match"),
-            Status::Ready => {}
+        if let Some(empty) = page.empty_notice() {
+            return self.notice(empty);
         }
         let mut list = column![].spacing(f32::from(self.geometry.row_spacing));
         for (position, &index) in page.shown.iter().enumerate() {
@@ -163,7 +157,7 @@ impl LauncherApp {
                 self.initial_badge(&app.name, selected),
                 app.name.clone(),
                 None,
-                app.default.then(|| "Default".to_owned()),
+                default_label(app),
                 selected,
             );
             let row: Element<Message> = mouse_area(row)
@@ -183,5 +177,81 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The selector's applications, for assistive technology.
+    pub(super) fn open_with_semantics(&self, page: &OpenWithPage) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                page.all
+                    .get(index)
+                    .map_or_else(crate::semantics::Item::default, |app| {
+                        super::a11y::item(app.name.clone(), default_label(app))
+                    })
+            })
+            .collect();
+        super::a11y::PageSemantics::list("Applications", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+/// What an application's row says beside its name: that it is the default.
+fn default_label(app: &crate::backend::OpenerRow) -> Option<String> {
+    app.default.then(|| "Default".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::OpenerRow;
+    use crate::semantics::Body;
+
+    fn opener(id: &str, name: &str, default: bool) -> OpenerRow {
+        OpenerRow {
+            id: id.into(),
+            name: name.into(),
+            icon: None,
+            default,
+        }
+    }
+
+    #[test]
+    fn the_selector_names_each_application_and_the_default() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = OpenWithPage::new("/tmp/a.png".into(), "/tmp/a.png".into());
+        assert_eq!(
+            app.open_with_semantics(&page).status.as_deref(),
+            Some("Finding applications…")
+        );
+        page.apply(Ok(vec![
+            opener("org.gnome.Loupe.desktop", "Image Viewer", true),
+            opener("gimp.desktop", "GIMP", false),
+        ]));
+        page.selected = 1;
+        page.notice = Some("GIMP could not be opened.".into());
+        let semantics = app.open_with_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.items[0].name, "Image Viewer");
+        assert_eq!(list.items[0].description.as_deref(), Some("Default"));
+        assert_eq!(list.items[1].name, "GIMP");
+        assert_eq!(list.items[1].description, None);
+        assert_eq!(list.selected, Some(1));
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("GIMP could not be opened.")
+        );
+
+        page.apply(Ok(Vec::new()));
+        app.page = Page::OpenWith(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("No application opens this")
+        );
     }
 }

@@ -151,6 +151,21 @@ impl SnippetsPage {
     pub fn selected_snippet(&self) -> Option<&Snippet> {
         self.all.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that there is nothing to show.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Loading snippets…"),
+            Status::Failed(reason) => Some(reason.as_str()),
+            Status::Ready if self.all.is_empty() => {
+                Some("No snippets. Create one with Create Snippet.")
+            }
+            Status::Ready if self.shown.is_empty() => Some("No snippets match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 /// The form's field names, which the submission is read back by.

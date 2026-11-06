@@ -106,6 +106,20 @@ impl GrantsPage {
     pub fn selected_grant(&self) -> Option<&ScriptGrant> {
         self.all.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view says in place of the list: loading, why the list
+    /// cannot be read, that nothing is allowed, or that nothing matches;
+    /// `None` while it shows scripts.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Reading script permissions…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.all.is_empty() => Some(EMPTY),
+            Status::Ready if self.shown.is_empty() => Some("No scripts match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 /// A row's second line: what the script may do.

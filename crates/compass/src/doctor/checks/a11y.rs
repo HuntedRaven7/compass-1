@@ -3,11 +3,10 @@
 //! Part of [`super`]; see that module for the purity rule every function here
 //! keeps to.
 //!
-//! The launcher describes itself on AT-SPI (ADR-0022 §1): the search field,
-//! the results and the selection, the action panel and forms. Its other views
-//! describe only their search field, and Orca has not yet been checked
-//! against it in a real session (#305). So a running screen reader is still a
-//! warning, and only then does it matter.
+//! The launcher describes itself on AT-SPI (ADR-0022 §1): every view's
+//! search field, lists, action panel, forms and text. Orca has not yet been
+//! checked against it in a real session (#305), so a running screen reader
+//! is still a warning, and only then does it matter.
 
 use compass_ipc::{DoctorCheck, DoctorStatus};
 
@@ -37,9 +36,8 @@ pub async fn screen_reader<B: BusProbe>(bus: &B) -> DoctorCheck {
         Ok(Some(value)) if value == "true" => check(
             NAME,
             DoctorStatus::Warn,
-            "a screen reader is enabled. Compass describes its search, results, action panel \
-             and forms to it, but its other views show only their search field, and it has not \
-             been checked with Orca yet",
+            "a screen reader is enabled. Compass describes its search, lists, action panel, \
+             forms and settings to it, but it has not been checked with Orca yet",
         ),
         Ok(Some(_)) => check(NAME, DoctorStatus::Ok, "no screen reader enabled"),
         Ok(None) => check(
@@ -77,7 +75,8 @@ mod tests {
         let detail = result.detail.expect("detail");
         assert!(!detail.contains("#305"), "{detail}");
         assert!(detail.contains("describes its search"), "{detail}");
-        assert!(detail.contains("other views"), "{detail}");
+        assert!(detail.contains("settings"), "{detail}");
+        assert!(detail.contains("Orca"), "{detail}");
     }
 
     #[tokio::test]

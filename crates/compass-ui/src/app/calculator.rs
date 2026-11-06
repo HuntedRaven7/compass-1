@@ -14,7 +14,7 @@ use super::{
 };
 use crate::action_panel::Action;
 use crate::backend::CalculatorChange;
-use crate::calculator_page::{self, CalcRow, CalculatorPage};
+use crate::calculator_page::{CalcRow, CalculatorPage};
 
 const PIN: &str = "calc.pin";
 const UNPIN: &str = "calc.unpin";
@@ -418,13 +418,7 @@ impl LauncherApp {
 
     /// The view's body.
     pub(super) fn calculator_body<'a>(&'a self, page: &'a CalculatorPage) -> Element<'a, Message> {
-        if page.is_empty() {
-            let empty = match (&page.failure, page.loaded) {
-                (Some(reason), _) => reason.as_str(),
-                (None, false) => "Reading the calculator history…",
-                (None, true) if page.query.is_empty() => calculator_page::EMPTY,
-                (None, true) => "No calculations match",
-            };
+        if let Some(empty) = page.empty_notice() {
             return self.notice(empty);
         }
         let heading = |name: String| -> Element<'a, Message> {
@@ -458,26 +452,16 @@ impl LauncherApp {
         };
         if let Some(live) = &page.live {
             list = list.push(heading("Calculator".to_owned()));
-            list = push_row(
-                list,
-                "=",
-                compass_core::calculator_history::live_result_title(&live.question, &live.answer),
-                "Copy to keep it".to_owned(),
-                position,
-            );
+            let (title, subtitle) = CalcRow::Live(live).text();
+            list = push_row(list, "=", title, subtitle, position);
             position += 1;
         }
         for group in &page.groups {
             list = list.push(heading(group.name.clone()));
             for record in &group.records {
                 let badge = if record.conversion { "⇄" } else { "=" };
-                list = push_row(
-                    list,
-                    badge,
-                    record.question.clone(),
-                    record.answer.clone(),
-                    position,
-                );
+                let (title, subtitle) = CalcRow::Record(record).text();
+                list = push_row(list, badge, title, subtitle, position);
                 position += 1;
             }
         }
@@ -488,5 +472,76 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The history, for assistive technology: the live result first, then
+    /// each group's calculations, as the selection moves over them.
+    pub(super) fn calculator_semantics(&self, page: &CalculatorPage) -> super::a11y::PageSemantics {
+        let items = page
+            .rows()
+            .iter()
+            .map(|row| {
+                let (title, subtitle) = row.text();
+                super::a11y::item(title, Some(subtitle))
+            })
+            .collect();
+        super::a11y::PageSemantics::list(
+            "Calculator history",
+            items,
+            page.selected,
+            page.empty_notice(),
+        )
+        .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{CalculatorGroupRow, CalculatorRow};
+    use crate::semantics::Body;
+
+    #[test]
+    fn the_history_lists_the_live_result_then_each_calculation() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = CalculatorPage::default();
+        assert_eq!(
+            app.calculator_semantics(&page).status.as_deref(),
+            Some("Reading the calculator history…")
+        );
+        page.set_query("2+2".into());
+        page.apply(
+            page.generation,
+            Ok(vec![CalculatorGroupRow {
+                name: "Today".into(),
+                records: vec![CalculatorRow {
+                    id: "a".into(),
+                    question: "3*3".into(),
+                    answer: "9".into(),
+                    conversion: false,
+                    pinned: false,
+                }],
+            }]),
+        );
+        page.selected = 1;
+        let live = page.live.clone().expect("2+2 computes");
+        app.page = Page::Calculator(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Calculator history");
+        assert_eq!(list.items.len(), 2);
+        assert_eq!(
+            list.items[0].name,
+            compass_core::calculator_history::live_result_title(&live.question, &live.answer)
+        );
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some("Copy to keep it")
+        );
+        assert_eq!(list.items[1].name, "3*3");
+        assert_eq!(list.items[1].description.as_deref(), Some("9"));
+        assert_eq!(list.selected, Some(1));
     }
 }

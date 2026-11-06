@@ -8,8 +8,9 @@
 //! opens a launcher window's tree from a real `LauncherApp` that has a query
 //! typed, and walks the registry with the AT-SPI client proxies: the window,
 //! the search field and its text, the results and the selection. Then it
-//! moves the selection, presses a result, and closes the window, and checks
-//! the bus after each.
+//! moves the selection, presses a result, shows a settings-like view (a grid,
+//! a document, a dropdown's options), and closes the window, and checks the
+//! bus after each.
 //!
 //! A machine without `dbus-run-session` or `at-spi-bus-launcher` cannot run
 //! it, and it says so rather than failing.
@@ -300,6 +301,21 @@ async fn read_the_tree() {
     assert_eq!(request.action, accesskit::Action::Click);
     assert_eq!(semantics.target(request.target_node), Some(Target::Item(1)));
 
+    // A grid, a document beside it and a form's dropdown reach the bus as
+    // the table, document and combo box a screen reader knows.
+    tree.update(builtin_view().tree_update(accesskit::NodeId(1)));
+    let seen = eventually(&a11y, "the builtin view appearing", |seen| {
+        seen.iter().any(|s| s.role == Role::TableCell)
+    })
+    .await;
+    one(&seen, Role::Table, "Fonts");
+    assert!(one(&seen, Role::TableCell, "Cantarell").has(State::Selected));
+    one(&seen, Role::DocumentFrame, "Readme");
+    one(&seen, Role::Heading, "Usage");
+    one(&seen, Role::ComboBox, "Theme");
+    assert!(one(&seen, Role::MenuItem, "Dark").has(State::Selected));
+    one(&seen, Role::ToggleButton, "Enabled");
+
     // Closed: nothing of the window is left.
     tree.close();
     eventually(&a11y, "the window going away", |seen| {
@@ -312,5 +328,59 @@ fn semantics_item_name(semantics: &compass_ui::semantics::Semantics, position: u
     match &semantics.body {
         compass_ui::semantics::Body::List(list) => list.items[position].name.clone(),
         other => panic!("expected a list, got {other:?}"),
+    }
+}
+
+/// A view of each new kind of node: a grid of fonts beside a document, over
+/// a form with a dropdown and a switch.
+fn builtin_view() -> compass_ui::semantics::Semantics {
+    use compass_ui::semantics::{
+        Body, Document, Field, FieldKind, FieldTarget, Form, Item, List, Semantics, markdown_blocks,
+    };
+    let field = |label: &str, kind| Field {
+        label: label.to_owned(),
+        kind,
+        description: None,
+        required: false,
+        invalid: false,
+        target: FieldTarget::Control(0),
+    };
+    let list = List {
+        label: "Fonts".to_owned(),
+        items: ["Cantarell", "Inter", "Noto Sans"]
+            .into_iter()
+            .map(|name| Item {
+                name: name.to_owned(),
+                description: None,
+            })
+            .collect(),
+        selected: Some(0),
+        grid: Some(List::grid_of(3, 2)),
+    };
+    let form = Form {
+        label: "Appearance".to_owned(),
+        fields: vec![
+            field(
+                "Theme",
+                FieldKind::Dropdown {
+                    value: Some("Dark".to_owned()),
+                    options: vec!["Light".to_owned(), "Dark".to_owned()],
+                    expanded: Some(false),
+                    highlighted: None,
+                },
+            ),
+            field("Enabled", FieldKind::Switch { on: true }),
+        ],
+        focused: None,
+    };
+    Semantics {
+        window: "Compass".to_owned(),
+        body: Body::ListAndForm(list, form),
+        detail: Some(Document {
+            label: "Readme".to_owned(),
+            blocks: markdown_blocks("# Usage\n\nPick a font."),
+            metadata: Vec::new(),
+        }),
+        ..Semantics::default()
     }
 }

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::action_panel::Action;
 use crate::backend::{WORKSPACES_NEED_ENGINE, WindowToggle};
-use crate::workspaces_page::{self, Status, WorkspacesPage};
+use crate::workspaces_page::{self, WorkspacesPage};
 
 const SWITCH: &str = "workspace.switch";
 
@@ -182,14 +182,8 @@ impl LauncherApp {
 
     /// The view's body.
     pub(super) fn workspaces_body<'a>(&'a self, page: &'a WorkspacesPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Loading workspaces…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready if page.all.is_empty() => return self.notice("No workspaces"),
-            Status::Ready if page.shown.is_empty() => {
-                return self.notice("No workspaces match");
-            }
-            Status::Ready => {}
+        if let Some(empty) = page.empty_notice() {
+            return self.notice(empty);
         }
         let mut list = column![
             container(text(workspaces_page::SECTION).font(self.font()).size(12))
@@ -201,16 +195,12 @@ impl LauncherApp {
                 continue;
             };
             let selected = position == page.selected;
-            let apps: Vec<&str> = workspace
-                .apps
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect();
+            let apps = workspace_apps(workspace);
             let row = self.list_row_with(
                 self.initial_badge(&workspace.name, selected),
                 workspace.name.clone(),
                 self.subtitles.then(|| workspaces_page::subtitle(workspace)),
-                (!apps.is_empty()).then(|| apps.join(", ")),
+                (!apps.is_empty()).then_some(apps),
                 selected,
             );
             let row: Element<Message> = mouse_area(row)
@@ -230,5 +220,99 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// Switch Workspaces' rows, for assistive technology: each workspace's
+    /// name, then its line and the applications on it, as the row shows them.
+    pub(super) fn workspaces_semantics(&self, page: &WorkspacesPage) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .map(|&index| {
+                page.all
+                    .get(index)
+                    .map_or_else(crate::semantics::Item::default, |workspace| {
+                        let description = [
+                            workspaces_page::subtitle(workspace),
+                            workspace_apps(workspace),
+                        ]
+                        .into_iter()
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                        super::a11y::item(workspace.name.clone(), Some(description))
+                    })
+            })
+            .collect();
+        super::a11y::PageSemantics::list(
+            workspaces_page::SECTION,
+            items,
+            page.selected,
+            page.empty_notice(),
+        )
+        .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+/// The applications on a workspace, as its row lists them beside the title.
+fn workspace_apps(workspace: &crate::backend::WorkspaceRow) -> String {
+    workspace
+        .apps
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::WorkspaceRow;
+    use crate::semantics::Body;
+
+    fn workspace(id: &str, name: &str, apps: &[&str]) -> WorkspaceRow {
+        WorkspaceRow {
+            id: id.into(),
+            name: name.into(),
+            monitor: Some("DP-1".into()),
+            window_count: apps.len(),
+            apps: apps.iter().map(|a| ((*a).to_owned(), None)).collect(),
+            active: false,
+        }
+    }
+
+    #[test]
+    fn workspaces_are_described_as_their_rows_show_them() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = WorkspacesPage::default();
+        assert_eq!(
+            app.workspaces_semantics(&page).status.as_deref(),
+            Some("Loading workspaces…")
+        );
+        page.apply(Ok(vec![
+            workspace("1", "web", &["Firefox", "Foot"]),
+            workspace("2", "mail", &[]),
+        ]));
+        page.selected = 1;
+        let semantics = app.workspaces_semantics(&page);
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, workspaces_page::SECTION);
+        assert_eq!(list.items[0].name, "web");
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some("2 windows - DP-1 · Firefox, Foot")
+        );
+        assert_eq!(list.items[1].description.as_deref(), Some("empty - DP-1"));
+        assert_eq!(list.selected, Some(1));
+        assert_eq!(semantics.status, None);
+
+        page.query = "zzzz".into();
+        page.refilter();
+        app.page = Page::Workspaces(page);
+        let semantics = app.semantics();
+        assert_eq!(semantics.body, Body::Empty);
+        assert_eq!(semantics.status.as_deref(), Some("No workspaces match"));
     }
 }

@@ -118,6 +118,19 @@ impl WorkspacesPage {
     pub fn selected_row(&self) -> Option<&WorkspaceRow> {
         self.all.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view says in place of the list: loading, why it failed, or
+    /// that there is nothing to show.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Loading workspaces…"),
+            Status::Failed(reason) => Some(reason.as_str()),
+            Status::Ready if self.all.is_empty() => Some("No workspaces"),
+            Status::Ready if self.shown.is_empty() => Some("No workspaces match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 #[cfg(test)]

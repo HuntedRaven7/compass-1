@@ -6,11 +6,13 @@
 
 use iced::keyboard::{Key, key::Named};
 
+use super::a11y::PageSemantics;
 use super::{
     Element, LauncherApp, Length, Message, Padding, Page, Task, column, container, scrollable,
 };
 use crate::developer_page::{self, CreatedPage};
 use crate::preferences_page::Purpose;
+use crate::semantics::{Block, Body, Document, markdown_blocks};
 
 impl LauncherApp {
     /// Opens the Create Extension form.
@@ -108,7 +110,7 @@ impl LauncherApp {
             .map(Message::ExtensionLinkClicked);
         let mut body = column![
             markdown,
-            iced::widget::text("Enter: open the folder    Esc: back")
+            iced::widget::text(developer_page::CREATED_HINT)
                 .font(self.font())
                 .size(12)
         ]
@@ -120,5 +122,64 @@ impl LauncherApp {
             .id(crate::scroll::ROOT_RESULTS)
             .height(Length::Shrink)
             .into()
+    }
+
+    /// The success page for assistive technology: its text, then its keys.
+    pub(super) fn created_semantics(&self, page: &CreatedPage) -> PageSemantics {
+        let mut blocks = markdown_blocks(&page.source);
+        blocks.push(Block {
+            text: developer_page::CREATED_HINT.to_owned(),
+            heading: None,
+        });
+        PageSemantics {
+            body: Body::Document(Document {
+                label: "Extension created".to_owned(),
+                blocks,
+                metadata: Vec::new(),
+            }),
+            status: page.notice.clone(),
+            detail: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_success_page_is_read_as_its_text_then_its_keys() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = CreatedPage::new("Hello", "/home/me/code/hello".into());
+        page.notice = Some("No application can open the folder".into());
+        let semantics = app.created_semantics(&page);
+        let Body::Document(document) = &semantics.body else {
+            panic!("expected a document, got {:?}", semantics.body);
+        };
+        assert_eq!(
+            document.blocks.first(),
+            Some(&Block {
+                text: "Extension successfully created".to_owned(),
+                heading: Some(1),
+            })
+        );
+        assert!(
+            document
+                .blocks
+                .iter()
+                .any(|block| block.text == "npm run dev"),
+            "the code a line at a time: {:?}",
+            document.blocks
+        );
+        assert_eq!(
+            document.blocks.last().map(|block| block.text.as_str()),
+            Some(developer_page::CREATED_HINT)
+        );
+        assert_eq!(
+            semantics.status.as_deref(),
+            Some("No application can open the folder")
+        );
+        app.page = Page::Created(page);
+        assert!(matches!(app.semantics().body, Body::Document(_)));
     }
 }

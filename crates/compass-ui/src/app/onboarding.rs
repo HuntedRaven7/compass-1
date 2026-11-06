@@ -42,7 +42,7 @@ const INSTALL_PADDING: [f32; 2] = [5.0, 12.0];
 const MENU_HEIGHT: f32 = 160.0;
 
 /// What the Start at login row says before the engine has.
-const LOGIN_START_OFFER: &str =
+pub(super) const LOGIN_START_OFFER: &str =
     "Compass can start, hidden, when you log in, so the hotkey works straight away.";
 
 /// Why Install did nothing, as the store pages say it.
@@ -93,7 +93,7 @@ impl LauncherApp {
 
     /// The flow's hotkey sentence: where the hotkey stands with the desktop,
     /// or the compositor's own configuration line on Sway, Hyprland and niri.
-    fn hotkey_guidance(&self, page: &OnboardingPage) -> String {
+    pub(super) fn hotkey_guidance(&self, page: &OnboardingPage) -> String {
         let key = compass_core::key_combo::KeyCombo::parse(&self.launcher_hotkey).map_or_else(
             || self.launcher_hotkey.clone(),
             |combo| combo.display_tokens().join("+"),
@@ -107,6 +107,15 @@ impl LauncherApp {
         self.login_start
             .as_ref()
             .is_some_and(|status| status.state.is_on())
+    }
+
+    /// What the Start at login row says under its label: what the engine
+    /// answered starts Compass at login, or `offer` before it has.
+    pub(super) fn login_start_line(&self, offer: &str) -> String {
+        self.login_start.as_ref().map_or_else(
+            || offer.to_owned(),
+            compass_core::login_start::Status::describe,
+        )
     }
 
     /// Asks the engine where the hotkey and login start stand, for the step
@@ -593,13 +602,10 @@ impl LauncherApp {
                 let login_row = row![
                     column![
                         text("Start at login").font(self.font()).size(14),
-                        text(self.login_start.as_ref().map_or_else(
-                            || LOGIN_START_OFFER.to_owned(),
-                            compass_core::login_start::Status::describe,
-                        ))
-                        .font(self.font())
-                        .size(12)
-                        .color(palette.muted.to_iced()),
+                        text(self.login_start_line(LOGIN_START_OFFER))
+                            .font(self.font())
+                            .size(12)
+                            .color(palette.muted.to_iced()),
                     ]
                     .width(Length::Fill),
                     adwaita::ringed(

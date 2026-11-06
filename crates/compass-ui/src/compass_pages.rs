@@ -92,6 +92,18 @@ impl ExtensionsPage {
         self.all.get(*self.shown.get(self.selected)?)
     }
 
+    /// What the view shows in place of the list when it has nothing to list.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&'static str> {
+        if self.all.is_empty() {
+            Some("No extensions are installed")
+        } else if self.shown.is_empty() {
+            Some("No extensions match")
+        } else {
+            None
+        }
+    }
+
     /// Forgets an uninstalled extension.
     pub fn remove(&mut self, id: &str) {
         self.all.retain(|extension| extension.id != id);
@@ -134,6 +146,12 @@ impl IconsPage {
         compass_core::builtin_icon::names()
             .get(*self.shown.get(self.selected)?)
             .copied()
+    }
+
+    /// What the view shows in place of the list when it has nothing to list.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&'static str> {
+        self.shown.is_empty().then_some("No icons match")
     }
 }
 
@@ -235,6 +253,24 @@ impl StoragePage {
             })
             .collect()
     }
+
+    /// What the view shows in place of the list when it has nothing to list:
+    /// why nothing could be read, or that there is nothing.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        if !self.shown.is_empty() {
+            return None;
+        }
+        Some(
+            self.notice
+                .as_deref()
+                .unwrap_or(if self.browsing.is_some() {
+                    "No items"
+                } else {
+                    "No namespaces"
+                }),
+        )
+    }
 }
 
 /// Manage OAuth Token Sets (`OAuthTokenStoreViewHost`).
@@ -279,6 +315,16 @@ impl TokensPage {
     pub fn selected_set(&self) -> Option<&crate::backend::TokenSetRow> {
         self.sets.get(*self.shown.get(self.selected)?)
     }
+
+    /// What the view shows in place of the list when it has nothing to list:
+    /// why nothing could be read, or that there is nothing.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        if !self.shown.is_empty() {
+            return None;
+        }
+        Some(self.notice.as_deref().unwrap_or("No token sets"))
+    }
 }
 
 /// The Vicinae store's intro (`VicinaeStoreCommand`'s `INTRO`).
@@ -304,6 +350,30 @@ Compass can also install from the [Vicinae Store](compass://launch/core/store), 
 
 /// The intro's one action (`StoreIntroViewHost`'s primary).
 pub const CONTINUE_TO_STORE: &str = "Continue to store";
+
+/// The keys under the intro, as the card shows them.
+#[must_use]
+pub fn intro_hint() -> String {
+    format!("Enter: {CONTINUE_TO_STORE}    Esc: back")
+}
+
+/// A store's intro, as Markdown.
+#[must_use]
+pub const fn intro_text(store: crate::backend::Store) -> &'static str {
+    match store {
+        crate::backend::Store::Vicinae => VICINAE_STORE_INTRO,
+        crate::backend::Store::Raycast => RAYCAST_STORE_INTRO,
+    }
+}
+
+/// A store's name, as its brand has it.
+#[must_use]
+pub const fn store_name(store: crate::backend::Store) -> &'static str {
+    match store {
+        crate::backend::Store::Vicinae => "Vicinae Store",
+        crate::backend::Store::Raycast => "Raycast Store",
+    }
+}
 
 /// The view memory key that records a store's intro was seen (the C++'s
 /// `introCompleted` in the command's storage).
@@ -336,13 +406,9 @@ impl StoreIntroPage {
     /// The intro to `store`.
     #[must_use]
     pub fn new(store: crate::backend::Store) -> Self {
-        let text = match store {
-            crate::backend::Store::Vicinae => VICINAE_STORE_INTRO,
-            crate::backend::Store::Raycast => RAYCAST_STORE_INTRO,
-        };
         Self {
             store,
-            markdown: iced::widget::markdown::parse(text).collect(),
+            markdown: iced::widget::markdown::parse(intro_text(store)).collect(),
         }
     }
 }

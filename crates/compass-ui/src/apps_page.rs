@@ -174,6 +174,18 @@ impl AppsPage {
         self.rows.get(*self.shown.get(self.selected)?)
     }
 
+    /// What the view says in place of the list: loading, why it cannot be
+    /// listed, or that nothing matches; `None` while it shows applications.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Looking for applications…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.shown.is_empty() => Some("No applications match"),
+            Status::Ready => None,
+        }
+    }
+
     /// The search field's placeholder.
     #[must_use]
     pub const fn placeholder(&self) -> &'static str {

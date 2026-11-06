@@ -119,6 +119,18 @@ impl FontsPage {
         self.category = (option != font_browser::ALL_OPTION).then(|| option.to_owned());
         self.refilter();
     }
+
+    /// What the view says in place of the tiles: loading, why it failed, or
+    /// that nothing matches; `None` while it shows families.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&str> {
+        match &self.status {
+            Status::Loading => Some("Reading the installed fonts…"),
+            Status::Failed(reason) => Some(reason),
+            Status::Ready if self.shown().1.is_empty() => Some("No fonts match"),
+            Status::Ready => None,
+        }
+    }
 }
 
 /// A family name as the renderer takes it: `iced::Font` names a family by a
@@ -257,6 +269,14 @@ pub struct FontPreviewPage {
     pub family: String,
     /// The specimen, line by line.
     pub lines: Vec<SpecimenLine>,
+}
+
+impl FontPreviewPage {
+    /// The title shown above the specimen.
+    #[must_use]
+    pub fn title(&self) -> String {
+        font_browser::navigation_title("Browse Fonts", Some(&self.name))
+    }
 }
 
 #[cfg(test)]

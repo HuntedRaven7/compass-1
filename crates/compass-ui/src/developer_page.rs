@@ -109,11 +109,16 @@ pub fn success_markdown(title: &str, path: &str) -> String {
     )
 }
 
+/// The keys under the success page's text, as the card shows them.
+pub const CREATED_HINT: &str = "Enter: open the folder    Esc: back";
+
 /// The page after a successful creation.
 #[derive(Debug, Clone)]
 pub struct CreatedPage {
     /// Where the extension was written.
     pub path: String,
+    /// The Markdown, as written, for assistive technology to read.
+    pub source: String,
     /// The Markdown, parsed once.
     pub markdown: Vec<iced::widget::markdown::Item>,
     /// Why opening the folder did not happen.
@@ -124,9 +129,11 @@ impl CreatedPage {
     /// The page for an extension called `title` written to `path`.
     #[must_use]
     pub fn new(title: &str, path: String) -> Self {
-        let markdown = iced::widget::markdown::parse(&success_markdown(title, &path)).collect();
+        let source = success_markdown(title, &path);
+        let markdown = iced::widget::markdown::parse(&source).collect();
         Self {
             path,
+            source,
             markdown,
             notice: None,
         }

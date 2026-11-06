@@ -175,6 +175,14 @@ impl EmojiPage {
         glyph::glyphs().get(*self.shown.get(self.selected)?)
     }
 
+    /// What the view says in place of the list, when nothing matches.
+    #[must_use]
+    pub fn empty_notice(&self) -> Option<&'static str> {
+        self.shown
+            .is_empty()
+            .then_some("No matching emojis or symbols")
+    }
+
     /// The heading drawn above the row at `position`, if one starts there:
     /// the pinned and recent sections', then each category's as the table
     /// reaches it. A search is one unheaded list.

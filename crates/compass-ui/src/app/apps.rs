@@ -13,7 +13,7 @@ use super::{
     next_selection, scrollable, text,
 };
 use crate::action_panel::Action;
-use crate::apps_page::{self, AppRow, AppsKind, AppsPage, Status};
+use crate::apps_page::{self, AppRow, AppsKind, AppsPage};
 use crate::backend::DefaultApp;
 use compass_core::browse_apps::{self, ActionKind, Shortcut};
 
@@ -390,13 +390,7 @@ impl LauncherApp {
 
     /// The view's body.
     pub(super) fn apps_body<'a>(&'a self, page: &'a AppsPage) -> Element<'a, Message> {
-        let empty = match &page.status {
-            Status::Loading => Some("Looking for applications…"),
-            Status::Failed(reason) => Some(reason.as_str()),
-            Status::Ready if page.shown.is_empty() => Some("No applications match"),
-            Status::Ready => None,
-        };
-        if let Some(empty) = empty {
+        if let Some(empty) = page.empty_notice() {
             return match &page.notice {
                 Some(notice) => column![self.notice(empty), self.notice(notice)].into(),
                 None => self.notice(empty),
@@ -468,6 +462,32 @@ impl LauncherApp {
             None => rows.into(),
         }
     }
+
+    /// The view, for assistive technology: the current default is said in
+    /// words where the row shows a check.
+    pub(super) fn apps_semantics(&self, page: &AppsPage) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .filter_map(|&index| page.rows.get(index))
+            .map(|row| {
+                let accessory = if row.is_default {
+                    Some("Default".to_owned())
+                } else {
+                    apps_page::accessory(row)
+                };
+                let description = [Some(row.app.description.clone()), accessory]
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                super::a11y::item(row.app.display_name.clone(), Some(description))
+            })
+            .collect();
+        super::a11y::PageSemantics::list(&page.heading(), items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
 }
 
 /// What an action does.
@@ -494,4 +514,52 @@ fn digit_of(key: &str) -> Option<char> {
     }
     let position = SHIFTED.iter().position(|&s| s == c)?;
     char::from_digit(u32::try_from(position).ok()? + 1, 10)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::DefaultAppRow;
+    use crate::semantics::Body;
+
+    #[test]
+    fn a_picker_lists_the_applications_and_says_which_is_the_default() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = AppsPage::picker(DefaultApp::Terminal);
+        assert_eq!(
+            app.apps_semantics(&page).status.as_deref(),
+            Some("Looking for applications…")
+        );
+        page.apply(
+            Ok(vec![
+                DefaultAppRow {
+                    id: "console.desktop".into(),
+                    name: "Console".into(),
+                    description: "Terminal emulator".into(),
+                    is_default: true,
+                },
+                DefaultAppRow {
+                    id: "xterm.desktop".into(),
+                    name: "XTerm".into(),
+                    ..DefaultAppRow::default()
+                },
+            ]),
+            &app.app_index,
+        );
+        page.selected = 1;
+        app.page = Page::Apps(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Available terminal emulators");
+        assert_eq!(list.items[0].name, "Console");
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some("Terminal emulator · Default")
+        );
+        assert_eq!(list.items[1].name, "XTerm");
+        assert_eq!(list.items[1].description, None);
+        assert_eq!(list.selected, Some(1));
+    }
 }

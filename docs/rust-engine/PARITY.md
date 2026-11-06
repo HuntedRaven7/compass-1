@@ -1626,8 +1626,8 @@ corpus leaves macOS-only listings out.
 Against what the C++'s QML exposed through Qt's `Accessible` properties (ADR-0018 counts 15 files:
 the query field, the results and the action panel), and the form controls #304 asks for. The
 route is ADR-0022 §1 — AccessKit's Unix adapter over a model of our own, since Iced 0.14 has no
-tree — and ADR-0016's "Where it stands" is the full account. #302 and #303 are done, #304 for the
-controls listed below, and #305 (Orca in a real session) is what is left.
+tree — and ADR-0016's "Where it stands" is the full account. #302, #303 and #304 are done, and
+#305 (Orca in a real session) is what is left.
 
 | Area | Rust | Tests that would fail on a regression |
 |---|---|---|
@@ -1636,6 +1636,9 @@ controls listed below, and #305 (Orca in a real session) is what is left.
 | Action panel: menu, items, current item, shortcuts, press | same | `the_action_panel_is_a_menu_with_its_current_item`, `the_action_panel_is_described_as_a_menu_with_its_current_action`, `requests_do_what_the_keyboard_would` |
 | Forms: text, password, text area, checkbox, dropdown, tags, files, notes; required, invalid; focus order | same | `form_controls_have_their_roles_values_and_states`, `a_preference_form_has_its_controls_in_order_and_follows_the_keyboard`, `an_extension_form_names_each_control_and_its_value` |
 | Confirmations and extension alerts | same | `a_question_is_an_alert_with_the_keys_that_answer_it` |
+| Builtin views: every list's rows with selection and press, grids, the preview or detail beside a list, text pages | same, each view's `*_semantics` beside its drawing | `a_grid_is_rows_of_cells_that_say_where_they_are`, `a_document_is_its_headings_paragraphs_and_metadata`, `a_lists_detail_is_beside_it`, `a_builtin_lists_rows_are_clicked_and_focused_as_its_rows`, and a test per view in its own module |
+| Extension Detail and Grid | same | `an_extension_detail_is_read_as_its_markdown_and_metadata`, `an_extension_grid_is_rows_of_each_sections_columns`, `markdown_is_read_without_its_markup` |
+| Settings and the first-run flow: sidebar, switches, combo boxes that open, buttons | `app::settings_a11y` | `the_settings_are_their_pages_beside_the_page_shown_as_a_form`, `the_first_run_flow_is_a_form_whose_buttons_press`, `a_list_beside_a_form_takes_requests_for_both_and_an_open_dropdown_its_option`, `switches_and_buttons_are_pressed` |
 
 Declared differences:
 
@@ -1645,16 +1648,22 @@ Declared differences:
   results; the open panel, a dialog and a form's current field take it while they are there.
   Typing hands it back to the field, so the typed text is echoed rather than the top result read
   out at every keystroke; the result count is announced instead, politely, once it changes.
-- **Most builtin views are not described yet.** Clipboard history, the emoji picker, the window
-  switcher, the settings and the other builtin lists expose their search field only; extension
-  Detail views expose nothing under the field.
-- **No child bounds.** Nodes carry no screen rectangle, so flat review cannot place them. Under
-  Wayland a window does not know its position in any case.
-- **Not every control takes every request.** Checkboxes toggle, and single-line text fields and the
-  search field take their text. A dropdown is a combo box with its value and a file picker a button
-  with the chosen paths; opening either from assistive technology is not wired. A focus request
-  moves the keyboard in preference and argument forms, but not in an extension's form, whose
-  focus Iced keeps to itself.
+- **No child bounds.** Nodes carry no screen rectangle, so flat review cannot place them. Iced 0.14
+  does not give the application its widgets' layout, and recomputing it from the geometry would be
+  a second layout that drifts from the drawn one. Under Wayland a window does not know its
+  position in any case.
+- **Not every control takes every request.** Checkboxes and switches toggle, buttons, tags and
+  file pickers press, and single-line text fields and the search field take their text. A
+  dropdown is a combo box whose options can each be chosen; the settings' and the first-run flow's
+  own lists also open and close on request, but an extension or preference form's dropdown is
+  Iced's `pick_list`, which keeps its open state to itself. A focus request moves the keyboard in
+  preference, argument and settings forms and the first-run flow, but not in an extension's form,
+  whose focus Iced keeps to itself.
+- **An extension Detail's metadata is read but not yet drawn.** The tree carries the
+  `Detail.Metadata` labels, links and tag lists the extension declared; the card draws only the
+  markdown.
+- **Markdown is read as plain text**, a block per heading, paragraph, list item, table row and
+  line of code, without its markup.
 - **A password field is exposed as bullets**, one per character, never as its text.
 
 ### Earlier row notes

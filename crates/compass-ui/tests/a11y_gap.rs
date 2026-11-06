@@ -5,10 +5,9 @@
 //! state (`compass_ui::semantics`) and `compass-a11y-linux` serves it on
 //! AT-SPI, which `compass-a11y-linux/tests/private_bus.rs` reads back off a
 //! real accessibility bus. What is still open is #305: no Orca session has
-//! read the launcher, and most builtin views describe only their search
-//! field. These tests keep that written down rather than silent; #305 retires
-//! them, the doctor warning and the CUTOVER note together, once Orca reads the
-//! launcher in a real session.
+//! read the launcher. These tests keep that written down rather than silent;
+//! #305 retires them, the doctor warning and the CUTOVER note together, once
+//! Orca reads the launcher in a real session.
 
 use std::path::Path;
 

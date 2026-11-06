@@ -11,7 +11,7 @@ use super::{
     Task, chord_direction, column, container, focus_search, mouse_area, next_selection, scrollable,
 };
 use crate::action_panel::Action;
-use crate::programs_page::{self, Act, ProgramsPage, Status};
+use crate::programs_page::{self, Act, ProgramsPage};
 
 /// The panel's action ids: `program.action.<n>`, by position in the row's
 /// actions.
@@ -186,11 +186,8 @@ impl LauncherApp {
 
     /// The view's body.
     pub(super) fn programs_body<'a>(&'a self, page: &'a ProgramsPage) -> Element<'a, Message> {
-        match &page.status {
-            Status::Loading => return self.notice("Looking for programs…"),
-            Status::Failed(reason) => return self.notice(reason),
-            Status::Ready if page.rows.is_empty() => return self.notice("No programs match"),
-            Status::Ready => {}
+        if let Some(notice) = page.empty_notice() {
+            return self.notice(notice);
         }
         let home =
             compass_core::xdg_dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
@@ -221,5 +218,61 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The view, for assistive technology.
+    pub(super) fn programs_semantics(&self, page: &ProgramsPage) -> super::a11y::PageSemantics {
+        let home =
+            compass_core::xdg_dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
+        let home = home.as_deref().unwrap_or("");
+        let items = page
+            .rows
+            .iter()
+            .map(|row| {
+                let (title, subtitle) = programs_page::row_text(row, home);
+                super::a11y::item(title, subtitle)
+            })
+            .collect();
+        super::a11y::PageSemantics::list("Programs", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantics::Body;
+
+    #[test]
+    fn the_programs_are_a_list_with_their_paths_and_the_loading_notice_before_them() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = ProgramsPage::default();
+        assert_eq!(
+            app.programs_semantics(&page).status.as_deref(),
+            Some("Looking for programs…")
+        );
+        page.apply(Ok((
+            vec!["/opt/tools/htop".into(), "/opt/tools/top".into()],
+            None,
+            compass_core::system_run::DefaultAction::default(),
+        )));
+        page.selected = 1;
+        app.page = Page::Programs(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Programs");
+        let names: Vec<&str> = list.items.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, ["htop", "top"]);
+        assert!(
+            list.items.iter().all(|item| item
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("tools/"))),
+            "each program is described by its path"
+        );
+        assert_eq!(list.selected, Some(1));
+        assert_eq!(semantics.status, None);
     }
 }

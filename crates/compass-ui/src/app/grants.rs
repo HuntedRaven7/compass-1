@@ -12,7 +12,7 @@ use super::{
     Task, chord_direction, column, container, focus_search, mouse_area, next_selection, scrollable,
 };
 use crate::action_panel::Action;
-use crate::grants_page::{self, GrantsPage, Status};
+use crate::grants_page::{self, GrantsPage};
 
 const REVOKE: &str = "grants.revoke";
 
@@ -132,14 +132,7 @@ impl LauncherApp {
 
     /// The view's body.
     pub(super) fn grants_body<'a>(&'a self, page: &'a GrantsPage) -> Element<'a, Message> {
-        let empty = match &page.status {
-            Status::Loading => Some("Reading script permissions…"),
-            Status::Failed(reason) => Some(reason.as_str()),
-            Status::Ready if page.all.is_empty() => Some(grants_page::EMPTY),
-            Status::Ready if page.shown.is_empty() => Some("No scripts match"),
-            Status::Ready => None,
-        };
-        if let Some(empty) = empty {
+        if let Some(empty) = page.empty_notice() {
             return match &page.notice {
                 Some(notice) => column![self.notice(empty), self.notice(notice)].into(),
                 None => self.notice(empty),
@@ -172,5 +165,55 @@ impl LauncherApp {
             Some(notice) => column![rows, self.notice(notice)].into(),
             None => rows.into(),
         }
+    }
+
+    /// The view, for assistive technology.
+    pub(super) fn grants_semantics(&self, page: &GrantsPage) -> super::a11y::PageSemantics {
+        let items = page
+            .shown
+            .iter()
+            .filter_map(|&index| page.all.get(index))
+            .map(|grant| super::a11y::item(grant.title.clone(), Some(grants_page::subtitle(grant))))
+            .collect();
+        super::a11y::PageSemantics::list("Scripts", items, page.selected, page.empty_notice())
+            .with_status(page.notice.as_deref(), &page.query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::ScriptGrant;
+    use crate::semantics::Body;
+
+    #[test]
+    fn the_scripts_are_a_list_saying_what_each_may_do() {
+        let mut app = LauncherApp::with_index(compass_core::AppIndex::builder().build());
+        let mut page = GrantsPage::default();
+        page.apply(Ok(Vec::new()));
+        assert_eq!(
+            app.grants_semantics(&page).status.as_deref(),
+            Some(grants_page::EMPTY)
+        );
+        page.apply(Ok(vec![ScriptGrant {
+            id: "script.notes".into(),
+            title: "Quick Notes".into(),
+            capabilities: Vec::new(),
+            descriptions: vec!["read its saved data".into(), "save data".into()],
+        }]));
+        page.notice = Some(grants_page::REVOKED.to_owned());
+        app.page = Page::Grants(page);
+        let semantics = app.semantics();
+        let Body::List(list) = &semantics.body else {
+            panic!("expected a list, got {:?}", semantics.body);
+        };
+        assert_eq!(list.label, "Scripts");
+        assert_eq!(list.items[0].name, "Quick Notes");
+        assert_eq!(
+            list.items[0].description.as_deref(),
+            Some("Read its saved data, save data")
+        );
+        assert_eq!(list.selected, Some(0));
+        assert_eq!(semantics.status.as_deref(), Some(grants_page::REVOKED));
     }
 }
