@@ -1,6 +1,6 @@
 # Compass Roadmap
 
-**Last updated**: 2026-10-08 | **Maintainer**: tuna-os maintainers
+**Last updated**: 2026-11-16 | **Maintainer**: tuna-os maintainers
 
 ## Mission
 
@@ -11,18 +11,21 @@ ecosystems.
 
 ## Current Status
 
-The current release is **v0.28.2**. The Rust engine has replaced the C++ one
+The current release is **v0.28.4**. The Rust engine has replaced the C++ one
 ([ADR-0021](docs/rust-engine/adr/0021-remove-the-cpp-engine.md)), the
 [parity ledger](docs/rust-engine/PARITY.md) tracks what remains against upstream
 Vicinae, and Compass is published as a Flatpak in the TunaOS remote and as a
-Homebrew bottle in `ublue-os/experimental-tap`. The remaining work is primarily accessibility, first-run polish,
-performance enforcement, and maintainability rather than feature-parity work.
+Homebrew bottle in `ublue-os/experimental-tap`. Since v0.28.4 the launcher exposes an accessibility tree on AT-SPI
+([#118](https://github.com/tuna-os/compass/issues/118)). An Orca check runs in
+`tier2.yaml`; it reports only and does not yet gate a merge.
+The remaining work is primarily first-run polish, performance enforcement, and
+maintainability rather than feature-parity work.
 
 ### Priorities
 
 | Priority | Item | Tracking | Status |
 |---|---|---|---|
-| P0 | Expose an accessibility tree to assistive technologies | [#118](https://github.com/tuna-os/compass/issues/118) | ⬜ Not started |
+| P0 | Expose an accessibility tree to assistive technologies | [#118](https://github.com/tuna-os/compass/issues/118) | ✅ Done in v0.28.4 (#341, #348, #351) |
 | P1 | Make installation and first-run setup low-friction | [#154](https://github.com/tuna-os/compass/issues/154) | 🟡 In progress |
 | P1 | Turn measured performance into enforceable gates | [#127](https://github.com/tuna-os/compass/issues/127) | 🟡 In progress |
 
@@ -34,7 +37,7 @@ performance enforcement, and maintainability rather than feature-parity work.
 
 | Goal | Owner | Tracking | Status |
 |---|---|---|---|
-| Deliver an accessible launcher surface | tuna-os maintainers | [#118](https://github.com/tuna-os/compass/issues/118) | ⬜ Not started |
+| Deliver an accessible launcher surface | tuna-os maintainers | [#118](https://github.com/tuna-os/compass/issues/118) | ✅ Done in v0.28.4 |
 | Complete the installation and first-run flow | tuna-os maintainers | [#154](https://github.com/tuna-os/compass/issues/154) | 🟡 In progress |
 | Enforce startup, input-latency, and memory budgets in CI | tuna-os maintainers | [#127](https://github.com/tuna-os/compass/issues/127) | 🟡 In progress |
 | Split state and lifecycle responsibilities out of the UI application object | tuna-os maintainers | [#258](https://github.com/tuna-os/compass/issues/258) | ⬜ Not started |
