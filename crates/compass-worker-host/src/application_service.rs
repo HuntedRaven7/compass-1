@@ -10,6 +10,22 @@
 //! `mimeapps` already resolves default openers. What this module owns is the
 //! translation: which query each method makes, what it does when the query
 //! comes back empty, and the exact shape of an `Application` on the wire.
+//!
+//! Two calls differ from upstream, which has no sandbox and so gives an
+//! extension nothing it did not already have. Here the worker is confined and
+//! the engine is not, so:
+//!
+//! - `runInTerminal` runs nothing and answers `false` ([`TERMINAL_REFUSED`](crate::application_service::TERMINAL_REFUSED)).
+//!   The engine would start the command line on the host, unconfined, and
+//!   only `HostCommand/run` may do that, for a program the overrides list
+//!   names and after asking the person.
+//! - `open` of a file the extension could have written (under its support or
+//!   assets directory, see [`ApplicationService::with_writable`](crate::application_service::ApplicationService::with_writable)) goes only to
+//!   the default opener, and only for a type a viewer shows
+//!   ([`is_viewer_type`](crate::application_service::is_viewer_type)): an `appId` naming `java -jar %f` or `wine` would
+//!   otherwise run a file the extension wrote.
+
+use std::path::{Path, PathBuf};
 
 use crate::tsapi::{self, Call};
 
@@ -24,6 +40,12 @@ pub const METHODS: &[&str] = &[
 
 /// The error `getDefault` fails with, verbatim from the C++.
 pub const NO_DEFAULT: &str = "No default application found";
+
+/// Why `runInTerminal` answered `false`. Extensions see the `false`; this is
+/// for the engine's log and the documentation.
+pub const TERMINAL_REFUSED: &str = "Compass does not run terminal commands for extensions: a \
+     command line would run on your computer outside the extension sandbox. Extensions run \
+     host programs through HostCommand/run, which asks first.";
 
 /// One application, as `appToTsapi` builds it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -80,12 +102,29 @@ pub trait Apps {
 #[derive(Debug)]
 pub struct ApplicationService<A> {
     apps: A,
+    /// The directories the extension may write, resolved.
+    writable: Vec<PathBuf>,
 }
 
 impl<A: Apps> ApplicationService<A> {
     /// Serves `apps`.
     pub const fn new(apps: A) -> Self {
-        Self { apps }
+        Self {
+            apps,
+            writable: Vec::new(),
+        }
+    }
+
+    /// Treats a file under any of `dirs`, the directories the extension may
+    /// write, as one it may have written: `open` ignores `appId` for it and
+    /// opens it only when [`is_viewer_type`] says a viewer shows it.
+    #[must_use]
+    pub fn with_writable(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.writable = dirs
+            .into_iter()
+            .map(|dir| dir.canonicalize().unwrap_or(dir))
+            .collect();
+        self
     }
 
     /// The database this serves.
@@ -142,35 +181,10 @@ impl<A: Apps> ApplicationService<A> {
                 self.apps.show_in_file_browser(&target, select);
                 tsapi::reply(id, serde_json::Value::Null)
             }
-            _ => {
-                let opts = call.params.get("opts");
-                let field = |name: &str| {
-                    opts.and_then(|opts| opts.get(name))
-                        .filter(|value| !value.is_null())
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                };
-                let cmdline: Vec<String> = opts
-                    .and_then(|opts| opts.get("cmdline"))
-                    .and_then(serde_json::Value::as_array)
-                    .map(|args| {
-                        args.iter()
-                            .map(|arg| arg.as_str().unwrap_or_default().to_owned())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let options = TerminalOptions {
-                    hold: opts
-                        .and_then(|opts| opts.get("hold"))
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                    app_id: field("appId"),
-                    title: field("title"),
-                    working_directory: field("workingDirectory"),
-                };
-                let ok = self.apps.run_in_terminal(&cmdline, &options);
-                tsapi::reply(id, serde_json::Value::Bool(ok))
-            }
+            // `Application/runInTerminal`: refused, see [`TERMINAL_REFUSED`].
+            // A `false` result, which an extension written for upstream reads
+            // as a terminal that would not start, not a rejected promise.
+            _ => tsapi::reply(id, serde_json::Value::Bool(false)),
         })
     }
 
@@ -181,6 +195,14 @@ impl<A: Apps> ApplicationService<A> {
     /// naming an application that is not installed still gets the file opened
     /// by the default handler rather than nothing happening.
     fn open(&self, target: &str, app_id: Option<&str>) {
+        if let Some(file) = self.written_by_extension(target) {
+            if is_viewer_type(&file)
+                && let Some(opener) = self.apps.default_opener(target)
+            {
+                self.apps.launch(&opener, target);
+            }
+            return;
+        }
         if let Some(app) = app_id.and_then(|id| self.apps.by_id(id)) {
             self.apps.launch(&app, target);
             return;
@@ -189,6 +211,42 @@ impl<A: Apps> ApplicationService<A> {
             self.apps.launch(&opener, target);
         }
     }
+}
+
+impl<A> ApplicationService<A> {
+    /// The local file `target` names, when it is under a directory the
+    /// extension may write. Links are resolved first, so a link there to a
+    /// file elsewhere is that file, and a link elsewhere to a file there is
+    /// this one.
+    fn written_by_extension(&self, target: &str) -> Option<PathBuf> {
+        if self.writable.is_empty() {
+            return None;
+        }
+        let path = if target.starts_with("file:") {
+            url::Url::parse(target).ok()?.to_file_path().ok()?
+        } else if target.starts_with('/') {
+            PathBuf::from(target)
+        } else {
+            return None;
+        };
+        let path = path.canonicalize().unwrap_or(path);
+        self.writable
+            .iter()
+            .any(|dir| path.starts_with(dir))
+            .then_some(path)
+    }
+}
+
+/// Whether a viewer shows `path`'s type, going by its name: an image, audio,
+/// video, plain text or a PDF. Nothing a program would run.
+#[must_use]
+pub fn is_viewer_type(path: &Path) -> bool {
+    mime_guess::from_path(path).first().is_some_and(|mime| {
+        matches!(
+            mime.type_(),
+            mime_guess::mime::IMAGE | mime_guess::mime::AUDIO | mime_guess::mime::VIDEO
+        ) || matches!(mime.essence_str(), "text/plain" | "application/pdf")
+    })
 }
 
 impl<A: Apps> tsapi::Service for ApplicationService<A> {

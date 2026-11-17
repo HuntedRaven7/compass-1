@@ -67,6 +67,11 @@ impl<K: KeyState, S: EventSink> Service<K, S> {
         self.tracker.key(code, value)
     }
 
+    /// Forgets what has been typed, as `resetContext` does.
+    pub fn forget_typing(&mut self) {
+        self.tracker.reset();
+    }
+
     /// The modifier wait ran out.
     pub fn flush_pending(&mut self) -> Option<Event> {
         self.tracker.flush_pending()
@@ -82,8 +87,9 @@ impl<K: KeyState, S: EventSink> Service<K, S> {
     ///
     /// # Errors
     ///
-    /// Only a keymap that does not compile; every other call succeeds, as in
-    /// the C++ (an injection without a virtual keyboard does nothing).
+    /// A keymap that does not compile, and a snippet with an empty keyword;
+    /// every other call succeeds, as in the C++ (an injection without a
+    /// virtual keyboard does nothing).
     pub fn call(&mut self, call: Call, input: &mut dyn LiveInput) -> Result<Value, String> {
         match call {
             Call::SetKeymap(layout) => {
@@ -92,6 +98,11 @@ impl<K: KeyState, S: EventSink> Service<K, S> {
                     keyboard.set_char_map(map);
                 }
                 Ok(Value::Null)
+            }
+            Call::CreateSnippet { trigger, .. } if trigger.is_empty() => {
+                // An empty keyword matches after every key, so all it could
+                // do is report when each key is pressed.
+                Err("refusing a snippet with an empty keyword".to_owned())
             }
             Call::CreateSnippet { trigger, mode } => {
                 self.tracker.add(trigger, mode.into());

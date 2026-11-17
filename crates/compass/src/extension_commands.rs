@@ -139,6 +139,8 @@ impl Launches {
 /// One installed command, as `launchCommand` finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Known {
+    /// The extension the command belongs to, `@<author>/<extension id>`.
+    pub extension_id: String,
     /// The manifest's `name`.
     pub extension_name: String,
     /// The manifest's `author`.
@@ -159,6 +161,7 @@ impl Known {
             .extensions()
             .iter()
             .map(|command| Self {
+                extension_id: command.extension_id.clone(),
                 extension_name: command.extension_name.clone(),
                 author: command.author.clone(),
                 owner: command.owner.clone(),
@@ -191,18 +194,30 @@ impl std::fmt::Debug for EngineCommands {
 }
 
 impl EngineCommands {
-    /// Serves the command `command_id`, finding siblings among `known`,
-    /// keeping launches in `launches` and handing their tokens to `deliver`.
+    /// Serves the command `command_id` of `extension_id`, finding siblings
+    /// among `known`, keeping launches in `launches` and handing their tokens
+    /// to `deliver`.
+    ///
+    /// Only `extension_id`'s own commands are kept. `launchCommand` launches
+    /// a sibling: a command of another extension would run with arguments
+    /// and context this one chose, under that extension's storage, tokens and
+    /// host-program grants, without the person picking it. Raycast asks
+    /// before one extension launches another's command; until Compass asks
+    /// too, such a launch is `No such command`.
     #[must_use]
     pub fn new(
         command_id: String,
+        extension_id: &str,
         known: Vec<Known>,
         launches: Arc<Launches>,
         deliver: Deliver,
     ) -> Self {
         Self {
             command_id,
-            known,
+            known: known
+                .into_iter()
+                .filter(|known| known.extension_id == extension_id)
+                .collect(),
             launches,
             deliver,
         }
@@ -293,13 +308,25 @@ mod tests {
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let commands = EngineCommands::new(
             "@ada/notes:list".into(),
-            vec![Known {
-                extension_name: "notes".into(),
-                author: "ada".into(),
-                owner: None,
-                name: "create".into(),
-                id: "@ada/notes:create".into(),
-            }],
+            "@ada/notes",
+            vec![
+                Known {
+                    extension_id: "@ada/notes".into(),
+                    extension_name: "notes".into(),
+                    author: "ada".into(),
+                    owner: None,
+                    name: "create".into(),
+                    id: "@ada/notes:create".into(),
+                },
+                Known {
+                    extension_id: "@bob/mail".into(),
+                    extension_name: "mail".into(),
+                    author: "bob".into(),
+                    owner: None,
+                    name: "send".into(),
+                    id: "@bob/mail:send".into(),
+                },
+            ],
             Arc::clone(&launches),
             Arc::new({
                 let delivered = Arc::clone(&delivered);
@@ -351,6 +378,23 @@ mod tests {
             })
         );
         assert_eq!(launches.take_context("@ada/notes:create"), None);
+    }
+
+    #[test]
+    fn another_extension_s_command_is_no_such_command() {
+        let (service, launches, delivered) = service();
+        let reply = service
+            .handle(&call(
+                "Command/launchCommand",
+                serde_json::json!({"options": {
+                    "extensionName": "mail", "ownerOrAuthorName": "bob", "name": "send",
+                    "arguments": {"to": "someone@example.invalid"},
+                }}),
+            ))
+            .unwrap();
+        assert!(reply.contains("No such command"), "{reply}");
+        assert!(delivered.lock().unwrap().is_empty(), "nothing was launched");
+        assert_eq!(launches.take_context("@bob/mail:send"), None);
     }
 
     #[test]

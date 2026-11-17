@@ -270,6 +270,7 @@ async fn run_extension_command(
         context: launches.take_context(&id),
         commands: Some(crate::extension_commands::EngineCommands::new(
             id.clone(),
+            &command.extension_id,
             known,
             launches,
             deliver,

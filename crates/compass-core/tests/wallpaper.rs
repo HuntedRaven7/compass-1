@@ -343,6 +343,29 @@ fn the_kde_script_sets_the_image_plugin_image_and_fill_on_every_desktop() {
 }
 
 #[test]
+fn a_kde_wallpaper_path_cannot_end_the_script_s_string() {
+    let path = r#"/tmp/a");evil();("b.png"#;
+    let script = compass_core::wallpaper::kde_script(&WallpaperRequest {
+        path: path.into(),
+        screen: None,
+        fit: WallpaperFit::Cover,
+    });
+    // `evil();` may appear inside the URI, but never right after a closed
+    // string, where Plasma would run it.
+    assert!(!script.contains(r#"");evil"#), "{script}");
+    assert_eq!(script.matches(r#"d.writeConfig("Image", "#).count(), 1);
+    let start =
+        script.find(r#"d.writeConfig("Image", "#).unwrap() + r#"d.writeConfig("Image", "#.len();
+    let rest = &script[start..];
+    let end = rest.find(");\n").unwrap();
+    let literal: String = serde_json::from_str(&rest[..end]).expect("one JSON string literal");
+    assert_eq!(
+        url::Url::parse(&literal).unwrap().to_file_path().unwrap(),
+        std::path::PathBuf::from(path)
+    );
+}
+
+#[test]
 fn desktops_are_recognised_as_the_cpp_environment_helpers_do() {
     use compass_core::wallpaper::desktop_matches;
     assert_eq!(

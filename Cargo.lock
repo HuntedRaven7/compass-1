@@ -1153,7 +1153,9 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "tokio",
  "xkbcommon",
+ "zbus",
 ]
 
 [[package]]
@@ -1443,6 +1445,7 @@ dependencies = [
  "compass-oauth-store",
  "compass-sandbox",
  "compass-sqlcipher-sys",
+ "mime_guess",
  "serde",
  "serde_json",
  "tempfile",

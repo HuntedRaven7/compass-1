@@ -45,6 +45,8 @@ pub(super) struct Served {
     pub(super) files: Option<Arc<crate::file_search::FileSearch>>,
     pub(super) commands: Option<crate::extension_commands::EngineCommands>,
     pub(super) assets: PathBuf,
+    /// The directories the extension may write: a file there may be its own.
+    pub(super) writable: Vec<PathBuf>,
     pub(super) launcher: Option<Launcher>,
 }
 
@@ -68,6 +70,7 @@ pub(super) fn serve(
         files,
         commands,
         assets,
+        writable,
         launcher,
     } = served;
     let title = title.as_str();
@@ -116,7 +119,7 @@ pub(super) fn serve(
     if let Some(service) = &storage_service {
         router = router.with(service);
     }
-    let applications = apps.map(ApplicationService::new);
+    let applications = apps.map(|apps| ApplicationService::new(apps).with_writable(writable));
     if let Some(service) = &applications {
         router = router.with(service);
     }

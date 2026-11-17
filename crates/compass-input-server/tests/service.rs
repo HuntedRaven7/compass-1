@@ -97,6 +97,23 @@ fn registered_keywords_fire_and_removed_ones_do_not() {
 }
 
 #[test]
+fn an_empty_keyword_is_refused_rather_than_reporting_every_key() {
+    let mut service = service();
+    assert!(
+        service
+            .call(
+                Call::CreateSnippet {
+                    trigger: String::new(),
+                    mode: ExpansionMode::Keydown,
+                },
+                &mut Scripted::default(),
+            )
+            .is_err()
+    );
+    assert_eq!(service.key(45, 1), None, "a key press fired a trigger");
+}
+
+#[test]
 fn an_expansion_erases_the_keyword_then_pastes() {
     let mut service = service();
     call(

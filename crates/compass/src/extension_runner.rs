@@ -254,6 +254,8 @@ pub fn start(
             process
         }
     };
+    process.env_clear();
+    process.envs(sandbox::worker_env(std::env::vars_os()));
     process.env("TMPDIR", tmp_dir(data_dir, command));
     // `environment.vicinaeVersion` in the SDK. The runtime reads these, and
     // the `VICINAE_*` names the C++ set only when they are absent.
@@ -333,6 +335,10 @@ pub fn start(
     let extension_id = command.extension_id.clone();
     let extension_title = command.extension_title.clone();
     let assets = command.extension_dir.join("assets");
+    let writable = vec![
+        support_dir(data_dir, command),
+        assets_dir(data_dir, command),
+    ];
     let handle = tokio::runtime::Handle::try_current().ok();
     let started = view
         .as_ref()
@@ -353,6 +359,7 @@ pub fn start(
                     files,
                     commands,
                     assets,
+                    writable,
                     launcher,
                 },
                 storage,

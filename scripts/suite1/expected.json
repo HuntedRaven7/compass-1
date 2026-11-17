@@ -113,7 +113,8 @@
     "verdict": "rendered"
   },
   "store.vicinae.bluetooth:devices": {
-    "verdict": "rendered"
+    "verdict": "crashed",
+    "why": "Devices crashed: connect EPERM /var/run/dbus/system_bus_socket"
   },
   "store.vicinae.brotab:tabs-list": {
     "verdict": "rendered"
@@ -148,7 +149,8 @@
     "why": "Search Icons crashed: Error [ERR_WORKER_OUT_OF_MEMORY]: Worker terminated due to reaching memory limit: JS heap out of memory"
   },
   "store.vicinae.dbus:explore-bus": {
-    "verdict": "rendered"
+    "verdict": "crashed",
+    "why": "Explore The Bus crashed: could not get DISPLAY environment variable to get dbus address"
   },
   "store.vicinae.dms-integration:dsearch": {
     "verdict": "error-toast",
@@ -305,7 +307,8 @@
     "verdict": "rendered"
   },
   "store.vicinae.podman:containers": {
-    "verdict": "rendered"
+    "verdict": "error-toast",
+    "why": "Failed to list Podman connections: Command failed: podman system connection list --format json"
   },
   "store.vicinae.port-killer:port-killer": {
     "verdict": "rendered"
@@ -370,7 +373,8 @@
     "verdict": "rendered"
   },
   "store.vicinae.systemd:services": {
-    "verdict": "rendered",
+    "verdict": "crashed",
+    "why": "Services crashed: connect EPERM /var/run/dbus/system_bus_socket",
     "flatpak": {
       "verdict": "error-toast",
       "why": "Failed to list services: org.freedesktop.DBus.Error.ServiceUnknown: the Flatpak does not talk to systemd on the system bus"

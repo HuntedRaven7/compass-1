@@ -36,6 +36,9 @@ pub async fn is_listening(path: impl AsRef<Path>) -> bool {
 pub struct Listener {
     inner: UnixListener,
     path: PathBuf,
+    /// The user who bound the socket: the only one whose connections are
+    /// served.
+    owner: u32,
 }
 
 impl Listener {
@@ -63,7 +66,7 @@ impl Listener {
         }
 
         match UnixListener::bind(&path) {
-            Ok(inner) => Ok(Self { inner, path }),
+            Ok(inner) => Self::owned(inner, path),
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
                 if is_listening(&path).await {
                     return Err(Error::AlreadyRunning { path });
@@ -78,10 +81,28 @@ impl Listener {
                 tracing::info!(path = %path.display(), "reclaiming stale ipc socket");
                 std::fs::remove_file(&path).map_err(Error::Io)?;
                 let inner = UnixListener::bind(&path).map_err(Error::Io)?;
-                Ok(Self { inner, path })
+                Self::owned(inner, path)
             }
             Err(err) => Err(Error::Io(err)),
         }
+    }
+
+    /// The socket file was just made by this process, so its owner is the
+    /// user this process runs as; `std` has no portable `geteuid`.
+    fn owned(inner: UnixListener, path: PathBuf) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let owner = std::fs::symlink_metadata(&path).map_err(Error::Io)?.uid();
+        Ok(Self { inner, path, owner })
+    }
+
+    /// Refuses a connection from another user's process.
+    ///
+    /// The `0700` directory should already keep them out; this holds when its
+    /// mode does not. A sandboxed extension runs as the same user and is kept
+    /// from the socket by the sandbox's syscall filter, not by this.
+    fn admit(&self, stream: &UnixStream) -> Result<()> {
+        let peer = stream.peer_cred().map_err(Error::Io)?.uid();
+        admits(self.owner, peer)
     }
 
     /// The path this listener is bound to.
@@ -93,6 +114,7 @@ impl Listener {
     /// Accepts one connection.
     pub async fn accept(&self) -> Result<UnixStream> {
         let (stream, _addr) = self.inner.accept().await.map_err(Error::Io)?;
+        self.admit(&stream)?;
         Ok(stream)
     }
 
@@ -169,6 +191,10 @@ impl Listener {
                 }
                 accepted = self.inner.accept() => {
                     let (stream, _addr) = accepted.map_err(Error::Io)?;
+                    if let Err(err) = self.admit(&stream) {
+                        tracing::warn!(error = %err, "ipc connection refused");
+                        continue;
+                    }
                     let handler = Arc::clone(&handler);
                     let on_attach = Arc::clone(&on_attach);
                     tokio::spawn(async move {
@@ -183,6 +209,15 @@ impl Listener {
                 }
             }
         }
+    }
+}
+
+/// Whether a peer running as `peer` may talk to a socket `owner` bound.
+fn admits(owner: u32, peer: u32) -> Result<()> {
+    if peer == owner {
+        Ok(())
+    } else {
+        Err(Error::ForeignPeer { peer, owner })
     }
 }
 
@@ -526,5 +561,35 @@ impl Client {
     pub async fn oneshot(path: impl AsRef<Path>, request: Request) -> Result<Response> {
         let mut client = Self::connect(path).await?;
         client.request(request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_owner_is_admitted() {
+        assert!(admits(1000, 1000).is_ok());
+        assert!(matches!(
+            admits(1000, 1001),
+            Err(Error::ForeignPeer {
+                peer: 1001,
+                owner: 1000
+            })
+        ));
+        assert!(admits(1000, 0).is_err(), "not even root is served");
+    }
+
+    #[tokio::test]
+    async fn a_connection_from_the_owner_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let listener = Listener::bind(dir.path().join("compass/ipc.sock"))
+            .await
+            .expect("binds");
+        let path = listener.path().to_owned();
+        let (accepted, connected) = tokio::join!(listener.accept(), UnixStream::connect(&path));
+        connected.expect("connects");
+        accepted.expect("the owner's own connection is accepted");
     }
 }

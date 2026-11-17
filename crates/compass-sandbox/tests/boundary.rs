@@ -523,6 +523,40 @@ fn a_raw_socket_is_refused_while_an_ordinary_one_is_not() {
 }
 
 #[test]
+fn a_unix_socket_outside_every_grant_cannot_be_reached() {
+    // The session bus and the engine's IPC socket are pathname sockets that
+    // no grant names, and Landlock V1 does not look at `connect`. A worker
+    // that reached either would be out of the boundary without opening a
+    // file, so the filter refuses the socket itself.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("bus.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&path).expect("a listening socket");
+    let mode = format!("unix-connect={}", path.display());
+    assert_eq!(
+        probe_plain(&mode),
+        "errno=ok",
+        "the unsandboxed control could not connect, so a denial below would prove nothing"
+    );
+    assert_eq!(
+        probe_mode(&probe_policy().without_syscall_filter(), &mode),
+        "errno=ok",
+        "with the filter off the connect should get through: Landlock V1 does not mediate it"
+    );
+    assert_eq!(
+        probe_mode(&probe_policy(), &mode),
+        "errno=EPERM",
+        "a sandboxed worker connected to a unix socket outside its policy"
+    );
+    // Node makes a child process's stdio with `socketpair`; refusing that
+    // would break every extension that runs a program.
+    assert_eq!(
+        probe_mode(&probe_policy(), "unix-socketpair"),
+        "errno=ok",
+        "socketpair was refused: an extension could no longer run a child process"
+    );
+}
+
+#[test]
 fn a_program_the_worker_wrote_itself_cannot_be_run() {
     if !landlock_enforces() {
         return assert_fails_closed();

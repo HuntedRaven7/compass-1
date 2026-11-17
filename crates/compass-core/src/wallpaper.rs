@@ -367,8 +367,16 @@ pub fn prepare(
 
 /// The Plasma script the KDE backend evaluates (`org.kde.PlasmaShell.evaluateScript`):
 /// every desktop switched to the image plugin with this image and fill mode.
+///
+/// The path comes from an extension, and a file name may hold any byte but
+/// `/` and NUL, so it never goes into the script as text: it becomes a
+/// percent-encoded `file://` URI ([`kde_image_uri`]), and that URI a JSON
+/// string, which is also a JavaScript string literal. A quote or a `)` in the
+/// name stays inside the literal instead of ending it.
 #[must_use]
 pub fn kde_script(request: &WallpaperRequest) -> String {
+    let image =
+        serde_json::to_string(&kde_image_uri(&request.path)).unwrap_or_else(|_| "\"\"".to_owned());
     format!(
         r#"
     var ds = desktops();
@@ -376,13 +384,20 @@ pub fn kde_script(request: &WallpaperRequest) -> String {
       var d = ds[i];
       d.wallpaperPlugin = "org.kde.image";
       d.currentConfigGroup = Array("Wallpaper", "org.kde.image", "General");
-      d.writeConfig("Image", "{}");
+      d.writeConfig("Image", {image});
       d.writeConfig("FillMode", {});
     }}
   "#,
-        file_uri(&request.path),
         kde_fill_mode(request.fit)
     )
+}
+
+/// The image's URI for Plasma: percent-encoded by [`url::Url::from_file_path`]
+/// for an absolute path, as the engine encodes paths elsewhere, and
+/// [`file_uri`] otherwise.
+#[must_use]
+pub fn kde_image_uri(path: &str) -> String {
+    url::Url::from_file_path(path).map_or_else(|()| file_uri(path), String::from)
 }
 
 /// Whether the session is the desktop `backend` belongs to, read from

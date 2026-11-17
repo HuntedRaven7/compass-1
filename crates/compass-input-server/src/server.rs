@@ -17,6 +17,7 @@ use compass_platform_linux::keyboard::VirtualKeyboard;
 use crate::device::{self, DeviceMessage, Kind, UinputSink};
 use crate::keymap::XkbKeys;
 use crate::recording::EV_KEY;
+use crate::seat::{Gate, Verdict};
 use crate::service::{LiveInput, Service};
 use crate::tracker::MODIFIER_TIMEOUT;
 
@@ -58,6 +59,18 @@ pub fn run() -> u8 {
         eprintln!("{error}; triggers are detected but nothing can be injected");
     }
     let mut service = Service::new(keys, keyboard);
+    let mut gate = Gate::new();
+    match gate.verdict() {
+        Verdict::Allowed => {}
+        Verdict::Refused => eprintln!(
+            "this user does not have the active session on a seat; no key is read or typed until \
+             it does"
+        ),
+        Verdict::Unknown => eprintln!(
+            "no logind on the system bus to say who is at the keyboard; serving whoever the \
+             install lets run this helper"
+        ),
+    }
 
     let (tx, rx) = mpsc::channel::<Message>();
     spawn_stdin_reader(tx.clone());
@@ -123,6 +136,9 @@ pub fn run() -> u8 {
             Message::Control(bytes) => {
                 for request in buffer.push(&bytes) {
                     let answer = match Call::decode(&request) {
+                        Ok((id, call)) if injects(&call) && !gate.allows() => {
+                            wire::reply_error(id, NOT_AT_THE_KEYBOARD)
+                        }
                         Ok((id, call)) => match service.call(call, &mut input) {
                             Ok(result) => wire::reply(id, &result),
                             Err(error) => {
@@ -160,12 +176,29 @@ pub fn run() -> u8 {
                 if !kind.keyboard || event.kind != EV_KEY {
                     continue;
                 }
+                if !gate.allows() {
+                    // Another user's typing: not one key of it reaches the
+                    // tracker, and nothing typed before the switch is kept.
+                    service.forget_typing();
+                    continue;
+                }
                 if let Some(event) = service.key(event.code, event.value) {
                     send(&mut out, &event.encode());
                 }
             }
         }
     }
+}
+
+/// Why an injection was refused.
+const NOT_AT_THE_KEYBOARD: &str = "not injecting: this user does not have the active session";
+
+/// Whether `call` types into the focused window.
+fn injects(call: &Call) -> bool {
+    matches!(
+        call,
+        Call::InjectExpand(_) | Call::InjectUndo(_) | Call::InjectPaste { .. }
+    )
 }
 
 /// Opens `node` with `open` and, if it is a keyboard or a pointer, starts

@@ -262,7 +262,10 @@ fn show_in_file_browser_carries_the_select_flag() {
 }
 
 #[test]
-fn run_in_terminal_passes_every_option_and_returns_the_backends_answer() {
+fn run_in_terminal_runs_nothing_and_answers_false() {
+    // The engine is not sandboxed: a command line it started would run on
+    // the host with the person's permissions. `HostCommand/run` is the
+    // brokered way to run a host program.
     let service = ApplicationService::new(Stub {
         terminal_ok: true,
         ..Stub::default()
@@ -271,51 +274,94 @@ fn run_in_terminal_passes_every_option_and_returns_the_backends_answer() {
         &service,
         "Application/runInTerminal",
         serde_json::json!({"opts": {
-            "cmdline": ["htop", "-d", "5"],
+            "cmdline": ["sh", "-c", "true"],
             "hold": true,
             "appId": "org.gnome.Console.desktop",
-            "title": "Processes",
-            "workingDirectory": "/home/u",
         }}),
-    );
-
-    assert_eq!(answer["result"], serde_json::Value::Bool(true));
-    assert_eq!(
-        did(&service),
-        [Did::RunInTerminal(
-            vec!["htop".to_owned(), "-d".to_owned(), "5".to_owned()],
-            TerminalOptions {
-                hold: true,
-                app_id: Some("org.gnome.Console.desktop".to_owned()),
-                title: Some("Processes".to_owned()),
-                working_directory: Some("/home/u".to_owned()),
-            },
-        )]
-    );
-}
-
-#[test]
-fn run_in_terminal_reports_a_failure_rather_than_swallowing_it() {
-    // `return Result<bool>::ok(ok)` -- a terminal that would not launch is a
-    // `false` result, not a rejected promise.
-    let service = ApplicationService::new(Stub {
-        terminal_ok: false,
-        ..Stub::default()
-    });
-    let answer = reply(
-        &service,
-        "Application/runInTerminal",
-        serde_json::json!({"opts": {"cmdline": ["false"], "hold": false}}),
     );
 
     assert_eq!(answer["result"], serde_json::Value::Bool(false));
     assert!(answer.get("error").is_none(), "{answer}");
+    assert_eq!(did(&service), [], "no terminal was started");
+}
+
+#[test]
+fn open_ignores_the_app_id_for_a_file_the_extension_may_have_written() {
+    let support = tempfile::tempdir().unwrap();
+    let jar = support.path().join("payload.jar");
+    std::fs::write(&jar, b"PK").unwrap();
+    let service = ApplicationService::new(Stub {
+        by_id: Some(app("runner.desktop")),
+        default_opener: Some(app("archive.desktop")),
+        ..Stub::default()
+    })
+    .with_writable([support.path().to_path_buf()]);
+    let target = jar.to_string_lossy().into_owned();
+    let _ = reply(
+        &service,
+        "Application/open",
+        serde_json::json!({"target": target, "appId": "runner.desktop"}),
+    );
+
+    assert!(
+        !did(&service)
+            .iter()
+            .any(|did| matches!(did, Did::Launch(..))),
+        "{:?}",
+        did(&service)
+    );
+}
+
+#[test]
+fn open_shows_an_image_the_extension_wrote_with_the_default_viewer_only() {
+    let support = tempfile::tempdir().unwrap();
+    let image = support.path().join("cover.png");
+    std::fs::write(&image, b"png").unwrap();
+    let service = ApplicationService::new(Stub {
+        by_id: Some(app("runner.desktop")),
+        default_opener: Some(app("eog.desktop")),
+        ..Stub::default()
+    })
+    .with_writable([support.path().to_path_buf()]);
+    let url = url::Url::from_file_path(&image).unwrap().to_string();
+    let _ = reply(
+        &service,
+        "Application/open",
+        serde_json::json!({"target": url, "appId": "runner.desktop"}),
+    );
+
     assert_eq!(
         did(&service),
-        [Did::RunInTerminal(
-            vec!["false".to_owned()],
-            TerminalOptions::default()
-        )]
+        [
+            Did::DefaultOpener(url.clone()),
+            Did::Launch("eog.desktop".to_owned(), url)
+        ]
+    );
+}
+
+#[test]
+fn open_keeps_the_app_id_for_a_file_elsewhere() {
+    let support = tempfile::tempdir().unwrap();
+    let service = ApplicationService::new(Stub {
+        by_id: Some(app("eog.desktop")),
+        ..Stub::default()
+    })
+    .with_writable([support.path().to_path_buf()]);
+    let _ = reply(
+        &service,
+        "Application/open",
+        serde_json::json!({"target": "/usr/share/backgrounds/hills.jpg", "appId": "eog.desktop"}),
+    );
+
+    assert_eq!(
+        did(&service),
+        [
+            Did::ById("eog.desktop".to_owned()),
+            Did::Launch(
+                "eog.desktop".to_owned(),
+                "/usr/share/backgrounds/hills.jpg".to_owned()
+            )
+        ]
     );
 }
 

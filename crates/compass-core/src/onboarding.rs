@@ -285,7 +285,8 @@ impl Recommendation {
 /// first command rendering. The Raycast ones come first, because running
 /// Raycast store extensions on Linux is what Compass adds; none of them runs
 /// AppleScript or needs Homebrew, so they work without the runtime's shim
-/// having to stand in for macOS.
+/// having to stand in for macOS. None talks to a local daemon over a unix
+/// socket either (the system bus, Docker), which the sandbox refuses.
 pub const RECOMMENDED_EXTENSIONS: &[Recommendation] = &[
     Recommendation {
         store: Store::Raycast,
@@ -317,17 +318,17 @@ pub const RECOMMENDED_EXTENSIONS: &[Recommendation] = &[
     },
     Recommendation {
         store: Store::Vicinae,
-        owner: "gelei",
-        name: "bluetooth",
-        title: "Bluetooth",
-        description: "Connect and manage Bluetooth devices.",
-    },
-    Recommendation {
-        store: Store::Vicinae,
         owner: "dagimg-dot",
         name: "wifi-commander",
         title: "Wifi Commander",
         description: "Connect to Wi-Fi networks and manage saved ones.",
+    },
+    Recommendation {
+        store: Store::Vicinae,
+        owner: "costeer",
+        name: "color-converter",
+        title: "Color Converter",
+        description: "Convert colors between hex, RGB and HSL.",
     },
     Recommendation {
         store: Store::Vicinae,

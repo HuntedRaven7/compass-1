@@ -21,6 +21,12 @@
 //! - `stream-socket`: `socket(AF_INET, SOCK_STREAM, 0)`, which must work
 //!   behind the filter: the control that the socket rules are not a ban on
 //!   sockets.
+//! - `unix-connect=<path>`: `socket(AF_UNIX, SOCK_STREAM, 0)` and `connect`
+//!   to `path`. Unfiltered, with something listening there, this succeeds;
+//!   behind the filter the `socket` call answers `EPERM`.
+//! - `unix-socketpair`: `socketpair(AF_UNIX, SOCK_STREAM, 0)`, which must work
+//!   behind the filter: it is how Node makes a child's stdio pipes, and the
+//!   pair it returns can reach nothing but itself.
 //! - `alloc-512m`: reserves 512 MiB, answering `ENOMEM` when the data limit
 //!   refuses it.
 //!
@@ -29,7 +35,7 @@
 //! exactly the ambiguity being avoided.
 
 use nix::sys::ptrace;
-use nix::sys::socket::{AddressFamily, SockFlag, SockType, socket};
+use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket, socketpair};
 use nix::unistd::Pid;
 
 fn main() {
@@ -56,6 +62,25 @@ fn main() {
             None,
         )
         .map(drop),
+        "unix-socketpair" => socketpair(
+            AddressFamily::Unix,
+            SockType::Stream,
+            None,
+            SockFlag::empty(),
+        )
+        .map(drop),
+        unix if unix.starts_with("unix-connect=") => {
+            let path = &unix["unix-connect=".len()..];
+            UnixAddr::new(path).and_then(|address| {
+                let fd = socket(
+                    AddressFamily::Unix,
+                    SockType::Stream,
+                    SockFlag::empty(),
+                    None,
+                )?;
+                connect(std::os::fd::AsRawFd::as_raw_fd(&fd), &address)
+            })
+        }
         // `try_reserve` rather than an allocation, so a refusal is an error
         // to print rather than an abort; the reservation is a private
         // writable mapping, which is what RLIMIT_DATA counts.

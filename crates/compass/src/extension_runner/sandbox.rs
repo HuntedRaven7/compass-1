@@ -140,6 +140,57 @@ pub fn assets_dir(data_dir: &Path, command: &ExtensionCommand) -> PathBuf {
         .join("assets")
 }
 
+/// The variables of the engine's environment a worker is given; everything
+/// else is withheld.
+///
+/// What is left out matters more than what is kept: `DBUS_SESSION_BUS_ADDRESS`,
+/// `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DISPLAY`, `SSH_AUTH_SOCK` and
+/// `COMPASS_SOCKET` each name a socket outside the filesystem boundary, and
+/// `NODE_OPTIONS` would change what Node loads before the bundle does. The
+/// syscall filter already refuses the socket; not handing over the address is
+/// the second layer, and the one that still holds where no filter is applied.
+const WORKER_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+];
+
+/// The part of `vars` a worker is given: [`WORKER_ENV`] and the locale's
+/// `LC_*`.
+#[must_use]
+pub fn worker_env<I>(vars: I) -> Vec<(std::ffi::OsString, std::ffi::OsString)>
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+{
+    vars.into_iter()
+        .filter(|(key, _)| {
+            key.to_str().is_some_and(|key| {
+                WORKER_ENV.contains(&key)
+                    || key.strip_prefix("LC_").is_some_and(|rest| !rest.is_empty())
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +292,30 @@ mod tests {
             [std::fs::canonicalize(run.join("stub-resolv.conf")).expect("canonical")],
             "only the linked-out file, not what /etc already covers"
         );
+    }
+
+    #[test]
+    fn the_worker_is_not_handed_the_session_bus_or_any_other_socket() {
+        let engine = [
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/me"),
+            ("LANG", "en_GB.UTF-8"),
+            ("LC_TIME", "C"),
+            ("LC_", "x"),
+            ("https_proxy", "http://proxy:3128"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("DISPLAY", ":0"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent"),
+            ("COMPASS_SOCKET", "/run/user/1000/compass/ipc.sock"),
+            ("NODE_OPTIONS", "--require /tmp/x.js"),
+        ]
+        .map(|(key, value)| (key.into(), value.into()));
+        let given: Vec<String> = worker_env(engine)
+            .into_iter()
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(given, ["PATH", "HOME", "LANG", "LC_TIME", "https_proxy"]);
     }
 }

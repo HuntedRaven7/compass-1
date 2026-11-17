@@ -53,6 +53,28 @@ one small program, which speaks only JSON-RPC to its parent over stdin and stdou
 itself runs unprivileged. Adding the user to the `input` group instead would hand every program
 they run the keyboard, and still leave `/dev/uinput` closed on most distributions.
 
+A file capability is granted to whoever runs the file, so the helper checks who that is. While it
+holds the capability it reads keys and types only when its real user has the active logind
+session on a seat; it asks logind over the system bus at its fixed address, never through the
+environment, and again at most once a second. Another account (an SSH login, or a user switched
+away from) gets no keys and no injection. Where no logind answers on the system bus (a seatd-only
+system) it says so and serves whoever can run it.
+
+On a machine shared with accounts that should not run the helper at all, restrict the file to a
+group as well. Each package leaves this to the administrator, because it needs the desktop users
+added to the group:
+
+```sh
+groupadd -r compass-input
+usermod -aG compass-input <user>        # each desktop user; takes effect at their next login
+chgrp compass-input <helper>            # before setcap: chown and chgrp clear file capabilities
+chmod 0750 <helper>
+setcap cap_dac_override+ep <helper>
+```
+
+On NixOS the same is `group = "compass-input"; permissions = "u+rx,g+x";` on the wrapper, with
+`users.groups.compass-input = {};` and the users' `extraGroups`.
+
 | Output | How the helper gets its capability |
 |---|---|
 | Arch | `arch/compass.install`: `setcap cap_dac_override+ep /usr/lib/compass/compass-input-server` after install and upgrade |

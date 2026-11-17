@@ -200,9 +200,20 @@ pub const DENIED_SOCKET_TYPES: &[(&str, i32)] = &[
     ("SOCK_PACKET", 10),
 ];
 
-/// The address families a worker may not open a socket in, whatever the type:
+/// The address families a worker may not open a socket in, whatever the type.
+///
 /// `AF_PACKET` is link-layer access, raw in every type it offers.
-pub const DENIED_SOCKET_FAMILIES: &[(&str, i32)] = &[("AF_PACKET", libc::AF_PACKET)];
+///
+/// `AF_UNIX` is the way out of the filesystem boundary that never opens a
+/// file: Landlock V1 does not mediate `connect` to a pathname socket, and the
+/// session bus, the engine's own IPC socket and every other local service
+/// listen on one. Over the session bus a worker can ask systemd or a portal to
+/// start a process that has none of these rules. The worker's own channel to
+/// the host is its stdin and stdout, and Node makes the pipes for a child's
+/// stdio with `socketpair`, which is a different syscall and stays allowed;
+/// only a socket that could be pointed at an address is refused.
+pub const DENIED_SOCKET_FAMILIES: &[(&str, i32)] =
+    &[("AF_PACKET", libc::AF_PACKET), ("AF_UNIX", libc::AF_UNIX)];
 
 /// The low bits of `socket`'s type argument that name the type.
 const SOCKET_TYPE_MASK: u64 = 0xf;
@@ -232,8 +243,7 @@ fn socket_rules() -> Result<Vec<seccompiler::SeccompRule>, Error> {
 }
 
 /// Installs a filter denying `numbers` on the calling thread, for good, and
-/// the raw sockets [`DENIED_SOCKET_TYPES`] and [`DENIED_SOCKET_FAMILIES`]
-/// name.
+/// the sockets [`DENIED_SOCKET_TYPES`] and [`DENIED_SOCKET_FAMILIES`] name.
 ///
 /// Everything unnamed stays allowed — see the module docs.
 ///

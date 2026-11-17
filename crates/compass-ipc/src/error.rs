@@ -53,6 +53,18 @@ pub enum Error {
         reason: String,
     },
 
+    /// A connection came from a process running as another user.
+    ///
+    /// The socket's directory is the owner's alone, so this means its mode
+    /// was loosened by someone else; the connection is closed unanswered.
+    #[error("refusing an ipc connection from uid {peer}: the engine runs as uid {owner}")]
+    ForeignPeer {
+        /// The connecting process's user.
+        peer: u32,
+        /// The user the socket belongs to.
+        owner: u32,
+    },
+
     /// Something is already listening on the socket path.
     #[error("Compass is already running (socket {} is live)", .path.display())]
     AlreadyRunning {

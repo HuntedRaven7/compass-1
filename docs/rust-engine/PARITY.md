@@ -2671,6 +2671,24 @@ the channel that matters.
 Behaviour that intentionally differs from the C++ engine. Each is pinned by a test that fails if
 the behaviour changes, so a future fix is loud rather than silent.
 
+### Extension calls the engine serves outside the sandbox
+
+Upstream Vicinae has no extension sandbox, so these calls give an extension nothing it did not
+already have there. In Compass the worker is confined and the engine is not, so each one is held to
+what the sandbox allows:
+
+- `Application/runInTerminal` starts nothing and answers `false`
+  (`compass_worker_host::application_service::TERMINAL_REFUSED`). A host program goes through
+  `HostCommand/run`, which takes a bare program name the overrides list names and asks first.
+- `Application/open` of a file under the extension's support or assets directory ignores `appId`
+  and opens only a type a viewer shows (image, audio, video, plain text, PDF) with the default
+  opener (`application_service::is_viewer_type`). Links and files elsewhere open as upstream.
+- `Command/launchCommand` finds only the running extension's own commands
+  (`EngineCommands::new`); another extension's command is `No such command`. Raycast asks before a
+  cross-extension launch; Compass may add that dialog later.
+- `Wallpaper/set` on KDE passes the image to Plasma as a JSON string literal of a percent-encoded
+  URI (`compass_core::wallpaper::kde_script`), never as script text.
+
 ### `compass-core::builtin_icon` — GNOME symbolic icons over Vicinae's artwork
 
 Builtin icons with a freedesktop counterpart (`cog` → `emblem-system-symbolic`, `copy-clipboard` →
@@ -3633,6 +3651,7 @@ The negative tests are §8.2's list; each has a positive control beside it.
 |---|---|---|---|
 | 1 | An extension may run a program it wrote itself (Raycast's `speedtest` downloads its CLI into `supportPath` and runs it). | Execute is granted on the system trees (`/usr`, `/bin`, `/lib*`, `/app`), Node and the extension's installed directory, never on the directories it may write: running what it wrote fails with `EACCES`. The Landlock crate's "read" set includes `Execute`, which had made every readable path executable; read no longer implies execute. Suite 1's `speedtest` fails here, by design. | `a_program_the_worker_wrote_itself_cannot_be_run`, `a_command_sees_its_own_paths_and_preferences_and_may_exec_but_not_unshare` |
 | 2 | A raw socket is whatever the kernel allows the process. | `socket()` with `SOCK_RAW` or `SOCK_PACKET`, or in `AF_PACKET`, answers `EPERM` from the seccomp filter, root or not; an ordinary socket is unaffected. | `a_raw_socket_is_refused_while_an_ordinary_one_is_not` |
+| 2a | An extension may connect to any Unix socket the user can (the session bus, the engine's IPC socket, `ssh-agent`, Docker), and inherits the launcher's whole environment. | `socket(AF_UNIX, …)` answers `EPERM` from the seccomp filter; `socketpair`, which Node uses for a child's stdio, still works. The worker's environment is cleared and given back only `PATH`, `HOME`, the user and locale, the `XDG_*_HOME` directories, the CA and proxy variables, `TMPDIR` and `COMPASS_VERSION`/`COMPASS_COMMIT`. An extension that talks to a local daemon over its socket (Docker, `ssh-agent`, a desktop's own bus) fails, by design: through the session bus it could ask systemd or a portal to start a process outside the sandbox. | `a_unix_socket_outside_every_grant_cannot_be_reached`, `the_worker_is_not_handed_the_session_bus_or_any_other_socket` |
 | 3 | No memory limit; the worker asks V8 for 1000 MB of heap. | The heap is capped at 160 MiB (`--max-old-space-size`), and `RLIMIT_DATA` at 512 MiB, which bounds `Buffer`s and native allocations where no cgroup is reachable (a Flatpak): a 512 MiB `Buffer` is a `RangeError` the extension can catch. Measured over Suite 1 the worker's `VmData` peaks at 340 MiB. The heap cap costs one real extension, **kept deliberately**: `dashboard-icons` groups a 1.2 MB catalogue into 4,473 grid items, each with its own action panel. Measured (2026-09-24, caps lifted one at a time): it runs out of heap at 160 MiB and renders at 192 MiB, and at 192 MiB the worker peaks at about 450 MiB resident and 490 MiB `VmData`. That is past the 256 MiB process budget (§6) by more than the heap alone, so raising the heap flag would only move its failure to the cgroup or `RLIMIT_DATA`; admitting it means a different budget, not a different flag. It also needed row 1 of "The extension host API" (a view past a mebibyte). | `an_allocation_past_the_data_limit_fails_and_the_process_carries_on`, `an_extension_that_allocates_past_the_heap_cap_is_stopped` |
 | 4 | Writes anywhere the user may. | Writes only its support and asset directories: `reminders` (Vicinae store) fails making `~/.local/share/vicinae-reminders`. | `an_installed_extension_command_is_found_and_a_no_view_one_runs` |
 | 5 | TLS trusts whatever `NODE_EXTRA_CA_CERTS` names. | The same, because the file it names (and `SSL_CERT_FILE`, `SSL_CERT_DIR`) is granted read; otherwise Node could not load a corporate CA from `$HOME`. | — |
