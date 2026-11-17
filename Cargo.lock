@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "compass"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "compass-a11y-linux"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "compass-clipboard"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-crypto",
  "compass-db",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "compass-core"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "base64 0.22.1",
  "compass-search",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "compass-crypto"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "compass-db"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-core",
  "compass-search",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "compass-extension-api"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "proptest",
  "serde",
@@ -1141,11 +1141,11 @@ dependencies = [
 
 [[package]]
 name = "compass-figura"
-version = "0.28.4"
+version = "0.28.5"
 
 [[package]]
 name = "compass-input-server"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-core",
  "compass-platform-linux",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "compass-ipc"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "criterion",
  "futures-util",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "compass-local-storage"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-db",
  "compass-search",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "compass-media"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "compass-oauth-store"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-db",
  "compass-sqlcipher-sys",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "compass-platform"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "accesskit",
  "compass-core",
@@ -1222,7 +1222,7 @@ dependencies = [
 
 [[package]]
 name = "compass-platform-linux"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "ashpd 0.13.13",
  "compass-core",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "compass-portals"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "ashpd 0.13.13",
  "futures-util",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "compass-power"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "compass-sandbox"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "landlock",
  "libc",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "compass-script"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-extension-api",
  "compass-worker-host",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "compass-search"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "criterion",
  "deunicode",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "compass-shell"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-core",
  "roxmltree",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "compass-sqlcipher-sys"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "cc",
  "libsqlite3-sys",
@@ -1340,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "compass-testkit"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "anyhow",
  "compass-core",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "compass-ui"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "accesskit",
  "compass-core",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "compass-wayland"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-platform",
  "compass-wayland-protocols",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "compass-wayland-foreign"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-wayland",
  "raw-window-handle",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "compass-wayland-protocols"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "bitflags 2.13.2",
  "wayland-backend",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "compass-worker-host"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "compass-core",
  "compass-db",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "compass-xdg"
-version = "0.28.4"
+version = "0.28.5"
 dependencies = [
  "dirs",
  "mime_guess",
