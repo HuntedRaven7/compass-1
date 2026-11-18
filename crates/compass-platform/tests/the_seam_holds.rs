@@ -75,6 +75,13 @@ const LINUX_ONLY_CRATES: &[&str] = &[
     "compass-wayland-foreign",
     "compass-platform-linux",
     "compass-a11y-linux",
+    // The backends MAY_BE_LINUX_BOUND lists for a Linux mechanism of their
+    // own. Without them a shared crate could take on zbus or evdev through
+    // one of these and the sweep would not see the edge.
+    "compass-power",
+    "compass-media",
+    "compass-worker-host",
+    "compass-input-server",
     // The direct ones, in case a shared crate reaches past our wrappers.
     "zbus",
     "ashpd",
@@ -85,6 +92,17 @@ const LINUX_ONLY_CRATES: &[&str] = &[
     "smithay",
     "accesskit_unix",
     "atspi",
+    "evdev",
+];
+
+/// Edges from a shared crate to a Linux-only one that are allowed in
+/// `[dev-dependencies]` only. The same edge in `[dependencies]` is still a
+/// violation.
+const DEV_ONLY_EDGES: &[(&str, &str)] = &[
+    // The shared-seam test renders one fixture through the TypeScript tier's
+    // `view_model::to_view` and through a script, and asserts the same view.
+    // The library itself does not use the worker host.
+    ("compass-script", "compass-worker-host"),
 ];
 
 fn workspace_root() -> PathBuf {
@@ -101,12 +119,22 @@ fn workspace_root() -> PathBuf {
 /// new dependency, and the manifests in this workspace are one dependency per
 /// line. The control below proves the scan sees what it should.
 fn declared_dependencies(manifest: &str) -> BTreeSet<String> {
+    scan_dependencies(manifest, true)
+}
+
+/// Like [`declared_dependencies`], without the `[dev-dependencies]` sections.
+fn declared_runtime_dependencies(manifest: &str) -> BTreeSet<String> {
+    scan_dependencies(manifest, false)
+}
+
+fn scan_dependencies(manifest: &str, include_dev: bool) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut in_deps = false;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_deps = line.contains("dependencies");
+            in_deps = line.contains("dependencies")
+                && (include_dev || !line.contains("dev-dependencies"));
             continue;
         }
         if !in_deps || line.is_empty() || line.starts_with('#') {
@@ -160,12 +188,7 @@ fn no_shared_crate_depends_on_a_linux_only_crate() {
 
     for (name, manifest_path) in shared_crates() {
         let manifest = std::fs::read_to_string(&manifest_path).expect("manifest is readable");
-        let deps = declared_dependencies(&manifest);
-        for linux in LINUX_ONLY_CRATES {
-            if deps.contains(*linux) {
-                violations.push(format!("{name} -> {linux}"));
-            }
-        }
+        violations.extend(linux_edges(&name, &manifest));
     }
 
     assert!(
@@ -179,6 +202,18 @@ fn no_shared_crate_depends_on_a_linux_only_crate() {
          say why.",
         violations.join("\n  ")
     );
+}
+
+/// The edges from `name` to a Linux-only crate that the rule forbids.
+fn linux_edges(name: &str, manifest: &str) -> Vec<String> {
+    let deps = declared_dependencies(manifest);
+    let runtime = declared_runtime_dependencies(manifest);
+    LINUX_ONLY_CRATES
+        .iter()
+        .filter(|linux| deps.contains(**linux))
+        .filter(|linux| runtime.contains(**linux) || !DEV_ONLY_EDGES.contains(&(name, **linux)))
+        .map(|linux| format!("{name} -> {linux}"))
+        .collect()
 }
 
 /// compass-platform is the seam, so it gets its own assertion rather than
@@ -272,4 +307,53 @@ fn control_the_sweep_actually_covers_the_shared_crates() {
             "{expected} is not in the swept set {names:?}, so the rule is not being applied to it"
         );
     }
+}
+
+/// The backends that are Linux-bound for a mechanism of their own count as
+/// Linux-only too, so a shared crate cannot reach zbus or evdev through them.
+#[test]
+fn control_an_edge_to_a_linux_bound_backend_is_detected() {
+    for backend in [
+        "compass-power",
+        "compass-media",
+        "compass-worker-host",
+        "compass-input-server",
+    ] {
+        let offending = format!(
+            "[package]\nname = \"compass-core\"\n\n[dependencies]\n{backend}.workspace = true\n"
+        );
+        assert_eq!(
+            linux_edges("compass-core", &offending),
+            vec![format!("compass-core -> {backend}")],
+            "the check would not have noticed compass-core depending on {backend}"
+        );
+    }
+}
+
+#[test]
+fn control_a_dev_only_edge_is_allowed_only_as_a_dev_dependency() {
+    let as_dev = "\
+[package]
+name = \"compass-script\"
+
+[dev-dependencies]
+compass-worker-host.workspace = true
+";
+    assert!(
+        linux_edges("compass-script", as_dev).is_empty(),
+        "the allowed dev-only edge was reported"
+    );
+
+    let as_runtime = "\
+[package]
+name = \"compass-script\"
+
+[dependencies]
+compass-worker-host.workspace = true
+";
+    assert_eq!(
+        linux_edges("compass-script", as_runtime),
+        vec!["compass-script -> compass-worker-host".to_owned()],
+        "the dev-only allowance also let the edge through as a runtime dependency"
+    );
 }
