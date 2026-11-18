@@ -97,8 +97,8 @@ mime_guess = "2"
 # add a wasm backend and nothing else we use. Only compass-sqlcipher-sys names
 # this; callers use its re-export so the tokenizer registration cannot be
 # skipped by opening a connection some other way.
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled-sqlcipher", "cache"] }
-libsqlite3-sys = { version = "0.38.2", default-features = false }
+rusqlite = { version = "0.43.0", default-features = false, features = ["bundled-sqlcipher", "cache"] }
+libsqlite3-sys = { version = "0.40.0", default-features = false }
 
 # Clipboard-at-rest crypto. See crates/compass-crypto/src/lib.rs for why these
 # and not the `openssl` crate.
