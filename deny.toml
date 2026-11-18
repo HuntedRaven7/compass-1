@@ -80,3 +80,11 @@ allow = [
   "Zlib",
 ]
 confidence-threshold = 0.8
+# sqlcipher-src carries the SQLCipher amalgamation that libsqlite3-sys
+# 0.40 builds for bundled-sqlcipher. Until 0.39 that C was inside
+# libsqlite3-sys and its licence was not declared on its own. SQLite is
+# public domain under its blessing, and the bundled libtomcrypt is WTFPL.
+# Both are GPL-3.0 compatible. Scoped to this one crate, not to the graph.
+exceptions = [
+  { crate = "sqlcipher-src", allow = ["blessing", "WTFPL"] },
+]
