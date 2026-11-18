@@ -180,8 +180,10 @@ the system file, so a later change to the system file still reaches existing use
 and skipped. Compass reads it at start, so a change takes effect when the engine restarts.
 
 Bluefin binds Super+Space with a GNOME custom keyboard shortcut that runs `compass toggle`,
-because the GlobalShortcuts portal asks the user to approve a binding the first time. The image
-then turns off the engine's own request with:
+because the GlobalShortcuts portal asks the user to approve a binding the first time. That command
+starts Compass on demand when nothing is running (ADR-0023), so the image does not need to enable
+`compass.service` or a login-start entry for the shortcut to work. The image then turns off the
+engine's own request with:
 
 ```json
 {"launcher": {"hotkey": ""}}

@@ -79,4 +79,5 @@ not do that: it is PLAN.md §8's to revise once there is something to measure.
 **What this does not settle.** Whether the resident window is started by autostart, by `serve`
 spawning it when a display exists, or by the user, is deliberately open. The protocol above works
 for all three, and picking one before the shortcut path works would be guessing at a problem that
-is not yet in front of us.
+is not yet in front of us. [ADR-0023](./0023-the-launcher-starts-on-demand.md) later settled it:
+the summoning commands start the session on demand, which needs neither a service nor autostart.
