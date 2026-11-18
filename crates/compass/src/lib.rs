@@ -11,6 +11,7 @@
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 
+pub mod activation;
 pub mod appearance;
 pub mod catalog_watch;
 pub mod cli;
@@ -171,10 +172,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         // a backtrace naming winit's source file for the entirely ordinary
         // situation of running the launcher from a TTY or over ssh. `doctor`
         // already diagnoses this properly, so point at it.
-        if std::env::var_os("WAYLAND_DISPLAY").is_none()
-            && std::env::var_os("WAYLAND_SOCKET").is_none()
-            && std::env::var_os("DISPLAY").is_none()
-        {
+        if !activation::has_display() {
             bail!(
                 "no graphical session: neither WAYLAND_DISPLAY nor DISPLAY is set, so there is \
                  nothing to open a window on. Run `compass doctor` for the full picture"
@@ -569,6 +567,7 @@ fn launcher_surface() -> compass_wayland::SurfaceKind {
 
 async fn dispatch(cli: Cli) -> Result<ExitCode> {
     let socket = cli.socket_path();
+    let verbose = cli.verbose;
 
     match cli.command {
         Command::Doctor { check_only, json } => {
@@ -612,6 +611,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             provider,
         } => {
             require_servable_engine(cli.engine)?;
+            activation::ensure_engine(&socket, verbose).await?;
             let mut hits = ipc::query(&socket, &text.join(" ")).await?;
             if let Some(provider) = provider {
                 let prefix = format!("{provider}:");
@@ -821,9 +821,9 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                 other => bail!("unexpected answer from the engine: {other:?}"),
             }
         }
-        Command::Toggle => window_command(&socket, cli.engine, Request::Toggle).await,
-        Command::Show => window_command(&socket, cli.engine, Request::Show).await,
-        Command::Hide => window_command(&socket, cli.engine, Request::Hide).await,
+        Command::Toggle => window_command(&socket, cli.engine, verbose, Request::Toggle).await,
+        Command::Show => window_command(&socket, cli.engine, verbose, Request::Show).await,
+        Command::Hide => window_command(&socket, cli.engine, verbose, Request::Hide).await,
     }
 }
 
@@ -961,9 +961,19 @@ async fn handle_theme(cmd: crate::cli::ThemeCommand) -> Result<ExitCode> {
 async fn window_command(
     socket: &compass_ipc::SocketPath,
     engine: Engine,
+    verbose: u8,
     request: Request,
 ) -> Result<ExitCode> {
     require_servable_engine(engine)?;
+    // A cold `toggle`/`show` is often the first thing asked of a machine after
+    // login. With no engine there is no window and no hotkey either, so bring
+    // up the whole session; the window `start` opens is already visible, so
+    // there is nothing left to send. An engine that answers keeps the ordinary
+    // request path, including its honest "no window connected" refusal.
+    if matches!(request, Request::Toggle | Request::Show) && !session::listening(socket).await? {
+        activation::ensure_window(socket, verbose).await?;
+        return Ok(ExitCode::from(EXIT_OK));
+    }
     send_window_command(socket, request, WINDOW_COMMAND_TIMEOUT).await?;
     Ok(ExitCode::from(EXIT_OK))
 }

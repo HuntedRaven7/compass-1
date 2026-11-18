@@ -161,9 +161,14 @@ pub enum Command {
     },
 
     /// Toggle the launcher window between shown and hidden.
+    ///
+    /// Starts the launcher if it is not running, so this works as the first
+    /// command after login without a service or a login-start entry.
     Toggle,
 
     /// Show the launcher window.
+    ///
+    /// Starts the launcher if it is not running.
     #[command(alias = "open")]
     Show,
 
@@ -193,7 +198,10 @@ pub enum Command {
     /// Ask a running engine to shut down.
     Shutdown,
 
-    /// Search the running engine's index and print the ranked hits.
+    /// Search the engine's index and print the ranked hits.
+    ///
+    /// Starts the engine if it is not running. With a graphical session it
+    /// also brings up a hidden launcher, ready for the next hotkey press.
     Query {
         /// Search text. Joined with spaces if given as several words, so
         /// `compass query text editor` and `compass query "text editor"` agree.

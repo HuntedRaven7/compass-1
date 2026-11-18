@@ -109,6 +109,12 @@ async fn window_commands_send_the_matching_request() {
             stderr(&output)
         );
 
+        // A summon first asks whether an engine is listening; that readiness
+        // probe is a Ping, and only `toggle`/`show` make it (`hide` never
+        // cold-starts). The request under test comes after it.
+        if matches!(expected, Request::Toggle | Request::Show) {
+            assert_eq!(requests.recv().await, Some(Request::Ping));
+        }
         let received = requests.recv().await.expect("a request should arrive");
         assert_eq!(received, expected, "for `compass {argument}`");
     }
@@ -143,6 +149,7 @@ async fn only_the_requested_command_is_sent() {
 
     let output = run_cli(dir.path(), &socket, &["toggle"]).await;
     assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(requests.recv().await, Some(Request::Ping));
     assert_eq!(requests.recv().await, Some(Request::Toggle));
 
     // The client closed its connection; nothing further was sent.
@@ -201,7 +208,7 @@ async fn vici_develops_links_go_to_the_engine_and_a_malformed_one_says_why() {
 
 #[tokio::test]
 async fn commands_without_a_daemon_explain_themselves() {
-    for argument in ["toggle", "show", "hide", "ping"] {
+    for argument in ["hide", "ping"] {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("absent.sock");
 
@@ -236,9 +243,31 @@ async fn a_stale_socket_file_is_still_reported_as_no_daemon() {
     // the message must still be the actionable one.
     std::fs::write(&socket, b"not a socket").expect("write");
 
-    let output = run_cli(dir.path(), &socket, &["toggle"]).await;
+    let output = run_cli(dir.path(), &socket, &["ping"]).await;
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("no Compass engine is listening"));
+}
+
+#[tokio::test]
+async fn a_cold_window_command_without_a_display_says_why_it_cannot_start() {
+    for argument in ["toggle", "show"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("absent.sock");
+
+        // `run_cli` clears the environment, so there is no WAYLAND_DISPLAY or
+        // DISPLAY for a self-started launcher to open a window on. The summon
+        // must say so rather than reporting a connection refused.
+        let output = run_cli(dir.path(), &socket, &[argument]).await;
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`{argument}` should fail without a display"
+        );
+        let text = stderr(&output);
+        assert!(text.contains("no Compass engine is listening"), "{text}");
+        assert!(text.contains("no graphical session"), "{text}");
+        assert!(text.contains("compass doctor"), "{text}");
+    }
 }
 
 // --------------------------------------------------------------------------
