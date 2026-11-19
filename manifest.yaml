@@ -4,6 +4,6 @@
 # is the workspace's `CARGO_PKG_VERSION`.
 
 release:
-  tag: "v0.28.5"
-  rev: "9b5d435d5798a696e467fc11c30beff8e9f8ebf5"
-  short_rev: "9b5d435d5"
+  tag: "v0.28.6"
+  rev: "5b5787b993f23788fa51a4707a7ee60c624d6728"
+  short_rev: "5b5787b99"
