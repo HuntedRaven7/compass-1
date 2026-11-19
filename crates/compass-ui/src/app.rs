@@ -948,6 +948,8 @@ impl LauncherApp {
         self.shortcuts_inhibited
     }
 
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Initialize => Task::none(),

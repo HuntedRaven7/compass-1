@@ -739,6 +739,8 @@ fn menu_nodes(menu: &Menu, nodes: &mut Vec<(NodeId, Node)>) {
     }
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn form_nodes(form: &Form, nodes: &mut Vec<(NodeId, Node)>) {
     let mut node = Node::new(Role::Form);
     node.set_label(form.label.as_str());

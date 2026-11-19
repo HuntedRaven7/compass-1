@@ -29,6 +29,8 @@ impl LauncherApp {
     /// that is what survives being grepped out of a log interleaved with
     /// wgpu's debug output.
     #[must_use]
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub fn state_line(&self) -> String {
         let mut line = format!(
             "query={:?} results={} selected={}",

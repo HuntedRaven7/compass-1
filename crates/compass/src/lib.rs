@@ -152,6 +152,8 @@ pub fn main() -> ExitCode {
 /// a person has bound to a key. `serve` gets a multi-threaded one, because
 /// ranking a query is CPU work and on a single thread one slow query would
 /// stall every other connection.
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 pub fn run(cli: Cli) -> Result<ExitCode> {
     // As early as a process can see of itself. Everything before this --
     // dynamic linking, which is not free for a binary that links wgpu -- is
@@ -565,6 +567,8 @@ fn launcher_surface() -> compass_wayland::SurfaceKind {
     }
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 async fn dispatch(cli: Cli) -> Result<ExitCode> {
     let socket = cli.socket_path();
     let verbose = cli.verbose;

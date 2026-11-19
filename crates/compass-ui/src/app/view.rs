@@ -148,6 +148,8 @@ impl LauncherApp {
 
     /// The search field as the page on screen has it: its placeholder, its
     /// text, and the message typing sends (none where it is read-only).
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn search_field(&self) -> (&str, &str, Option<OnInput>) {
         match &self.page {
             Page::Root => (
@@ -322,6 +324,8 @@ impl LauncherApp {
     /// roughly 600x30 is about 18,000 changed pixels -- some seven times the
     /// 2,697 the action-panel assertion already detects reliably. A highlight
     /// is *easier* for the tier to see than a caret, not harder.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub fn view(&self) -> Element<'_, Message> {
         let geometry = self.geometry;
         let palette = self.palette();

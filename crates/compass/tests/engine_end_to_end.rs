@@ -1501,6 +1501,8 @@ fn window_requests_without_a_session_bus_are_refused_by_name() {
 
 /// An installed extension with one no-view command that writes `out`, and one
 /// view command.
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn install_extension(root: &std::path::Path) -> std::path::PathBuf {
     let ext = root.join("data-home/compass/extensions/hello");
     std::fs::create_dir_all(&ext).unwrap();
@@ -4070,6 +4072,8 @@ fn script_output_until_finished(daemon: &Daemon, session: u64) -> (String, Optio
 }
 
 #[test]
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn script_commands_are_scanned_searched_and_run_in_their_modes() {
     use compass_ipc::{ErrorKind, Request, Response};
     use std::os::unix::fs::PermissionsExt;
@@ -6792,6 +6796,8 @@ mod fake_tray {
 }
 
 #[test]
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn the_tray_host_lists_activates_and_browses_another_applications_item() {
     use compass_ipc::{Request, Response, TrayMenuEntry};
     use std::io::{BufRead, BufReader};
@@ -7016,6 +7022,8 @@ mod fake_watcher {
 }
 
 #[test]
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn compass_shows_its_own_tray_icon_with_the_cpp_menu_as_the_setting_says() {
     use compass_ipc::{Request, Response, WindowCommand};
     use std::collections::HashMap;

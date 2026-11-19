@@ -225,6 +225,8 @@ impl Theme {
     }
 
     /// The palette as the theme declares it.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     fn declared_palette(self, appearance: Appearance) -> Palette {
         match self {
             Self::User(theme) => theme.palette,

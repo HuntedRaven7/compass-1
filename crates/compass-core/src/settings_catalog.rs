@@ -375,6 +375,8 @@ fn choice(options: &[(&'static str, &'static str)]) -> Kind {
 
 /// Every setting, pages in order and each page in the order it is drawn.
 #[must_use]
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 pub fn catalog() -> Vec<Setting> {
     use CorePage::{Advanced, Appearance, General};
     use serde_json::json;

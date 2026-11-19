@@ -15,6 +15,8 @@ use super::{
 impl LauncherApp {
     /// An extension command's messages: its start, its view, and the
     /// person's input to that view.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn extension_message(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ExtensionCommandStarted { id, title, result } => match result {
@@ -368,6 +370,8 @@ impl LauncherApp {
 
     /// An extension's form: its fields as the person has them, and how to
     /// submit it.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn extension_form<'a>(
         &'a self,
         page: &'a crate::extension_page::ExtensionPage,

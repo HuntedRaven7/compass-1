@@ -457,6 +457,8 @@ impl LauncherApp {
     }
 
     /// The flow's card: the step, then Back, the dots and Continue.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn onboarding_body<'a>(&'a self, page: &'a OnboardingPage) -> Element<'a, Message> {
         let palette = self.palette();
         let step = page.flow.step();

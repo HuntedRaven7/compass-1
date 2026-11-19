@@ -157,6 +157,8 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+# Pedantic, so `all` leaves it off. The threshold is in `clippy.toml` (#379).
+too_many_lines = "deny"
 
 # The clipboard both Iced shells use, patched so that a launcher surface coming
 # and going, or a keyboard doing so, never releases a `wl_data_device` on the

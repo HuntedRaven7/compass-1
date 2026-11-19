@@ -34,6 +34,8 @@ impl Clipboard {
 }
 
 /// The clipboard requests.
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Response {
     match request {
         Request::ClipboardHistory { query, limit } => {

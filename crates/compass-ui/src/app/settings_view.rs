@@ -382,6 +382,8 @@ impl LauncherApp {
     }
 
     /// Handles the view's messages.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn settings_message(&mut self, message: SettingsMessage) -> Task<Message> {
         match message {
             SettingsMessage::QueryChanged(query) => {

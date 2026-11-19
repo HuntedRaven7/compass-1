@@ -102,6 +102,8 @@ struct World {
     config_path: std::path::PathBuf,
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn fixture() -> World {
     use crate::backend as b;
     let dir = tempfile::tempdir().unwrap();

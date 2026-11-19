@@ -94,6 +94,8 @@ impl PanelState {
 
 impl LauncherApp {
     /// Opening, filtering, moving through and running the action panel.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn panel_message(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::TogglePanel => {

@@ -451,6 +451,8 @@ async fn engine_apps(state: &Arc<RwLock<EngineState>>) -> crate::extension_apps:
 ///
 /// Only routing lives here: each domain's requests are answered beside the
 /// services they use, in that domain's module.
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Response {
     match request {
         Request::Ping => Response::Pong {

@@ -327,6 +327,8 @@ fn argument_placeholder(argument: &compass_core::manifest::CommandArgument) -> s
     }
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 async fn run_one(
     socket: &SocketPath,
     command: &ExtensionCommand,

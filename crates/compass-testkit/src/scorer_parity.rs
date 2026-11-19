@@ -211,6 +211,8 @@ fn cpp_ranking(probe: &PathBuf, items: &[(String, String)], query: &str) -> Resu
     Ok(hits)
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let mut probe: Option<PathBuf> = None;
     let args: Vec<String> = std::env::args().collect();

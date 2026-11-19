@@ -12,6 +12,8 @@ use tokio_util::codec::{Decoder, Encoder};
 
 /// Every `Request` variant. Kept exhaustive by the `match` in
 /// [`request_variants_are_exhaustive`].
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn all_requests() -> Vec<Request> {
     vec![
         Request::Ping,
@@ -514,6 +516,8 @@ fn store_entry() -> compass_ipc::StoreEntry {
     }
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 fn all_responses() -> Vec<Response> {
     vec![
         Response::Pong {

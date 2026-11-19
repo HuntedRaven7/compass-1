@@ -14,6 +14,8 @@ use super::{
 
 impl LauncherApp {
     /// A key event from the keyboard subscription.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn keyboard_message(&mut self, message: Message) -> Task<Message> {
         match message {
             // The settings' shortcut recorder takes every key too.

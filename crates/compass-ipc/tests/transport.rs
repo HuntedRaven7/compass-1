@@ -64,6 +64,8 @@ impl Drop for TempDir {
 }
 
 /// The handler used by most tests: a stand-in engine.
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 async fn echo_handler(request: Request) -> Response {
     match request {
         Request::Ping => Response::Pong {

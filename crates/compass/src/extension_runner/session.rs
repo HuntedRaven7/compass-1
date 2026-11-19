@@ -50,6 +50,8 @@ pub(super) struct Served {
     pub(super) launcher: Option<Launcher>,
 }
 
+// Over the 150-line limit when it was added (#379): split it, don't grow it.
+#[allow(clippy::too_many_lines)]
 pub(super) fn serve(
     worker: Worker,
     served: Served,

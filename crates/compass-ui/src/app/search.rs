@@ -16,6 +16,8 @@ use super::{
 impl LauncherApp {
     /// The root search's own messages: the query, the engine's answer, the
     /// selection, launching and the catalog moving under it.
+    // Over the 150-line limit when it was added (#379): split it, don't grow it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn search_message(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::QueryChanged(query) => {
