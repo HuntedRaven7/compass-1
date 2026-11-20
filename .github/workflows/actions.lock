@@ -56,6 +56,9 @@ workflows:
         - 'actions/checkout@v4.4.0'
         - 'actions/download-artifact@v4.3.0'
         - 'tuna-os/.github@main'
+    '.github/workflows/ratchet.yaml':
+        - 'actions/checkout@v4.4.0'
+        - 'tuna-os/.github@8ecf20e5800fd80bde03d572ab1e3bbcb5b2cf17'
     '.github/workflows/release.yml':
         - 'actions/checkout@v4.4.0'
         - 'actions/download-artifact@v4.3.0'
@@ -181,6 +184,11 @@ dependencies:
         commit: 'sha1-83ac0ad63c0167e6f06796fab0fce28db1bf3db0'
         owner_id: 43724913
         repo_id: 442947557
+    'tuna-os/.github@8ecf20e5800fd80bde03d572ab1e3bbcb5b2cf17':
+        ref: 'main'
+        commit: 'sha1-8ecf20e5800fd80bde03d572ab1e3bbcb5b2cf17'
+        owner_id: 223733964
+        repo_id: 1187761922
     'tuna-os/.github@main':
         ref: 'main'
         commit: 'sha1-4078f531ac74703f203bde835ef6c25e9321b97b'

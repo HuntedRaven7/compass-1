@@ -1,0 +1,42 @@
+# Counted metrics that only go down. Checked by .github/workflows/ratchet.yml
+# with tuna-os/.github's count-ratchet action (see its README for the format).
+#
+# A count over budget fails. A count under budget also fails, with the new
+# number to write here, so an improvement stays locked in. Raising a budget
+# needs the `ratchet-raise` label on the pull request.
+#
+# Local count: python3 <tuna-os/.github>/.github/actions/count-ratchet/ratchet.py check
+# Seeded 2026-11-20 from main.
+
+# Non-test Rust under crates/: test directories, *_test.rs files and
+# #[cfg(test)] / #[cfg(all(test, ...))] modules are out of scope.
+[defaults]
+include = ["crates/**/*.rs"]
+exclude = [
+  "**/tests/**", "**/benches/**", "**/examples/**", "**/fuzz/**",
+  "**/*_test.rs", "**/*_tests.rs", "**/tests.rs", "**/test_*.rs",
+]
+exclude-rust-tests = true
+
+[metrics.unwrap]
+description = ".unwrap() in non-test Rust"
+pattern = '\.unwrap\(\)'
+budget = 6
+
+[metrics.expect]
+description = ".expect( in non-test Rust"
+pattern = '\.expect\('
+budget = 70
+
+# scripts/architecture/module-size.py (#330): Rust files over the 1500-line
+# limit that are not in scripts/architecture/allowlist.txt. The script still
+# prints the per-file warnings; this holds their number.
+[metrics.oversized-modules]
+description = "Rust files over 1500 lines and not allowlisted"
+command = "python3 scripts/architecture/module-size.py | sed -nE 's/.* scanned, ([0-9]+) over .*/\\1/p'"
+budget = 4
+
+[metrics.deny-undated]
+description = "deny.toml advisory ignores without a dated reason ('; review by YYYY-MM-DD')"
+command = 'python3 "$RATCHET_ACTION_PATH/checks/deny_review_dates.py" deny.toml'
+budget = 0

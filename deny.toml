@@ -23,28 +23,28 @@ ignore = [
   # ttf-parser: used directly by compass and by Iced's text stack (fontdb,
   # cosmic-text). Goes when Iced moves to skrifa.
   # https://rustsec.org/advisories/RUSTSEC-2026-0192
-  { id = "RUSTSEC-2026-0192", reason = "unmaintained ttf-parser via Iced 0.14's fontdb/cosmic-text; no fix until Iced moves to skrifa" },
+  { id = "RUSTSEC-2026-0192", reason = "unmaintained ttf-parser via Iced 0.14's fontdb/cosmic-text; no fix until Iced moves to skrifa; review by 2027-01-01" },
   # rustybuzz: through usvg 0.45, which resvg 0.45 and iced_tiny_skia 0.14 pin.
   # https://rustsec.org/advisories/RUSTSEC-2026-0206
-  { id = "RUSTSEC-2026-0206", reason = "unmaintained rustybuzz via usvg 0.45, pinned by iced_tiny_skia 0.14" },
+  { id = "RUSTSEC-2026-0206", reason = "unmaintained rustybuzz via usvg 0.45, pinned by iced_tiny_skia 0.14; review by 2027-01-01" },
   # bincode 1 and yaml-rust: through syntect 5.3 (latest), from two-face and
   # iced_highlighter 0.14. They load syntect's bundled syntax dumps.
   # https://rustsec.org/advisories/RUSTSEC-2025-0141
   # https://rustsec.org/advisories/RUSTSEC-2024-0320
-  { id = "RUSTSEC-2025-0141", reason = "unmaintained bincode 1 via syntect 5.3 (latest) from iced_highlighter 0.14" },
-  { id = "RUSTSEC-2024-0320", reason = "unmaintained yaml-rust via syntect 5.3 (latest) from iced_highlighter 0.14" },
+  { id = "RUSTSEC-2025-0141", reason = "unmaintained bincode 1 via syntect 5.3 (latest) from iced_highlighter 0.14; review by 2027-01-01" },
+  { id = "RUSTSEC-2024-0320", reason = "unmaintained yaml-rust via syntect 5.3 (latest) from iced_highlighter 0.14; review by 2027-01-01" },
   # smartstring: through rhai 1.26.1 (latest), for compass-script.
   # https://rustsec.org/advisories/RUSTSEC-2026-0249
-  { id = "RUSTSEC-2026-0249", reason = "unmaintained smartstring via rhai 1.26.1 (latest), compass-script's engine" },
+  { id = "RUSTSEC-2026-0249", reason = "unmaintained smartstring via rhai 1.26.1 (latest), compass-script's engine; review by 2027-01-01" },
   # zvariant, zvariant_derive and zbus_names: folded into zbus 6. zbus 5 is the
   # workspace's D-Bus stack and what ashpd, ksni, mundy, notify-rust, oo7 and
   # system-tray all build on, so these go when that set moves to zbus 6.
   # https://rustsec.org/advisories/RUSTSEC-2026-0370
   # https://rustsec.org/advisories/RUSTSEC-2026-0371
   # https://rustsec.org/advisories/RUSTSEC-2026-0372
-  { id = "RUSTSEC-2026-0370", reason = "unmaintained zvariant 5, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray" },
-  { id = "RUSTSEC-2026-0371", reason = "unmaintained zbus_names 4, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray" },
-  { id = "RUSTSEC-2026-0372", reason = "unmaintained zvariant_derive 5, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray" },
+  { id = "RUSTSEC-2026-0370", reason = "unmaintained zvariant 5, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray; review by 2027-01-01" },
+  { id = "RUSTSEC-2026-0371", reason = "unmaintained zbus_names 4, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray; review by 2027-01-01" },
+  { id = "RUSTSEC-2026-0372", reason = "unmaintained zvariant_derive 5, merged into zbus 6; zbus 5 is pinned by ashpd, ksni, mundy, notify-rust, oo7 and system-tray; review by 2027-01-01" },
 ]
 
 [bans]
