@@ -43,7 +43,7 @@
 
   commonArgs = {
     pname = "compass";
-    version = "0.28.6";
+    version = "0.28.7";
     inherit src cargoVendorDir;
 
     strictDeps = true;
