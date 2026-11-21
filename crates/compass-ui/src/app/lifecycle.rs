@@ -240,6 +240,12 @@ impl LauncherApp {
         self.parked_store = None;
         self.provider_scope = None;
         self.open_with_return = None;
+        // An unanswered question does not wait for the next summon. Left
+        // standing, it swallows what is typed there and takes the first Enter
+        // as its yes: a power command run by someone who meant to launch
+        // something else.
+        self.confirm = None;
+        self.power_confirm = None;
         let dismissed = self.cancel_dmenu();
         let closing = Task::batch([dismissed, self.close_extension_view()]);
         // A summon starts at the root, whatever view was open when it hid.

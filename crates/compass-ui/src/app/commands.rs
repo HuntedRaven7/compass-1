@@ -244,4 +244,55 @@ mod tests {
         );
         assert_eq!(backend.powered.lock().unwrap().as_slice(), ["reboot"]);
     }
+
+    #[test]
+    fn hiding_the_launcher_drops_a_power_question_nobody_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend {
+            keys: vec!["commands:reboot".to_owned()],
+            ..TestBackend::default()
+        });
+        let mut app = extension_app(dir.path(), backend.clone());
+        for message in task_messages(app.update(Message::QueryChanged("reboot".into()))) {
+            let _ = app.update(message);
+        }
+        app.selected = app
+            .results
+            .iter()
+            .position(|row| matches!(row, RootRow::Command(c) if c.entrypoint == "reboot"))
+            .expect("Reboot System is in root search");
+        let _ = app.update(Message::LaunchSelected);
+        assert_eq!(app.power_confirm.map(|power| power.id), Some("reboot"));
+
+        // Hidden by the hotkey or by losing the focus: no Escape was pressed.
+        let _ = app.conceal();
+        assert!(
+            app.power_confirm.is_none(),
+            "the question does not wait for the next summon"
+        );
+
+        // The next summon: Enter is for the search, and reboots nothing.
+        let mut pending = task_messages(app.update(pressed(iced::keyboard::key::Named::Enter)));
+        while let Some(message) = pending.pop() {
+            pending.extend(task_messages(app.update(message)));
+        }
+        assert!(
+            backend.powered.lock().unwrap().is_empty(),
+            "Enter after a hide answers no question from before it"
+        );
+    }
+
+    #[test]
+    fn hiding_the_launcher_drops_any_question_nobody_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = extension_app(dir.path(), Arc::new(TestBackend::default()));
+        app.confirm = Some(crate::app::Confirm {
+            title: "Clear clipboard history?".into(),
+            message: "This cannot be undone.".into(),
+            confirm_text: "Clear".into(),
+            action: ConfirmAction::ClipboardRemoveAll,
+        });
+        let _ = app.conceal();
+        assert!(app.confirm.is_none());
+    }
 }
