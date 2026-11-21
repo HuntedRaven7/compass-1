@@ -169,12 +169,22 @@ pub async fn run_command(argv: &[String]) -> Result<LaunchMethod, LaunchError> {
     if argv.is_empty() {
         return Err(LaunchError::NoExec);
     }
-    info!(?argv, "Running a command on the host");
+    log_host_command(argv);
     if is_flatpak() {
         launch_on_host(argv).await?;
         return Ok(LaunchMethod::FlatpakHost);
     }
     launch_direct(argv).await.map(|()| LaunchMethod::Direct)
+}
+
+/// Says in the log that a host command is starting: the program, and how
+/// many arguments follow it. Never the arguments. One of them can be what a
+/// person typed into a script command's password field, and the log file
+/// always records this level and is what a bug report carries.
+fn log_host_command(argv: &[String]) {
+    let program = argv.first().map_or("", String::as_str);
+    let arguments = argv.len().saturating_sub(1);
+    info!(program, arguments, "Running a command on the host");
 }
 
 /// A command that runs `program` on the host: through `flatpak-spawn --host`
@@ -312,6 +322,51 @@ mod tests {
             DesktopEntry::parse("[Desktop Entry]\nType=Link\nName=Missing\n"),
             Err(compass_xdg::Error::MissingUrl)
         ));
+    }
+
+    /// Every field of every event it sees, as text.
+    #[derive(Clone, Default)]
+    struct Seen(std::sync::Arc<std::sync::Mutex<String>>);
+
+    impl tracing::field::Visit for Seen {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let mut seen = self.0.lock().unwrap();
+            let _ = write!(seen, "{}={value:?} ", field.name());
+        }
+    }
+
+    impl tracing::Subscriber for Seen {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            event.record(&mut self.clone());
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn a_host_command_is_logged_without_its_arguments() {
+        // A terminal running a script command whose last argument is a
+        // password the person typed.
+        let argv = ["kgx", "-e", "/home/u/scripts/vpn.sh", "hunter2"].map(str::to_owned);
+        let seen = Seen::default();
+        tracing::subscriber::with_default(seen.clone(), || log_host_command(&argv));
+        let seen = seen.0.lock().unwrap();
+        assert!(seen.contains("kgx"), "the program is named: {seen}");
+        assert!(
+            seen.contains("arguments=3"),
+            "the arguments are counted: {seen}"
+        );
+        assert!(!seen.contains("hunter2"), "no argument is written: {seen}");
+        assert!(!seen.contains("vpn.sh"), "no argument is written: {seen}");
     }
 
     #[test]
