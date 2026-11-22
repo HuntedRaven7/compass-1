@@ -14,12 +14,12 @@
 }: let
   apiDeps = fetchNpmDeps {
     src = "${src}/src/typescript/api";
-    hash = "sha256-4FEaBDJK9abcgz+vptuL4wQ8zhp+wpLbbR4Y79BVhEg=";
+    hash = "sha256-G6r9YyAINw+KUSGa5IpWLr5MKGn7aeGjHmwt8aZtKUE=";
   };
 
   extensionManagerDeps = fetchNpmDeps {
     src = "${src}/src/typescript/extension-manager";
-    hash = "sha256-pEgqFgvdz7Bcc+LznCI+KlD1XEfUuWFWjS24MJ7sx3k=";
+    hash = "sha256-T1CLK3f+mIzSVWnSnLNd82tt0ch9xSr3dp63aG+GUhg=";
   };
 in
   stdenv.mkDerivation {
