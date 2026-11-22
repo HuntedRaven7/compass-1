@@ -182,6 +182,12 @@ jobs:
       - name: The launcher harness stops what hangs and fails for the right reason
         run: python3 scripts/vmtest/launcher-selftest.py
 
+      # #332: the receipt adapter's negative controls. Fixture-only, skipped,
+      # diagnostic-only, CLI-as-portal and mismatched-identity evidence must
+      # all be refused through the same path a passed capability uses.
+      - name: A receipt cannot claim a capability it did not prove
+        run: python3 scripts/vmtest/receipt-selftest.py
+
       # The same, for Tier 2's readiness waits: the real spike against stub
       # compositor, client and bus.
       - name: The headless spike bounds its probes and notices a dead compositor
