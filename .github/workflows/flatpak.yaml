@@ -68,7 +68,7 @@ jobs:
 
       - name: Regenerate and compare
         run: |
-          python3 -m pip install --quiet aiohttp tomlkit PyYAML
+          python3 -m pip install --quiet aiohttp==3.14.5 tomlkit==0.15.2 PyYAML==6.0.3
           ./scripts/flatpak/gen-cargo-sources.sh /tmp/fresh.json
           if ! diff -u packaging/flatpak/cargo-sources.json /tmp/fresh.json; then
             echo "::error::packaging/flatpak/cargo-sources.json is stale. Run scripts/flatpak/gen-cargo-sources.sh and commit the result."
