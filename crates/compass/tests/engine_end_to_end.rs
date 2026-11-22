@@ -3157,6 +3157,60 @@ fn an_extensions_deeplink_goes_to_the_window_and_a_malformed_one_is_refused() {
     );
 }
 
+#[test]
+fn a_link_command_grant_is_remembered_listed_and_revoked() {
+    use compass_ipc::{Request, Response};
+    let daemon = Daemon::start(&[]);
+    let id = "@author/ext:cmd".to_owned();
+    let ask = |remember| {
+        daemon.request(Request::LinkCommandGrant {
+            id: id.clone(),
+            remember,
+        })
+    };
+    let Response::LinkCommandGrant { allowed } = ask(false) else {
+        panic!("the grant check was not answered");
+    };
+    assert!(!allowed, "a link command starts ungranted");
+
+    let Response::LinkCommandGrant { allowed } = ask(true) else {
+        panic!("remembering the grant was not answered");
+    };
+    assert!(allowed);
+    let Response::LinkCommandGrant { allowed } = ask(false) else {
+        panic!("the remembered grant was not read back");
+    };
+    assert!(allowed);
+
+    let Response::ScriptGrants { grants } = daemon.request(Request::ListScriptGrants) else {
+        panic!("script permissions were not listed");
+    };
+    let link = grants
+        .iter()
+        .find(|grant| grant.id == compass::host_commands::LINK_GRANTS_ID)
+        .expect("the link grant is listed in Script Permissions");
+    assert!(
+        link.capabilities
+            .iter()
+            .any(|capability| capability == "link.run:@author/ext:cmd")
+    );
+
+    let Response::ScriptGrants { grants } = daemon.request(Request::RevokeScriptGrant {
+        id: compass::host_commands::LINK_GRANTS_ID.to_owned(),
+    }) else {
+        panic!("revoking the link grants was not answered");
+    };
+    assert!(
+        !grants
+            .iter()
+            .any(|grant| grant.id == compass::host_commands::LINK_GRANTS_ID)
+    );
+    let Response::LinkCommandGrant { allowed } = ask(false) else {
+        panic!("the revoked grant was not read back");
+    };
+    assert!(!allowed);
+}
+
 /// A file manager that records what it was asked to show.
 struct FakeFileManager {
     shown: std::sync::Arc<std::sync::Mutex<Vec<String>>>,

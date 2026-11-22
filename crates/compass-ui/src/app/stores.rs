@@ -103,7 +103,7 @@ impl LauncherApp {
     /// when it is installed, and opens its store page when it is not.
     pub(super) fn open_deeplink(&mut self, url: &str) -> Task<Message> {
         if let Some(link) = compass_core::root_items::parse_launch_link(url) {
-            return self.open_launch_link(link);
+            return self.open_link_launch_link(link);
         }
         if let Some(tab) = compass_core::settings_catalog::parse_settings_link(url) {
             return self.open_settings(tab.as_deref());
@@ -117,7 +117,7 @@ impl LauncherApp {
                 self.app_index
                     .extension_by_link(&link.owner, &link.name, command)
         {
-            return self.open_launch_link(compass_core::root_items::LaunchLink {
+            return self.open_link_launch_link(compass_core::root_items::LaunchLink {
                 path: format!("{}/{}", installed.provider_id, installed.name),
                 fallback_text: None,
                 toggle: false,

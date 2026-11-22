@@ -28,6 +28,23 @@ const SHORTCUT: &str = "root.shortcut";
 const DISABLE: &str = "root.disable";
 const PREFERENCES: &str = "root.preferences";
 
+/// The name a link's consent dialog shows for a command that runs something.
+/// `None` for an application or a builtin, neither of which needs consent.
+fn link_command_title(index: &compass_core::AppIndex, id: &str) -> Option<String> {
+    if let Some(extension) = index.extension(id) {
+        return Some(format!(
+            "{} — {}",
+            extension.title, extension.extension_title
+        ));
+    }
+    if let Some(script) = index.script_by_entrypoint(id) {
+        return Some(format!("{} — {}", script.title, script.subtitle));
+    }
+    index
+        .rhai_script_by_entrypoint(id)
+        .map(|script| format!("{} — Rhai script", script.title))
+}
+
 /// The heading over the favourites.
 pub(super) const FAVORITES_HEADING: &str = "Favorites";
 
@@ -633,6 +650,55 @@ impl LauncherApp {
         }
     }
 
+    /// Runs a command a link was allowed to run, by entrypoint id.
+    pub(super) fn run_link_command(&self, command: crate::message::LinkCommand) -> Task<Message> {
+        let Some(backend) = self.backend.clone() else {
+            return Task::none();
+        };
+        Task::perform(
+            async move { backend.launch_command(command.id, command.query).await },
+            Message::BuiltinCommandDone,
+        )
+    }
+
+    /// The launch link's origin is a deeplink from another program. A command
+    /// that runs something — an installed extension command or a script —
+    /// asks first; a provider's search view is only a view and opens as before.
+    pub(super) fn open_link_launch_link(
+        &mut self,
+        link: compass_core::root_items::LaunchLink,
+    ) -> Task<Message> {
+        use compass_core::root_items::LaunchTarget;
+        let index = &self.app_index;
+        match link.target(|id| index.has_provider(id)) {
+            Ok(LaunchTarget::Provider(id)) => self.open_provider_search(&id, link.fallback_text),
+            Ok(LaunchTarget::Entrypoint(id)) => {
+                let Some(title) = link_command_title(index, &id) else {
+                    // A link to an application or a builtin is not a command
+                    // from an extension or a script: no consent is needed.
+                    return self.open_launch_link(link);
+                };
+                let command = crate::message::LinkCommand {
+                    id,
+                    title,
+                    query: link.fallback_text,
+                };
+                let Some(backend) = self.backend.clone() else {
+                    return Task::none();
+                };
+                let check_id = command.id.clone();
+                Task::perform(
+                    async move { backend.link_command_grant(check_id, false).await },
+                    move |result| Message::LinkGrantChecked(command.clone(), result),
+                )
+            }
+            Err(reason) => {
+                self.error = Some(reason);
+                Task::none()
+            }
+        }
+    }
+
     /// Opens the provider search view (`ProviderSearchViewHost`): root search
     /// over the items of `id` alone, every one of them for the empty query,
     /// titled `Search <provider>`, with `text` typed in. Leaving it closes
@@ -894,11 +960,27 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_deeplink_to_an_item_launches_it_with_its_text() {
+    fn a_launch_deeplink_to_an_extension_command_asks_before_running_it() {
         let dir = tempfile::tempdir().unwrap();
         let backend = Arc::new(TestBackend::default());
         let mut app = extension_app(dir.path(), backend.clone());
         let task = app.open_deeplink("vicinae://launch/@someone/hello/write?fallbackText=hi+there");
+        settle(&mut app, task);
+
+        // Nothing runs on the strength of a link alone, and the dialog names
+        // the command and the extension it belongs to.
+        assert!(backend.launched.lock().unwrap().is_empty());
+        let confirm = app.link_confirm.as_ref().expect("a consent dialog");
+        assert_eq!(confirm.id, "@someone/hello:write");
+        assert!(confirm.title.contains("Write"), "{}", confirm.title);
+        assert_eq!(confirm.query.as_deref(), Some("hi there"));
+        {
+            let mut ui = iced_test::simulator(app.view());
+            assert!(ui.find(crate::app::link_keys()).is_ok());
+        }
+
+        // Allow Once runs it, with the link's fallback text as its query.
+        let task = app.update(pressed(iced::keyboard::key::Named::Enter));
         settle(&mut app, task);
         assert_eq!(
             backend.launched.lock().unwrap().as_slice(),
@@ -907,7 +989,52 @@ mod tests {
                 Some("hi there".to_owned())
             )]
         );
+        assert!(backend.link_grants.lock().unwrap().is_empty());
         assert_eq!(app.provider_scope, None);
+    }
+
+    #[test]
+    fn a_link_command_can_be_denied_or_always_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let mut app = extension_app(dir.path(), backend.clone());
+
+        let task = app.open_deeplink("vicinae://launch/@someone/hello/write");
+        settle(&mut app, task);
+        let task = app.update(pressed(iced::keyboard::key::Named::Escape));
+        settle(&mut app, task);
+        assert!(app.link_confirm.is_none());
+        assert!(
+            backend.launched.lock().unwrap().is_empty(),
+            "Deny runs nothing"
+        );
+
+        let task = app.open_deeplink("vicinae://launch/@someone/hello/write");
+        settle(&mut app, task);
+        let ctrl_enter = Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::CTRL,
+            text: None,
+            repeat: false,
+        });
+        let task = app.update(ctrl_enter);
+        settle(&mut app, task);
+        assert_eq!(
+            backend.link_grants.lock().unwrap().as_slice(),
+            ["@someone/hello:write"]
+        );
+        assert_eq!(backend.launched.lock().unwrap().len(), 1);
+
+        // The remembered grant answers the next link without a dialog.
+        let task = app.open_deeplink("vicinae://launch/@someone/hello/write");
+        settle(&mut app, task);
+        assert!(app.link_confirm.is_none());
+        assert_eq!(backend.launched.lock().unwrap().len(), 2);
     }
 
     #[test]

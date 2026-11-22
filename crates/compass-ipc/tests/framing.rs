@@ -247,6 +247,10 @@ fn all_requests() -> Vec<Request> {
         Request::RevokeScriptGrant {
             id: "script.quick-notes".into(),
         },
+        Request::LinkCommandGrant {
+            id: "@author/ext:cmd".into(),
+            remember: true,
+        },
         Request::CatalogGeneration,
         Request::ListDefaultApps {
             kind: compass_ipc::DefaultAppKind::Browser,
@@ -1036,6 +1040,7 @@ fn all_responses() -> Vec<Response> {
                 descriptions: vec!["copy to the clipboard".into()],
             }],
         },
+        Response::LinkCommandGrant { allowed: true },
         Response::ClipboardDetail {
             detail: compass_ipc::ClipboardDetail {
                 id: "c0ffee".into(),
@@ -1194,6 +1199,7 @@ fn request_variants_are_exhaustive() {
             | Request::OpenDeeplink { .. }
             | Request::ListScriptGrants
             | Request::RevokeScriptGrant { .. }
+            | Request::LinkCommandGrant { .. }
             | Request::CatalogGeneration
             | Request::ListDefaultApps { .. }
             | Request::SetDefaultApp { .. }
@@ -1287,6 +1293,7 @@ fn response_variants_are_exhaustive() {
             | Response::StoreInstalled { .. }
             | Response::MediaPlayers { .. }
             | Response::ScriptGrants { .. }
+            | Response::LinkCommandGrant { .. }
             | Response::CatalogGeneration { .. }
             | Response::DefaultApps { .. }
             | Response::ClipboardDetail { .. }

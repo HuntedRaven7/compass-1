@@ -48,6 +48,7 @@ mod extensions;
 mod files;
 mod integration;
 mod launch;
+mod links;
 mod media;
 mod openers;
 mod power;
@@ -521,6 +522,7 @@ pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Respo
         request @ (Request::ListScriptGrants
         | Request::RevokeScriptGrant { .. }
         | Request::ListRhaiScripts) => rhai::handle(state, request).await,
+        Request::LinkCommandGrant { .. } => links::handle(request).await,
         request @ (Request::RunExtensionCommand { .. }
         | Request::ExtensionView { .. }
         | Request::ExtensionEvent { .. }

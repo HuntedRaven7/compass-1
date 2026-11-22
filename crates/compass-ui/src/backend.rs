@@ -115,6 +115,13 @@ pub trait ApplicationBackend: std::fmt::Debug + Send + Sync {
         Box::pin(async { Err(NEEDS_ENGINE.to_owned()) })
     }
 
+    /// Whether a command may run from a link without asking. With `remember`,
+    /// records "Always Allow" for that command id.
+    fn link_command_grant(&self, id: String, remember: bool) -> BackendFuture<'_, bool> {
+        let _ = (id, remember);
+        Box::pin(async { Err(NEEDS_ENGINE.to_owned()) })
+    }
+
     /// How many times the engine has rescanned its catalog because an
     /// application or extension directory changed. A window whose last
     /// answer differs scans its own copy again.
