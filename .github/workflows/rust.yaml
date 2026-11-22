@@ -128,6 +128,24 @@ jobs:
         env:
           COMPASS_REQUIRE_DBUS: "1"
 
+      # Coverage is evidence, not a gate: the report goes up as an artifact so
+      # a coverage-gap finding can cite a reproducible run at this revision.
+      # No threshold and no third-party service or token. cargo-llvm-cov sets
+      # up llvm-tools-preview itself if the runner lacks it.
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2.87.22
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage (lcov)
+        run: cargo llvm-cov nextest --workspace --all-targets --lcov --output-path lcov.info
+        env:
+          COMPASS_REQUIRE_DBUS: "1"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: error
+
       # --all-targets skips doctests, so run them separately.
       # The §8.5 SLAs are release properties, and `cargo test` above is a debug
       # build. Without this step the fuzzy-search budget would take its debug
