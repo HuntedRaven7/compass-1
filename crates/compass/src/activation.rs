@@ -55,11 +55,13 @@ impl Spawn {
 }
 
 /// Whether this process has a graphical session to open a window on.
+///
+/// The rule lives with [`Env`](crate::doctor::Env) so that the doctor and the
+/// cold-start path cannot disagree about the same environment — in particular
+/// about an empty value, which means "unset" everywhere in the desktop stack.
 #[must_use]
 pub fn has_display() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var_os("WAYLAND_SOCKET").is_some()
-        || std::env::var_os("DISPLAY").is_some()
+    crate::doctor::has_display_in(&crate::doctor::Env::from_process())
 }
 
 /// Builds the detached process a cold command starts.

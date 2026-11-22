@@ -641,7 +641,7 @@ async fn connect_wayland(presses: mpsc::UnboundedSender<String>) -> Option<Wayla
     use compass_wayland::compositor::{current_desktop, desktop_is_gnome};
     use compass_wayland::hotkey::{HotkeyClient, HotkeyError, HotkeyEvent};
 
-    if std::env::var_os("WAYLAND_DISPLAY").is_none()
+    if !crate::doctor::has_wayland_in(&crate::doctor::Env::from_process())
         || desktop_is_gnome(current_desktop().as_deref())
     {
         return None;
