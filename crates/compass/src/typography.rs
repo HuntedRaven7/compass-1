@@ -26,8 +26,12 @@ const FIRST_READ_BUDGET: Duration = Duration::from_millis(250);
 /// `gsettings` is not available or the key is unset. The output of
 /// `gsettings get` is a quoted string like `'Cantarell 11'`.
 fn gsettings_font() -> Option<String> {
+    gsettings_string("org.gnome.desktop.interface", "font-name")
+}
+
+fn gsettings_string(schema: &str, key: &str) -> Option<String> {
     let output = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "font-name"])
+        .args(["get", schema, key])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -40,6 +44,20 @@ fn gsettings_font() -> Option<String> {
     } else {
         Some(trimmed.to_owned())
     }
+}
+
+/// The desktop's interface font size in points, when a size was reported.
+/// The family is followed live; the size is read once at startup.
+#[must_use]
+pub(crate) fn interface_font_size() -> Option<f32> {
+    gsettings_font()
+        .and_then(|description| compass_ui::typography::FontDescription::parse(&description).size)
+}
+
+/// The GNOME accent colour name (`blue`, `green`, …), when one is set.
+#[must_use]
+pub(crate) fn interface_accent() -> Option<String> {
+    gsettings_string("org.gnome.desktop.interface", "accent-color")
 }
 
 /// The family extracted from a Pango description, if non-empty.

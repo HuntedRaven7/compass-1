@@ -513,6 +513,10 @@ pub struct LauncherApp {
     /// Held rather than read from [`design::GEOMETRY`] at each draw: a preset
     /// varies it, and `view` must not have to know which one is in force.
     geometry: design::Geometry,
+    /// Desktop accent colour and interface font size (#396). The scale is
+    /// relative to GNOME's 11 pt default, so an unset size keeps today's sizes.
+    accent: crate::accent::AccentColor,
+    font_scale: f32,
     /// Whether a rule separates the field from the results. See
     /// [`crate::preset::Preset::field_rule`].
     field_rule: bool,
@@ -820,6 +824,8 @@ impl LauncherApp {
             symbolic_icons: std::collections::HashMap::new(),
             file_glyphs: crate::icons::FileGlyphCache::default(),
             geometry: design::GEOMETRY,
+            accent: crate::accent::AccentColor::default(),
+            font_scale: 1.0,
             field_rule: false,
             tint: false,
             subtitles: true,

@@ -36,6 +36,10 @@ pub struct AppFlags {
     pub root_config: compass_core::root_items::RootConfig,
     /// The extension deny policy (#401), applied to this window's own index.
     pub deny: compass_core::extension_deny::ExtensionDeny,
+    /// The desktop's accent colour (#396); blue when none was reported.
+    pub accent: crate::accent::AccentColor,
+    /// The desktop's interface font size in points, when one was reported (#396).
+    pub font_size: Option<f32>,
     /// The navigation chord scheme, from `launcher.keybinding`.
     pub keybinding: compass_core::keybinding::Scheme,
     /// Whether the selection wraps, from `launcher.wrap_navigation`.
@@ -225,6 +229,8 @@ impl Default for AppFlags {
             windows: None,
             root_config: compass_core::root_items::RootConfig::default(),
             deny: compass_core::extension_deny::ExtensionDeny::default(),
+            accent: crate::accent::AccentColor::default(),
+            font_size: None,
             link: None,
             exit_on_engine_disconnect: false,
             start_hidden: false,
@@ -257,6 +263,13 @@ impl LauncherApp {
         app.windows = flags.windows;
         app.app_index.apply_root_config(&flags.root_config);
         app.app_index.set_deny(flags.deny);
+        app.accent = flags.accent;
+        // 11 pt is GNOME's default and the size these geometry values were
+        // designed against; clamp so an extreme setting cannot break layout.
+        app.font_scale = flags
+            .font_size
+            .map(|points| (points / 11.0).clamp(0.75, 1.5))
+            .unwrap_or(1.0);
         app.root_config = flags.root_config;
         app.search_history = flags
             .search_history_path

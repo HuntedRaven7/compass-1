@@ -371,9 +371,20 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         // 250 ms budget as above so a wedged portal never blocks startup.
         // A family set in `font.normal.family` ("Set as Compass font") wins
         // over the desktop's, which is then not followed.
+        let has_configured_font = configured_font.is_some();
         let (font_family, typography_link) = match configured_font {
             Some(family) => (Some(family), None),
             None => typography::follow(),
+        };
+        // #396: follow the desktop's accent and interface font size too. A
+        // configured Compass font wins over the desktop's, including its size.
+        let accent = typography::interface_accent()
+            .map(|name| compass_ui::accent::AccentColor::from_name(&name))
+            .unwrap_or_default();
+        let font_size = if has_configured_font {
+            None
+        } else {
+            typography::interface_font_size()
         };
 
         // One adapter serves both: application search and clipboard history
@@ -441,6 +452,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             appearance,
             appearance_link,
             font_family,
+            font_size,
+            accent,
             typography_link,
             theme_dirs: compass_core::theme_file::default_search_dirs(),
             view_state_path: compass_ui::view_memory::default_path(),

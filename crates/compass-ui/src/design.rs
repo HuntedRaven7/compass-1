@@ -326,6 +326,28 @@ pub struct Geometry {
     pub query_size: u16,
 }
 
+fn scale_size(size: u16, scale: f32) -> u16 {
+    ((f64::from(size) * f64::from(scale)).round() as i64).clamp(1, i64::from(u16::MAX)) as u16
+}
+
+impl Geometry {
+    /// Scales only the text sizes by the desktop interface font's scale,
+    /// leaving the card's geometry alone. An unset scale returns `self`.
+    #[must_use]
+    pub fn scaled_text(self, scale: f32) -> Self {
+        if scale == 1.0 {
+            return self;
+        }
+        Self {
+            title_size: scale_size(self.title_size, scale),
+            subtitle_size: scale_size(self.subtitle_size, scale),
+            heading_size: scale_size(self.heading_size, scale),
+            query_size: scale_size(self.query_size, scale),
+            ..self
+        }
+    }
+}
+
 /// The shipped geometry.
 pub const GEOMETRY: Geometry = Geometry {
     card_width: 720,
