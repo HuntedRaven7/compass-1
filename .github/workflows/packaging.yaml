@@ -79,7 +79,7 @@ jobs:
           persist-credentials: false
       - name: Validate with jsonschema
         run: |
-          python3 -m pip install --quiet jsonschema
+          python3 -m pip install --quiet jsonschema==4.26.0
           python3 scripts/packaging/check-config-schema.py
 
   # The AppImage build lives in appimage.yaml, which the tagged release also
