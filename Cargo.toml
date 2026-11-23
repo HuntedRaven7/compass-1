@@ -89,6 +89,8 @@ unicode-normalization = "0.1"
 # File-indexer tree walking: parallel traversal with real gitignore semantics.
 # See crates/compass-core/src/file_walk.rs for the launcher's policy layered on it.
 ignore = "0.4"
+# Extension deny rules' glob matching (issue #401). Already in the tree through `ignore`.
+globset = "0.4"
 # File-indexer MIME probing by extension, the way the C++ asks QMimeDatabase
 # with MatchExtension. See crates/compass-db/src/sqlite_writer.rs.
 mime_guess = "2"

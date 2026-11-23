@@ -1087,6 +1087,7 @@ dependencies = [
  "dirs",
  "fend-core",
  "getrandom 0.3.4",
+ "globset",
  "ignore",
  "jsonc-parser",
  "percent-encoding",

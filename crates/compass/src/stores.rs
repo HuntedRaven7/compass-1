@@ -107,6 +107,9 @@ pub struct Stores {
     platform: &'static str,
     vicinae: tokio::sync::Mutex<Option<(Instant, Arc<Vec<extension_store::Extension>>)>>,
     raycast: tokio::sync::Mutex<raycast_store::RaycastStoreService>,
+    /// The extension deny policy from `compass.json` (#401). Behind a lock so
+    /// a config reload can change it through the `Arc` the engine holds.
+    deny: std::sync::RwLock<compass_core::extension_deny::ExtensionDeny>,
 }
 
 impl Default for Stores {
@@ -142,7 +145,34 @@ impl Stores {
             platform: platform(),
             vicinae: tokio::sync::Mutex::default(),
             raycast: tokio::sync::Mutex::default(),
+            deny: std::sync::RwLock::new(compass_core::extension_deny::ExtensionDeny::default()),
         }
+    }
+
+    /// Applies the deny policy, so a config reload takes effect on the next
+    /// browse or install without restarting the engine.
+    pub fn set_deny(&self, deny: compass_core::extension_deny::ExtensionDeny) {
+        *self
+            .deny
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = deny;
+    }
+
+    /// Why a listing is blocked, if it is. Owned so the read guard does not
+    /// escape a helper that is called from async code.
+    fn denied(&self, kind: StoreKind, listing: &Listing) -> Option<String> {
+        self.deny
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .denies(&compass_core::extension_deny::ExtensionIdentity {
+                id: &listing.id,
+                name: &listing.name,
+                title: &listing.title,
+                author: &listing.author,
+                owner: Some(&listing.owner),
+                store: store(kind).key(),
+            })
+            .map(str::to_owned)
     }
 
     /// The Vicinae store's whole list, `fetchAll`, post-processed.
@@ -245,7 +275,9 @@ impl Stores {
                 })?;
                 let entries = extension_store::filter(&all, query)
                     .into_iter()
-                    .map(|extension| entry(&Listing::from_vicinae(extension), &installed, None))
+                    .map(Listing::from_vicinae)
+                    .filter(|listing| self.denied(StoreKind::Vicinae, listing).is_none())
+                    .map(|listing| entry(&listing, &installed, None))
                     .collect();
                 Ok(Listed {
                     heading: raycast_store_view::LIST_HEADING.to_owned(),
@@ -268,14 +300,18 @@ impl Stores {
                 let sheet = raycast_store::has_compat_sheet(self.platform);
                 let entries = extensions
                     .iter()
-                    .map(|extension| {
+                    .filter_map(|extension| {
+                        let listing = Listing::from_raycast(extension, None);
+                        if self.denied(StoreKind::Raycast, &listing).is_some() {
+                            return None;
+                        }
                         let tier =
                             raycast_store_view::row_compat_tier(sheet, compat.get(&extension.name));
-                        entry(
-                            &Listing::from_raycast(extension, None),
+                        Some(entry(
+                            &listing,
                             &installed,
                             tier.map(|tier| u8::try_from(tier.as_i32()).unwrap_or(3)),
-                        )
+                        ))
                     })
                     .collect();
                 Ok(Listed {
@@ -289,6 +325,16 @@ impl Stores {
                 })
             }
         }
+    }
+
+    /// The message a blocked extension gets at the store boundary.
+    fn refusal(&self, kind: StoreKind, listing: &Listing) -> String {
+        format!(
+            "\"{}\" is blocked by the extension deny list: {}",
+            listing.title,
+            self.denied(kind, listing)
+                .unwrap_or_else(|| "blocked by policy".to_owned())
+        )
     }
 
     /// One extension as the store describes it now, by the handle the store
@@ -307,7 +353,11 @@ impl Stores {
                 let extension = extension_store::find(&all, owner, name).ok_or_else(|| {
                     format!("The extension \"{owner}/{name}\" could not be found in the store.")
                 })?;
-                Ok((Listing::from_vicinae(extension), None, None))
+                let listing = Listing::from_vicinae(extension);
+                if self.denied(StoreKind::Vicinae, &listing).is_some() {
+                    return Err(self.refusal(StoreKind::Vicinae, &listing));
+                }
+                Ok((listing, None, None))
             }
             StoreKind::Raycast => {
                 let (extension, compat) =
@@ -328,7 +378,11 @@ impl Stores {
                     &extension.name,
                     self.platform,
                 );
-                Ok((Listing::from_raycast(&extension, updated), tier, alert))
+                let listing = Listing::from_raycast(&extension, updated);
+                if self.denied(StoreKind::Raycast, &listing).is_some() {
+                    return Err(self.refusal(StoreKind::Raycast, &listing));
+                }
+                Ok((listing, tier, alert))
             }
         }
     }
@@ -773,5 +827,46 @@ mod tests {
     #[test]
     fn the_platform_is_one_the_stores_know() {
         assert!(matches!(platform(), "linux" | "macos" | "windows"));
+    }
+
+    #[test]
+    fn a_deny_rule_refuses_the_listing_and_explains_why() {
+        use compass_core::extension_deny::{DenyRule, ExtensionDeny};
+
+        let listing = Listing {
+            id: "store.raycast.github".into(),
+            name: "github".into(),
+            title: "GitHub".into(),
+            author: "thomaslombart".into(),
+            owner: "raycast".into(),
+            ..Listing::default()
+        };
+        let stores = Stores::new("http://127.0.0.1:1".into(), "http://127.0.0.1:2".into());
+        assert!(stores.denied(StoreKind::Raycast, &listing).is_none());
+
+        stores.set_deny(ExtensionDeny::new(&[DenyRule {
+            id: Some("store.vicinae.*".into()),
+            ..DenyRule::default()
+        }]));
+        assert!(
+            stores.denied(StoreKind::Raycast, &listing).is_none(),
+            "a rule for the other store does not match"
+        );
+
+        stores.set_deny(ExtensionDeny::new(&[DenyRule {
+            store: Some("raycast".into()),
+            author: Some("thomas*".into()),
+            reason: Some("not allowed on this image".into()),
+            ..DenyRule::default()
+        }]));
+        let reason = stores
+            .denied(StoreKind::Raycast, &listing)
+            .expect("a Raycast extension by that author is denied");
+        assert_eq!(reason, "not allowed on this image");
+        assert!(
+            stores
+                .refusal(StoreKind::Raycast, &listing)
+                .contains("not allowed on this image")
+        );
     }
 }

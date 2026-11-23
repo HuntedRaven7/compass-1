@@ -674,6 +674,11 @@ impl LauncherApp {
         }
         self.root_config = config.root_config();
         self.app_index.apply_root_config(&self.root_config);
+        // #401: a hand-edited deny list takes effect in this window too.
+        self.app_index
+            .set_deny(compass_core::extension_deny::ExtensionDeny::new(
+                &config.extensions().deny_rules(),
+            ));
         self.fallbacks = config.fallback_ids();
         if let Page::Settings(page) = &mut self.page
             && page.recorder.is_none()

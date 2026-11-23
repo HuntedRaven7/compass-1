@@ -156,6 +156,11 @@ impl EngineState {
         };
         let max_results = config.launcher().max_results();
         index.apply_root_config(&config.root_config());
+        // #401: a denied extension is removed from both search and execution;
+        // keeping the policy on the index means a rescan cannot bring it back.
+        let deny =
+            compass_core::extension_deny::ExtensionDeny::new(&config.extensions().deny_rules());
+        index.set_deny(deny.clone());
 
         let frecency = search::open_frecency();
 
@@ -170,6 +175,8 @@ impl EngineState {
         let rhai = rhai::Rhai::from_environment(&mut index);
 
         let files = search::start_file_search(&config, config_readable);
+        let stores = stores::Stores::new(crate::updates::Updates::default());
+        stores.set_deny(deny);
 
         Self {
             socket,
@@ -181,7 +188,7 @@ impl EngineState {
                 ),
             ),
             extensions: extensions::Extensions::default(),
-            stores: stores::Stores::new(crate::updates::Updates::default()),
+            stores,
             shortcuts,
             snippets,
             rhai,

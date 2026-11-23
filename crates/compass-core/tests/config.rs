@@ -290,6 +290,10 @@ fn every_known_key_survives_a_round_trip_on_its_own() {
             "installed",
         ),
         (
+            r#"{"extensions":{"deny":[{"store":"raycast","author":"spam-*"}]}}"#,
+            "deny",
+        ),
+        (
             r#"{"launcher":{"appearance":{"icons":true}}}"#,
             "appearance.icons",
         ),
@@ -895,4 +899,46 @@ fn no_system_directory_means_no_system_defaults() {
     let empty = tempfile::tempdir().unwrap();
     assert!(compass_core::config::system_defaults_in(&[empty.path().to_path_buf()]).is_none());
     assert!(compass_core::config::system_defaults_in(&[]).is_none());
+}
+
+#[test]
+fn an_admin_deny_list_cannot_be_lifted_or_written_by_the_user() {
+    let etc = tempfile::tempdir().unwrap();
+    system_file(
+        etc.path(),
+        r#"{"extensions": {
+            "admin_deny": [{"store": "raycast"}],
+            "deny": [{"id": "store.vicinae.clock"}]
+        }}"#,
+    );
+    let system = compass_core::config::system_defaults_in(&[etc.path().to_path_buf()]);
+    let path = Path::new("/test/compass.json");
+
+    // A user who tries to set or clear the admin key cannot: it is removed
+    // from their document before the system layer is inherited.
+    let user = r#"{"extensions": {
+        "admin_deny": [],
+        "deny": [{"author": "spam-*"}]
+    }}"#;
+    let (config, issues) = Config::parse_layered(user, path, system.as_ref()).unwrap();
+    assert!(issues.is_empty(), "{issues:?}");
+    let rules = config.extensions().deny_rules();
+    assert_eq!(rules.len(), 2, "{rules:?}");
+    assert_eq!(rules[0].store.as_deref(), Some("raycast"), "admin first");
+    assert_eq!(
+        rules[1].author.as_deref(),
+        Some("spam-*"),
+        "then the user's"
+    );
+
+    // Saving never copies the admin list into the user's file.
+    let home = tempfile::tempdir().unwrap();
+    let saved_path = home.path().join("compass.json");
+    config.save_layered(&saved_path, system.as_ref()).unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&saved_path).unwrap()).unwrap();
+    assert!(
+        saved["extensions"].get("admin_deny").is_none(),
+        "the admin key must not be written to the user's file: {saved}"
+    );
 }

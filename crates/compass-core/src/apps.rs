@@ -508,7 +508,9 @@ impl AppIndexBuilder {
             items,
             by_key,
             skipped,
+            all_extensions: extensions.clone(),
             extensions,
+            deny: crate::extension_deny::ExtensionDeny::default(),
             shortcuts: Vec::new(),
             scripts: Vec::new(),
             rhai_scripts: Vec::new(),
@@ -713,6 +715,12 @@ pub struct AppIndex {
     by_key: HashMap<String, usize>,
     skipped: Vec<SkippedEntry>,
     extensions: Vec<crate::extension_commands::ExtensionCommand>,
+    /// Everything the last scan found, before the deny filter. Kept so
+    /// changing a rule can restore an extension without another filesystem scan.
+    all_extensions: Vec<crate::extension_commands::ExtensionCommand>,
+    /// The deny policy applied to extensions and their roots (#401). Kept here
+    /// so a rescan cannot silently bring a blocked extension back.
+    deny: crate::extension_deny::ExtensionDeny,
     /// Quicklinks, in the store's order; their roots come last in `roots`.
     shortcuts: Vec<crate::shortcut_service::CachedShortcut>,
     /// Script commands, in scan order; their roots come after the shortcuts'.
@@ -1237,6 +1245,7 @@ impl AppIndex {
     /// configuration last given to [`AppIndex::apply_root_config`] to their
     /// rows. Every other row keeps its position.
     pub fn set_extensions(&mut self, extensions: Vec<crate::extension_commands::ExtensionCommand>) {
+        self.all_extensions = extensions.clone();
         let old: std::collections::HashSet<&str> = self
             .extensions
             .iter()
@@ -1250,11 +1259,37 @@ impl AppIndex {
             keep
         });
         for command in &extensions {
+            if self
+                .deny
+                .denies(&crate::extension_deny::ExtensionIdentity::from_command(
+                    command,
+                ))
+                .is_some()
+            {
+                continue;
+            }
             let mut root = command.root_item();
             root.merge_config(&self.root_config, false);
             self.roots.push(root);
         }
-        self.extensions = extensions;
+        self.extensions = extensions
+            .into_iter()
+            .filter(|command| {
+                self.deny
+                    .denies(&crate::extension_deny::ExtensionIdentity::from_command(
+                        command,
+                    ))
+                    .is_none()
+            })
+            .collect();
+    }
+
+    /// Applies a deny policy to the installed extensions and their roots.
+    /// Called at startup and on config reload; rescans keep the same policy.
+    pub fn set_deny(&mut self, deny: crate::extension_deny::ExtensionDeny) {
+        self.deny = deny;
+        let scanned = self.all_extensions.clone();
+        self.set_extensions(scanned);
     }
 
     /// The installed extension command with this entrypoint id.

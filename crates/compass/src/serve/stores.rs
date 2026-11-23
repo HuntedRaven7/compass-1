@@ -30,6 +30,12 @@ impl Stores {
             updates: Arc::new(updates),
         }
     }
+
+    /// Applies the deny policy through the `Arc`, so a config reload takes
+    /// effect without replacing the store client and its cached listings.
+    pub(super) fn set_deny(&self, deny: compass_core::extension_deny::ExtensionDeny) {
+        self.stores.set_deny(deny);
+    }
 }
 
 /// The store, update and extension template requests.
