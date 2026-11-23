@@ -198,10 +198,13 @@ jobs:
     needs: [resolve-tag, publish-release]
     if: ${{ !cancelled() && needs.publish-release.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Dispatches the six validation workflows on the PR branch and waits for
+    # them; the Rust job alone can take longer than the old ten-minute budget.
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
+      actions: write  # dispatch the validation workflows on the PR branch
     steps:
       - uses: actions/checkout@v4.4.0  # zizmor: ignore[artipacked] a later step pushes the Homebrew branch with these credentials
         with:
@@ -229,3 +232,40 @@ jobs:
           gh pr create --base main --head "$branch" \
             --title "homebrew: the ${TAG} tarball's sha256" \
             --body "Fills in the checksum the version bump left as a placeholder: sha256 of https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+
+          # A pull_request event caused by GITHUB_TOKEN deliberately does not
+          # start its workflows, so a PR opened this way used to get all six
+          # required checks as zero-job failures until a human re-triggered
+          # them. workflow_dispatch is the documented exception. Run the
+          # validation workflows on the PR branch here; their check contexts
+          # replace the empty ones.
+          workflows=(
+            rust.yaml
+            shell.yaml
+            format.yaml
+            nix-format.yaml
+            actions-security.yml
+            perf.yaml
+          )
+          run_ids=()
+          for workflow in "${workflows[@]}"; do
+            gh workflow run "$workflow" --ref "$branch" --repo "$GITHUB_REPOSITORY"
+            run_id=
+            for _ in {1..30}; do
+              run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" \
+                --branch "$branch" --event workflow_dispatch --limit 1 \
+                --json databaseId --jq '.[0].databaseId')
+              [[ -n "$run_id" ]] && break
+              sleep 2
+            done
+            [[ -n "$run_id" ]] || { echo "::error::no dispatch run appeared for $workflow"; exit 1; }
+            run_ids+=("$run_id")
+          done
+          failed=0
+          for run_id in "${run_ids[@]}"; do
+            gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --interval 30 --exit-status || failed=1
+          done
+          if (( failed )); then
+            echo "::error::a validation workflow failed on $branch"
+            exit 1
+          fi
