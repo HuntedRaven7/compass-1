@@ -16,7 +16,8 @@
 //!   },
 //!   "extensions": {
 //!     "auto_update": true,
-//!     "installed": ["raycast:raycast/github", "vicinae:zoe/clock"]
+//!     "installed": ["raycast:raycast/github", "vicinae:zoe/clock"],
+//!     "deny": [{"store": "raycast", "author": "spammer-*"}]
 //!   }
 //! }
 //! ```
@@ -51,6 +52,10 @@
 //! the system file still reaches that user. Bluefin uses this to bind the launcher through GNOME's
 //! own keyboard settings instead of asking the GlobalShortcuts portal:
 //! `{"launcher": {"hotkey": ""}}`.
+//!
+//! The one exception is `extensions.admin_deny`: it is read only from the system file and
+//! combined with the user's `extensions.deny`, so a user cannot remove an administrator's
+//! extension block ([`crate::extension_deny`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -58,6 +63,8 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::extension_deny::DenyRule;
 
 /// Default global toggle hotkey. Matches the Phase 1 gate in the plan (Super+Space on GNOME).
 pub const DEFAULT_HOTKEY: &str = "super+space";
@@ -687,6 +694,18 @@ pub struct ExtensionsConfig {
     /// starts and whenever this file changes, and never uninstalls one that is left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     installed: Option<Vec<String>>,
+    /// Extensions the user never wants offered or run. A list of rules; see
+    /// [`crate::extension_deny`] for what a rule matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deny: Option<Vec<DenyRule>>,
+    /// Extensions an administrator has blocked for every user. Only read from
+    /// the system-wide defaults under `$XDG_CONFIG_DIRS`; a user file that
+    /// writes this key is ignored, so a user cannot lift an admin block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Admin-only: set in /etc/xdg/compass/compass.json, not in the user's file"
+    )]
+    admin_deny: Option<Vec<DenyRule>>,
 
     /// Keys this build does not know about, preserved verbatim.
     #[serde(flatten)]
@@ -719,6 +738,23 @@ impl ExtensionsConfig {
         self
     }
 
+    /// The deny rules from both the user and the admin list, admin first.
+    #[must_use]
+    pub fn deny_rules(&self) -> Vec<DenyRule> {
+        self.admin_deny
+            .iter()
+            .chain(self.deny.iter())
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    /// Sets `extensions.deny`. `None` removes the key.
+    pub fn set_deny(&mut self, value: Option<Vec<DenyRule>>) -> &mut Self {
+        self.deny = value;
+        self
+    }
+
     /// Keys present in the file that this build does not understand.
     #[must_use]
     pub fn unknown_fields(&self) -> &BTreeMap<String, Value> {
@@ -733,9 +769,15 @@ impl ExtensionsConfig {
         let Self {
             auto_update,
             installed,
+            deny,
+            admin_deny,
             unknown,
         } = self;
-        auto_update.is_none() && installed.is_none() && unknown.is_empty()
+        auto_update.is_none()
+            && installed.is_none()
+            && deny.is_none()
+            && admin_deny.is_none()
+            && unknown.is_empty()
     }
 }
 
@@ -1319,6 +1361,12 @@ impl Config {
             return serde_json::from_value::<Config>(document)
                 .map(|config| (config, Vec::new()))
                 .map_err(parse_error);
+        }
+        // `extensions.admin_deny` is an admin-only key. Drop it from the user's
+        // document before layering so a user cannot override or remove a block
+        // the system set; `inherit` then brings the system's list back.
+        if let Some(Value::Object(extensions)) = document.get_mut("extensions") {
+            extensions.remove("admin_deny");
         }
         let mut unknown = crate::config_issues::unknown_keys(&document);
         if let Some(system) = system {

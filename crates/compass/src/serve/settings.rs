@@ -258,12 +258,12 @@ pub async fn apply_all(state: &Arc<RwLock<EngineState>>, config: &Config) {
     }
     state.read().await.global_shortcuts().reload();
     state.read().await.stores.sync.request();
-    state
-        .write()
-        .await
-        .search
-        .index
-        .apply_root_config(&config.root_config());
+    let deny = compass_core::extension_deny::ExtensionDeny::new(&config.extensions().deny_rules());
+    let mut state = state.write().await;
+    state.search.index.apply_root_config(&config.root_config());
+    // #401: a new deny entry takes effect on the next search or install.
+    state.search.index.set_deny(deny.clone());
+    state.stores.set_deny(deny);
 }
 
 async fn set_provider_enabled(

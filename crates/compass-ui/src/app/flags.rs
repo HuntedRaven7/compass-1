@@ -34,6 +34,8 @@ pub struct AppFlags {
     pub windows: Option<Arc<dyn crate::backend::WindowBackend>>,
     /// Startup root settings for local searches; attached searches use the engine's settings.
     pub root_config: compass_core::root_items::RootConfig,
+    /// The extension deny policy (#401), applied to this window's own index.
+    pub deny: compass_core::extension_deny::ExtensionDeny,
     /// The navigation chord scheme, from `launcher.keybinding`.
     pub keybinding: compass_core::keybinding::Scheme,
     /// Whether the selection wraps, from `launcher.wrap_navigation`.
@@ -222,6 +224,7 @@ impl Default for AppFlags {
             clipboard: None,
             windows: None,
             root_config: compass_core::root_items::RootConfig::default(),
+            deny: compass_core::extension_deny::ExtensionDeny::default(),
             link: None,
             exit_on_engine_disconnect: false,
             start_hidden: false,
@@ -253,6 +256,7 @@ impl LauncherApp {
         app.clipboard = flags.clipboard;
         app.windows = flags.windows;
         app.app_index.apply_root_config(&flags.root_config);
+        app.app_index.set_deny(flags.deny);
         app.root_config = flags.root_config;
         app.search_history = flags
             .search_history_path

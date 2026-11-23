@@ -103,15 +103,77 @@
       },
       "type": "object"
     },
+    "DenyRule": {
+      "additionalProperties": false,
+      "description": "One deny rule. All fields that are set must match (they are ANDed).\n\n`id`, `name` and `author` are case-insensitive globs, so `\"spammer-*\"`\ndenies a publisher's namespace and `\"store.raycast.news*\"` a prefix.\n`store` is one of `raycast`, `vicinae` or `local`.",
+      "properties": {
+        "author": {
+          "description": "Author or owner handle.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Installed id, store listing id, or `raycast:<owner>/<name>`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Extension name or the title of one of its commands.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why this extension is blocked, shown in the refusal message.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "store": {
+          "description": "Source store: `raycast`, `vicinae`, or `local` for sideloaded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ExtensionsConfig": {
       "additionalProperties": false,
       "description": "The `extensions` section.",
       "properties": {
+        "admin_deny": {
+          "description": "Admin-only: set in /etc/xdg/compass/compass.json, not in the user's file",
+          "items": {
+            "$ref": "#/$defs/DenyRule"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "auto_update": {
           "default": true,
           "description": "Whether installed extensions update themselves.",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "deny": {
+          "description": "Extensions the user never wants offered or run. A list of rules; see\n[`crate::extension_deny`] for what a rule matches.",
+          "items": {
+            "$ref": "#/$defs/DenyRule"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
