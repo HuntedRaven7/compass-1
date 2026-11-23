@@ -78,7 +78,19 @@ impl LauncherApp {
     /// otherwise stays on [`AppFlags::appearance`](super::AppFlags::appearance)
     /// for the window's whole life.
     pub(super) fn palette(&self) -> design::Palette {
-        self.view.theme_choice.palette(self.view.appearance)
+        let mut palette = self.view.theme_choice.palette(self.view.appearance);
+        if self.accent != crate::accent::AccentColor::Blue {
+            // The darkened standalone value keeps white text on a selected row
+            // legible; on a dark surface the lighter one is used for rings.
+            let fill = self.accent.standalone(false);
+            palette.selection = fill;
+            palette.accent = if self.view.appearance == design::Appearance::Dark {
+                self.accent.standalone(true)
+            } else {
+                fill
+            };
+        }
+        palette
     }
 
     /// The font the launcher draws text with.
@@ -327,7 +339,7 @@ impl LauncherApp {
     // Over the 150-line limit when it was added (#379): split it, don't grow it.
     #[allow(clippy::too_many_lines)]
     pub fn view(&self) -> Element<'_, Message> {
-        let geometry = self.geometry;
+        let geometry = self.geometry.scaled_text(self.font_scale);
         let palette = self.palette();
 
         // One field, whose meaning follows the view: the root query, or a
@@ -743,7 +755,7 @@ impl LauncherApp {
 
     /// A line of explanation where the list would be.
     pub(super) fn notice(&self, message: &str) -> Element<'_, Message> {
-        let geometry = self.geometry;
+        let geometry = self.geometry.scaled_text(self.font_scale);
         let palette = self.palette();
         container(
             text(message.to_owned())
@@ -811,7 +823,9 @@ impl LauncherApp {
         let accessory = accessory.filter(|text| !text.is_empty()).map(|accessory| {
             text(accessory)
                 .font(self.font())
-                .size(f32::from(self.geometry.subtitle_size))
+                .size(f32::from(
+                    self.geometry.scaled_text(self.font_scale).subtitle_size,
+                ))
                 .color(colour.to_iced())
                 .into()
         });
@@ -827,7 +841,7 @@ impl LauncherApp {
         accessory: Option<Element<'a, Message>>,
         selected: bool,
     ) -> Element<'a, Message> {
-        let geometry = self.geometry;
+        let geometry = self.geometry.scaled_text(self.font_scale);
         let palette = self.palette();
         let title_color = if selected {
             palette.selection_text
@@ -931,6 +945,32 @@ mod tests {
     use crate::app::flags::AppFlags;
     use crate::app::test_support::{app, index, theme_name};
     use crate::design::Appearance;
+
+    #[test]
+    fn a_non_blue_desktop_accent_changes_the_palette() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = LauncherApp::with_index(index(dir.path()));
+        let blue = app.palette();
+        app.apply(AppFlags {
+            accent: crate::accent::AccentColor::Green,
+            font_size: Some(14.0),
+            ..AppFlags::default()
+        });
+        let green = app.palette();
+        assert_ne!(
+            green.selection, blue.selection,
+            "the selection follows the accent"
+        );
+        assert_eq!(
+            green.selection,
+            crate::accent::AccentColor::Green.standalone(false)
+        );
+        assert_eq!(app.font_scale, 14.0 / 11.0);
+        assert!(
+            app.geometry.scaled_text(app.font_scale).title_size > app.geometry.title_size,
+            "a larger desktop font makes the launcher's text larger"
+        );
+    }
 
     #[test]
     fn the_root_footer_names_enter_and_the_action_panel() {
