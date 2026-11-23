@@ -1055,6 +1055,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "compass-browser-host"
+version = "0.28.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "compass-clipboard"
 version = "0.28.8"
 dependencies = [
