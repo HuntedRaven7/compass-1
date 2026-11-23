@@ -16,6 +16,7 @@ on:
       - Cargo.lock
       - "**/Cargo.toml"
       - deny.toml
+      - "**/package-lock.json"
       - .github/workflows/cargo-deny.yaml
   pull_request:
     paths: *paths
@@ -49,3 +50,27 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
         with:
           command: check ${{ matrix.checks }}
+
+  npm-audit:
+    name: npm audit (${{ matrix.dir }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - .
+          - extra/extension-boilerplate
+          - src/typescript/api
+          - src/typescript/extension-manager
+          - src/typescript/raycast-api-compat
+    # As for the RustSec leg: an advisory published tonight reports on a pull
+    # request and fails on main and on the schedule.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4.4.0
+        with:
+          persist-credentials: false
+      - name: npm audit
+        working-directory: ${{ matrix.dir }}
+        run: npm audit --package-lock-only --audit-level=high
