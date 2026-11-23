@@ -190,6 +190,12 @@ jobs:
         with:
           tool: cargo-llvm-cov nextest
 
+      # cargo-llvm-cov builds into target/llvm-cov-target, but the sandboxed
+      # worker test looks for the helper at target/debug/compass-sandbox-exec.
+      # Build it into the ordinary target dir first.
+      - name: Build the sandbox helper for the worker test
+        run: cargo build -p compass-sandbox --bin compass-sandbox-exec
+
       - name: Coverage (lcov)
         run: cargo llvm-cov nextest --workspace --all-targets --lcov --output-path lcov.info
         env:
