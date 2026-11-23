@@ -141,6 +141,12 @@ impl Runtime {
             .map(PathBuf::from)
             .or_else(|| on_path("node"))
             .ok_or_else(|| "Running extensions needs Node.js, and none was found".to_owned())?;
+        // A symlinked Node (Homebrew's `bin/node` → `Cellar/node/<ver>/bin/node`)
+        // would be executed at the resolved path while the sandbox was built
+        // around the link. Resolve it once, here, so the policy and the exec
+        // name the same file (#407). Keep the spelling when it cannot be
+        // resolved — the sandbox handles both spellings.
+        let node = std::fs::canonicalize(&node).unwrap_or(node);
         let sandbox = if std::env::var_os(SANDBOX_SWITCH_ENV).is_some_and(|v| v == "off") {
             tracing::warn!("{SANDBOX_SWITCH_ENV}=off: extensions run unconfined");
             None

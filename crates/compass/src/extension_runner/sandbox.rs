@@ -30,6 +30,44 @@ fn resolver_targets(etc: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// The extra read and execute grants a Node installation needs beyond the
+/// system trees (#407). Homebrew's `bin/node` is a symlink into
+/// `Cellar/node/<version>/bin/node`, where its shared libraries live one
+/// directory up, and its OpenSSL configuration lives under the prefix's `etc`.
+/// Granting only the symlink's parent leaves all three unreadable.
+fn node_grants(node: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let resolved = std::fs::canonicalize(node).unwrap_or_else(|_| node.to_path_buf());
+    let mut read = Vec::new();
+    let mut execute = Vec::new();
+    for path in [node.to_path_buf(), resolved.clone()] {
+        execute.push(path.clone());
+        if let Some(bin) = path.parent() {
+            execute.push(bin.to_path_buf());
+            read.push(bin.to_path_buf());
+            // Homebrew keeps `lib/` beside `bin/` under the version directory.
+            if let Some(version) = bin.parent() {
+                read.push(version.to_path_buf());
+            }
+        }
+        read.push(path);
+    }
+    if let Some(config) = std::env::var_os("OPENSSL_CONF") {
+        read.push(PathBuf::from(config));
+    }
+    for prefix in ["/home/linuxbrew/.linuxbrew", "/opt/homebrew", "/usr/local"] {
+        let etc = Path::new(prefix).join("etc");
+        let Ok(entries) = std::fs::read_dir(&etc) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("openssl@") {
+                read.push(entry.path().join("openssl.cnf"));
+            }
+        }
+    }
+    (read, execute)
+}
+
 /// What the runtime may touch while it runs `command`, with the user's
 /// `$HOME` as the process has it; see [`policy_in`].
 #[must_use]
@@ -63,6 +101,7 @@ pub fn policy_in(
     home: Option<&Path>,
 ) -> compass_sandbox::Policy {
     let parent = |path: &Path| path.parent().map(Path::to_path_buf);
+    let (node_read, node_execute) = node_grants(&runtime.node);
     let home_reads = home
         .map(compass_sandbox::home::home_reads)
         .unwrap_or_default();
@@ -78,6 +117,7 @@ pub fn policy_in(
     .into_iter()
     .map(PathBuf::from)
     .chain(parent(&runtime.node))
+    .chain(node_read)
     .chain(parent(&runtime.bundle))
     .chain([command.extension_dir.clone()])
     .chain(resolver_targets(Path::new("/etc")))
@@ -102,6 +142,7 @@ pub fn policy_in(
     let execute = ["/usr", "/bin", "/lib", "/lib64", "/app"]
         .into_iter()
         .map(PathBuf::from)
+        .chain(node_execute)
         .chain([runtime.node.clone(), command.extension_dir.clone()]);
 
     let mut policy =
@@ -317,5 +358,42 @@ mod tests {
             .map(|(key, _)| key.to_string_lossy().into_owned())
             .collect();
         assert_eq!(given, ["PATH", "HOME", "LANG", "LC_TIME", "https_proxy"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_node_grants_its_real_binary_and_homebrew_libraries() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let version = root.path().join("Cellar/node/26.13.1_2");
+        let bin = version.join("bin");
+        let lib = version.join("lib");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&lib).expect("lib");
+        std::fs::write(bin.join("node"), "binary").expect("node");
+        std::fs::write(lib.join("libnode.so.147"), "library").expect("libnode");
+        let prefix_bin = root.path().join("bin");
+        std::fs::create_dir_all(&prefix_bin).expect("prefix bin");
+        std::os::unix::fs::symlink(bin.join("node"), prefix_bin.join("node")).expect("symlink");
+        let link = prefix_bin.join("node");
+
+        let (read, execute) = super::node_grants(&link);
+        let resolved = std::fs::canonicalize(&link).expect("resolved node");
+        assert!(
+            execute.contains(&resolved),
+            "the real binary is executable: {execute:?}"
+        );
+        assert!(
+            execute.contains(&bin),
+            "its bin directory is executable too"
+        );
+        assert!(
+            read.contains(&version),
+            "the version dir holding lib/ is readable: {read:?}"
+        );
+        assert!(
+            read.contains(&prefix_bin),
+            "the symlink's directory is readable"
+        );
+        assert!(read.contains(&resolved), "the real binary is readable");
     }
 }
