@@ -41,6 +41,23 @@ impl LauncherApp {
                 // one key undoes opening the wrong command.
                 let panel_key = self.panel.is_some()
                     || (modifiers.control() && key.as_ref() == Key::Character("b"));
+                // A link that would run a command asks here, before the
+                // engine is told to do anything.
+                if self.link_confirm.is_some() {
+                    return match key.as_ref() {
+                        Key::Named(Named::Enter) if modifiers.control() => {
+                            Task::done(Message::LinkConfirmAnswered { remember: true })
+                        }
+                        Key::Named(Named::Enter) => {
+                            Task::done(Message::LinkConfirmAnswered { remember: false })
+                        }
+                        Key::Named(Named::Escape) => {
+                            self.link_confirm = None;
+                            focus_search()
+                        }
+                        _ => Task::none(),
+                    };
+                }
                 if self.confirm.is_some() {
                     return match key.as_ref() {
                         Key::Named(Named::Enter) => self.run_confirmed(),

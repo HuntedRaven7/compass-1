@@ -107,8 +107,10 @@ use serde::{Deserialize, Serialize};
 /// flow's launcher hotkey and login start ([`Request::LauncherShortcut`],
 /// [`Request::LoginStart`]); version 26, how clipboard history captures and
 /// stores copies, and why it does not ([`Request::ClipboardStatus`],
-/// [`Response::ClipboardStatus`]).
-pub const PROTOCOL_VERSION: u16 = 26;
+/// [`Response::ClipboardStatus`]); version 27, a link from outside that would
+/// run a command asks first, and "Always Allow" is remembered per command
+/// ([`Request::LinkCommandGrant`], [`Response::LinkCommandGrant`]).
+pub const PROTOCOL_VERSION: u16 = 27;
 
 /// How long the engine holds an [`Request::ExtensionView`] open waiting for a
 /// change before it answers with the version it has.
@@ -708,11 +710,22 @@ pub enum Request {
     ListScriptGrants,
     /// Withdraw everything the user allowed a Rhai script, or an extension.
     /// Answered with [`Response::ScriptGrants`], the list after the change;
-    /// an id with nothing recorded is a bad request.
+    /// an id with nothing recorded is a bad request. `deeplink` withdraws
+    /// every command the user always allowed to run from a link.
     RevokeScriptGrant {
         /// The script's id, `script.<folder name>`, or the extension's,
         /// `store.raycast.brew`.
         id: String,
+    },
+    /// Whether a command may run from a link without asking. Answered with
+    /// [`Response::LinkCommandGrant`]. With `remember`, records the answer as
+    /// "Always Allow"; that grant is listed and revocable in Script
+    /// Permissions under `deeplink`. (v27.)
+    LinkCommandGrant {
+        /// The root item's entrypoint id, e.g. `@author/ext:cmd`.
+        id: String,
+        /// Record a permanent grant instead of only reading the current one.
+        remember: bool,
     },
     /// How many times the engine has rescanned its catalog (the applications
     /// or the installed extensions) because their directories changed.
@@ -1500,6 +1513,11 @@ pub enum Response {
     ScriptGrants {
         /// One per script with something allowed.
         grants: Vec<ScriptGrantEntry>,
+    },
+    /// Answer to [`Request::LinkCommandGrant`]. (v27.)
+    LinkCommandGrant {
+        /// Whether the command may run without asking.
+        allowed: bool,
     },
     /// Answer to [`Request::CatalogGeneration`].
     CatalogGeneration {

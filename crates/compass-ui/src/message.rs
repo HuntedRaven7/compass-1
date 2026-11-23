@@ -16,6 +16,17 @@ pub enum Direction {
     Down,
 }
 
+/// A command a link from outside would run, waiting on consent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkCommand {
+    /// The root item's entrypoint id.
+    pub id: String,
+    /// What to name in the question: the command and its extension or script.
+    pub title: String,
+    /// The link's fallback text, used as the launch's query.
+    pub query: Option<String>,
+}
+
 /// Messages that the launcher application can handle.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -283,6 +294,17 @@ pub enum Message {
     GrantRevoked(Result<Vec<crate::backend::ScriptGrant>, String>),
     /// The uninstall dialog was answered: `true` uninstalls.
     StoreConfirmAnswered(bool),
+    /// Whether a link's command may run without asking. The check carries
+    /// what to run so it can either go straight there or open the dialog.
+    LinkGrantChecked(LinkCommand, Result<bool, String>),
+    /// The link's dialog was answered; `remember` means "Always Allow".
+    LinkConfirmAnswered {
+        /// Whether to keep the grant for next time.
+        remember: bool,
+    },
+    /// "Always Allow" was recorded, or could not be. Either way the command
+    /// this run was allowed to go ahead.
+    LinkGrantRecorded(LinkCommand, Result<bool, String>),
     /// A Browse Fonts row was clicked, by position.
     FontSelected(usize),
     /// A family's specimen arrived, or why not.

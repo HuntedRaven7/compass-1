@@ -71,13 +71,24 @@ pub(super) async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -
             let rhai = Arc::clone(&state.read().await.rhai.scripts);
             let titles = extension_titles(state).await;
             match tokio::task::spawn_blocking(move || {
-                let hosts = crate::host_commands::Grants::from_environment();
+                let link_grants = id == crate::host_commands::LINK_GRANTS_ID;
+                let hosts = if link_grants {
+                    crate::host_commands::Grants::link_grants()
+                } else {
+                    crate::host_commands::Grants::from_environment()
+                };
                 match hosts.revoke(&id) {
                     Ok(true) => {
-                        tracing::info!(extension = %id, "host-program grants revoked");
+                        tracing::info!(extension = %id, "grants revoked");
                         Ok(())
                     }
-                    Ok(false) => rhai.revoke(&id),
+                    Ok(false) => {
+                        if link_grants {
+                            Ok(())
+                        } else {
+                            rhai.revoke(&id)
+                        }
+                    }
                     Err(err) => Err(format!("Compass could not change the permissions: {err}")),
                 }
                 .map(|()| all_grants(&rhai, &titles))
@@ -140,6 +151,7 @@ fn all_grants(
         crate::host_commands::Grants::from_environment()
             .entries(|id| titles.get(id).filter(|title| !title.is_empty()).cloned()),
     );
+    grants.extend(crate::host_commands::Grants::link_grants().link_entries());
     grants
 }
 

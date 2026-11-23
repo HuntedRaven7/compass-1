@@ -249,6 +249,7 @@ async fn echo_handler(request: Request) -> Response {
         Request::ListScriptGrants | Request::RevokeScriptGrant { .. } => {
             Response::ScriptGrants { grants: vec![] }
         }
+        Request::LinkCommandGrant { .. } => Response::LinkCommandGrant { allowed: false },
         Request::CatalogGeneration => Response::CatalogGeneration { generation: 0 },
         Request::ListDefaultApps { .. } => Response::DefaultApps { apps: vec![] },
         Request::SetDefaultApp { .. } => Response::Ack,

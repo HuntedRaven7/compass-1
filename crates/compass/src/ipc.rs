@@ -157,6 +157,7 @@ fn describe(request: &Request) -> &'static str {
         Request::OpenDeeplink { .. } => "OpenDeeplink",
         Request::ListScriptGrants => "ListScriptGrants",
         Request::RevokeScriptGrant { .. } => "RevokeScriptGrant",
+        Request::LinkCommandGrant { .. } => "LinkCommandGrant",
         Request::CatalogGeneration => "CatalogGeneration",
         Request::ListDefaultApps { .. } => "ListDefaultApps",
         Request::SetDefaultApp { .. } => "SetDefaultApp",

@@ -44,6 +44,21 @@ impl DaemonBackend {
         })
     }
 
+    pub(super) fn link_command_grant(&self, id: String, remember: bool) -> BackendFuture<'_, bool> {
+        Box::pin(async move {
+            match self
+                .ask(
+                    Request::LinkCommandGrant { id, remember },
+                    "Checking the link permission",
+                )
+                .await?
+            {
+                compass_ipc::Response::LinkCommandGrant { allowed } => Ok(allowed),
+                other => Err(format!("Unexpected answer from the engine: {other:?}")),
+            }
+        })
+    }
+
     pub(super) fn list_scripts(
         &self,
     ) -> BackendFuture<'_, Vec<compass_core::script_scan::ScriptItem>> {

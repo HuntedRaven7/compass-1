@@ -53,6 +53,8 @@ pub(crate) struct TestBackend {
     pub(crate) fonts_set: std::sync::Mutex<Vec<String>>,
     /// What the user allowed their Rhai scripts.
     pub(crate) grants: std::sync::Mutex<Vec<crate::backend::ScriptGrant>>,
+    /// Command ids the person always allowed from a link.
+    pub(crate) link_grants: std::sync::Mutex<Vec<String>>,
     /// The calculator's history, one group, and what changed it.
     pub(crate) calculations: std::sync::Mutex<Vec<crate::backend::CalculatorRow>>,
     pub(crate) calculator_edits: std::sync::Mutex<Vec<crate::backend::CalculatorChange>>,
@@ -604,6 +606,20 @@ impl crate::backend::ApplicationBackend for TestBackend {
             }
             self.calculator_edits.lock().unwrap().push(change);
             Ok(())
+        })
+    }
+
+    fn link_command_grant(
+        &self,
+        id: String,
+        remember: bool,
+    ) -> crate::backend::BackendFuture<'_, bool> {
+        Box::pin(async move {
+            let mut grants = self.link_grants.lock().unwrap();
+            if remember && !grants.contains(&id) {
+                grants.push(id.clone());
+            }
+            Ok(grants.contains(&id))
         })
     }
 

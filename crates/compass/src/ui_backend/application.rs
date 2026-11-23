@@ -213,6 +213,10 @@ impl ApplicationBackend for DaemonBackend {
         self.list_script_grants()
     }
 
+    fn link_command_grant(&self, id: String, remember: bool) -> BackendFuture<'_, bool> {
+        self.link_command_grant(id, remember)
+    }
+
     fn list_openers(
         &self,
         target: String,

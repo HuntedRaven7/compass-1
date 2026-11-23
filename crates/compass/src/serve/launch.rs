@@ -226,12 +226,14 @@ pub async fn open_launch_link(
             let slot = state.read().await.window_slot();
             super::forward(&slot, WindowCommand::Deeplink(url), "open a deeplink").await
         }
-        Ok(compass_core::root_items::LaunchTarget::Entrypoint(id)) => {
-            let known = state.read().await.search.index.root(&id).is_some();
-            if !known {
-                return bad_request(format!("{id} does not refer to a valid entrypoint"));
-            }
-            launch_command(state, id, &[], None, link.fallback_text).await
+        Ok(compass_core::root_items::LaunchTarget::Entrypoint(_)) => {
+            // A link comes from outside Compass. Hand it to the window rather
+            // than launching here: the launcher asks before running a command
+            // from a link, and only it can show that dialog. `Request::LaunchCommand`
+            // from the CLI and from extensions is unaffected — it never comes
+            // through this function.
+            let slot = state.read().await.window_slot();
+            super::forward(&slot, WindowCommand::Deeplink(url), "open a deeplink").await
         }
         Err(reason) => bad_request(reason),
     }

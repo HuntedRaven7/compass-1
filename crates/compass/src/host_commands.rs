@@ -41,6 +41,13 @@ use crate::extension_runner::Answer;
 /// Where "Always Allow" is kept, under `$XDG_CONFIG_HOME/compass/`.
 pub const GRANTS_FILE: &str = "host-command-grants.json";
 
+/// Where the commands a person always allowed to run from a link are kept.
+/// Separate from [`GRANTS_FILE`] so revoking one set cannot touch the other.
+pub const LINK_GRANTS_FILE: &str = "link-command-grants.json";
+
+/// The id Script Permissions uses for the link grants' single, revocable row.
+pub const LINK_GRANTS_ID: &str = "deeplink";
+
 /// Homebrew's prefix on Linux.
 pub const LINUXBREW_PREFIX: &str = "/home/linuxbrew/.linuxbrew";
 
@@ -87,6 +94,30 @@ impl Grants {
         Self::new(
             compass_xdg::xdg_dirs::config_home().map(|home| home.join("compass").join(GRANTS_FILE)),
         )
+    }
+
+    /// The grants for commands the person always allowed from a link.
+    #[must_use]
+    pub fn link_grants() -> Self {
+        Self::new(
+            compass_xdg::xdg_dirs::config_home()
+                .map(|home| home.join("compass").join(LINK_GRANTS_FILE)),
+        )
+    }
+
+    /// Whether a link may run `id` without asking.
+    #[must_use]
+    pub fn link_allows(&self, id: &str) -> bool {
+        self.allows(LINK_GRANTS_ID, id)
+    }
+
+    /// Remember that a link may always run `id`.
+    ///
+    /// # Errors
+    ///
+    /// A sentence when the file cannot be written.
+    pub fn allow_link(&self, id: &str) -> Result<(), String> {
+        self.allow(LINK_GRANTS_ID, id)
     }
 
     fn load(&self) -> GrantFile {
@@ -172,6 +203,28 @@ impl Grants {
                 id,
             })
             .collect()
+    }
+
+    /// The link grants as one row Script Permissions can revoke, with a
+    /// capability and description that say what the grant is for.
+    #[must_use]
+    pub fn link_entries(&self) -> Vec<compass_ipc::ScriptGrantEntry> {
+        let file = self.load();
+        let Some(commands) = file.extensions.get(LINK_GRANTS_ID) else {
+            return Vec::new();
+        };
+        if commands.is_empty() {
+            return Vec::new();
+        }
+        vec![compass_ipc::ScriptGrantEntry {
+            title: "Commands allowed from links".to_owned(),
+            capabilities: commands.iter().map(|id| format!("link.run:{id}")).collect(),
+            descriptions: commands
+                .iter()
+                .map(|id| format!("run {id} from a link without asking"))
+                .collect(),
+            id: LINK_GRANTS_ID.to_owned(),
+        }]
     }
 }
 

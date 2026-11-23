@@ -356,7 +356,22 @@ impl LauncherApp {
                 ..container::Style::default()
             });
 
-        let body: Element<Message> = if let Some(confirm) = &self.confirm {
+        let body: Element<Message> = if let Some(link) = &self.link_confirm {
+            column![
+                text(format!("Allow {} to run from a link?", link.title))
+                    .font(iced::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..self.font()
+                    })
+                    .size(16),
+                text("A link from outside Compass can run this command. Allow Once runs it now, Always Allow remembers this command, and Deny runs nothing.")
+                    .font(self.font()),
+                text(super::link_keys()).font(self.font()).size(12),
+            ]
+            .spacing(8)
+            .padding(Padding::new(18.0))
+            .into()
+        } else if let Some(confirm) = &self.confirm {
             column![
                 text(confirm.title.as_str())
                     .font(iced::Font {

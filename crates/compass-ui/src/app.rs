@@ -159,6 +159,12 @@ fn alert_keys(alert: &crate::backend::ExtensionPrompt) -> String {
     }
 }
 
+/// The keys that answer a link's consent question, also read by the
+/// accessibility tree.
+pub(crate) fn link_keys() -> &'static str {
+    "Enter: Allow Once    Ctrl+Enter: Always Allow    Esc: Deny"
+}
+
 /// Gives Iced's focus to the form field the keyboard is on: the text field
 /// itself, or nothing for a checkbox or a dropdown, which the form draws as
 /// focused and drives from the key handler.
@@ -352,6 +358,8 @@ pub struct LauncherApp {
     power_confirm: Option<&'static compass_core::power_commands::PowerCommand>,
     /// A question waiting on Enter or Escape before an action runs.
     confirm: Option<Confirm>,
+    /// A command a link from outside would run, waiting on consent.
+    link_confirm: Option<crate::message::LinkCommand>,
     /// Clipboard History while its keyword form is open.
     parked_clipboard: Option<crate::clipboard_page::ClipboardPage>,
     /// The view "Open with…" was opened over, to go back to.
@@ -735,6 +743,7 @@ impl LauncherApp {
             rates_asked: None,
             power_confirm: None,
             confirm: None,
+            link_confirm: None,
             parked_clipboard: None,
             open_with_return: None,
             file_mime: None,
@@ -1189,6 +1198,39 @@ impl LauncherApp {
                 let closing = self.close_extension_view();
                 self.page = Page::Root;
                 Task::batch([closing, focus_search()])
+            }
+            Message::LinkGrantChecked(command, result) => match result {
+                Ok(true) => self.run_link_command(command),
+                Ok(false) => {
+                    self.link_confirm = Some(command);
+                    Task::none()
+                }
+                Err(reason) => {
+                    self.error = Some(reason);
+                    Task::none()
+                }
+            },
+            Message::LinkConfirmAnswered { remember } => {
+                let Some(command) = self.link_confirm.take() else {
+                    return Task::none();
+                };
+                if !remember {
+                    return self.run_link_command(command);
+                }
+                let Some(backend) = self.backend.clone() else {
+                    return Task::none();
+                };
+                let id = command.id.clone();
+                Task::perform(
+                    async move { backend.link_command_grant(id, true).await },
+                    move |result| Message::LinkGrantRecorded(command.clone(), result),
+                )
+            }
+            Message::LinkGrantRecorded(command, result) => {
+                if let Err(reason) = result {
+                    tracing::warn!(%reason, "could not remember a link permission");
+                }
+                self.run_link_command(command)
             }
             Message::BuiltinCommandDone(result) => {
                 let Err(reason) = result else {
