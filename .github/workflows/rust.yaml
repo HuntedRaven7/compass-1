@@ -128,23 +128,10 @@ jobs:
         env:
           COMPASS_REQUIRE_DBUS: "1"
 
-      # Coverage is evidence, not a gate: the report goes up as an artifact so
-      # a coverage-gap finding can cite a reproducible run at this revision.
-      # No threshold and no third-party service or token. cargo-llvm-cov sets
-      # up llvm-tools-preview itself if the runner lacks it.
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2.87.22
-        with:
-          tool: cargo-llvm-cov
-      - name: Coverage (lcov)
-        run: cargo llvm-cov nextest --workspace --all-targets --lcov --output-path lcov.info
-        env:
-          COMPASS_REQUIRE_DBUS: "1"
-      - uses: actions/upload-artifact@v4.6.2
-        with:
-          name: lcov
-          path: lcov.info
-          if-no-files-found: error
+      # Coverage moved to its own job below. Instrumenting the whole workspace
+      # makes cargo-llvm-cov build a second, instrumented target tree; doing
+      # that after clippy, docs, nextest and the release benches filled the
+      # runner's disk and killed this job with a runner-level IOException.
 
       # --all-targets skips doctests, so run them separately.
       # The §8.5 SLAs are release properties, and `cargo test` above is a debug
@@ -175,6 +162,50 @@ jobs:
       - name: sccache statistics
         if: always()
         run: sccache --show-stats
+
+  # Coverage is evidence, not a gate: the report goes up as an artifact so a
+  # coverage-gap finding can cite a reproducible run at this revision. No
+  # threshold, no third-party service or token.
+  #
+  # Its own runner, as #362 asked: cargo-llvm-cov builds a second instrumented
+  # target tree, and doing that at the end of `check` exhausted the runner's
+  # disk (the failure surfaced as a runner-level "No space left on device", not
+  # as a test failure). A fresh job keeps the two builds apart and keeps a
+  # coverage problem from failing the build-and-test verdict.
+  coverage:
+    name: Coverage (lcov)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          persist-credentials: false
+
+      # smithay-client-toolkit builds xkbcommon through pkg-config, as in `check`.
+      - name: Install the xkbcommon headers
+        run: sudo apt-get update -q && sudo apt-get install -y -q libxkbcommon-dev
+
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@v2.87.22
+        with:
+          tool: cargo-llvm-cov nextest
+
+      # cargo-llvm-cov builds into target/llvm-cov-target, but the sandboxed
+      # worker test looks for the helper at target/debug/compass-sandbox-exec.
+      # Build it into the ordinary target dir first.
+      - name: Build the sandbox helper for the worker test
+        run: cargo build -p compass-sandbox --bin compass-sandbox-exec
+
+      - name: Coverage (lcov)
+        run: cargo llvm-cov nextest --workspace --all-targets --lcov --output-path lcov.info
+        env:
+          COMPASS_REQUIRE_DBUS: "1"
+
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: error
 
   # `rust-version` in Cargo.toml is a promise, and an unenforced promise rots.
   #
