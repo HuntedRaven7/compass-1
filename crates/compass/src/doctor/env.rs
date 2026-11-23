@@ -78,6 +78,29 @@ impl Env {
     }
 }
 
+/// Whether `env` can reach a Wayland compositor.
+///
+/// Both variables name a Wayland connection; `WAYLAND_SOCKET` is the
+/// pre-connected form used by nested compositors. An empty value counts as
+/// unset, as it does everywhere else in the desktop stack.
+#[must_use]
+pub fn has_wayland_in(env: &Env) -> bool {
+    env.has("WAYLAND_DISPLAY") || env.has("WAYLAND_SOCKET")
+}
+
+/// Whether `env` describes any graphical session at all.
+///
+/// This is the single rule for the question that decides which process a cold
+/// command spawns ([`crate::activation`]), whether a hotkey backend can connect
+/// ([`crate::global_shortcuts`]) and whether window outputs can be listed
+/// ([`crate::extension_windows`]). Callers that only have the process
+/// environment pass [`Env::from_process`]; tests build one with
+/// [`Env::from_pairs`].
+#[must_use]
+pub fn has_display_in(env: &Env) -> bool {
+    has_wayland_in(env) || env.has("DISPLAY")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +136,36 @@ mod tests {
     #[test]
     fn list_of_unset_key_is_empty() {
         assert!(Env::empty().list("XDG_DATA_DIRS").is_empty());
+    }
+
+    #[test]
+    fn a_display_predicate_ignores_empty_values() {
+        assert!(!has_display_in(&Env::empty()));
+        assert!(!has_display_in(&Env::from_pairs([
+            ("WAYLAND_DISPLAY", ""),
+            ("WAYLAND_SOCKET", ""),
+            ("DISPLAY", ""),
+        ])));
+    }
+
+    #[test]
+    fn a_display_predicate_accepts_each_session_variable() {
+        for key in ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"] {
+            let env = Env::from_pairs([(key, "set")]);
+            assert!(has_display_in(&env), "{key} alone should be a display");
+        }
+    }
+
+    #[test]
+    fn wayland_predicate_does_not_count_x11() {
+        assert!(has_wayland_in(&Env::from_pairs([(
+            "WAYLAND_DISPLAY",
+            "wayland-0"
+        )])));
+        assert!(has_wayland_in(&Env::from_pairs([(
+            "WAYLAND_SOCKET",
+            "/tmp/sock"
+        )])));
+        assert!(!has_wayland_in(&Env::from_pairs([("DISPLAY", ":0")])));
     }
 }

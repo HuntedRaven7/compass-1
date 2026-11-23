@@ -32,7 +32,7 @@ pub mod fs;
 pub mod report;
 
 pub use bus::{BusError, BusProbe, BusResult, FakeBus, ZbusProbe};
-pub use env::Env;
+pub use env::{Env, has_display_in, has_wayland_in};
 pub use fs::{FakeFs, FsProbe, RealFs};
 pub use report::{JSON_SCHEMA_VERSION, Report, Summary, Verdict};
 

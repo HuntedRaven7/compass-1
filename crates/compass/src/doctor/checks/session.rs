@@ -9,22 +9,30 @@ use super::check;
 use crate::doctor::env::Env;
 
 /// Wayland, X11, or no graphical session at all.
+///
+/// The Wayland arm uses [`has_wayland_in`](crate::doctor::has_wayland_in)'s two
+/// variables, so this check and the cold-start path's
+/// [`has_display_in`](crate::doctor::has_display_in) answer the same question
+/// for the same environment.
 #[must_use]
 pub fn session_type(env: &Env) -> DoctorCheck {
     const NAME: &str = "session.type";
-    match (env.get("WAYLAND_DISPLAY"), env.get("DISPLAY")) {
-        (Some(wayland), Some(x11)) => check(
+    let wayland = env
+        .get("WAYLAND_DISPLAY")
+        .map(|display| ("WAYLAND_DISPLAY", display))
+        .or_else(|| {
+            env.get("WAYLAND_SOCKET")
+                .map(|sock| ("WAYLAND_SOCKET", sock))
+        });
+    match (wayland, env.get("DISPLAY")) {
+        (Some((key, wayland)), Some(x11)) => check(
             NAME,
             DoctorStatus::Ok,
-            format!(
-                "Wayland (WAYLAND_DISPLAY={wayland}), with XWayland available at DISPLAY={x11}"
-            ),
+            format!("Wayland ({key}={wayland}), with XWayland available at DISPLAY={x11}"),
         ),
-        (Some(wayland), None) => check(
-            NAME,
-            DoctorStatus::Ok,
-            format!("Wayland (WAYLAND_DISPLAY={wayland})"),
-        ),
+        (Some((key, wayland)), None) => {
+            check(NAME, DoctorStatus::Ok, format!("Wayland ({key}={wayland})"))
+        }
         (None, Some(x11)) => check(
             NAME,
             DoctorStatus::Warn,
@@ -144,6 +152,27 @@ mod tests {
     fn session_type_treats_an_empty_wayland_display_as_absent() {
         let c = session_type(&Env::from_pairs([("WAYLAND_DISPLAY", ""), ("DISPLAY", "")]));
         assert_eq!(c.status, DoctorStatus::Fail);
+    }
+
+    #[test]
+    fn session_type_and_has_display_in_agree() {
+        use crate::doctor::has_display_in;
+
+        let environments = [
+            Env::empty(),
+            Env::from_pairs([("WAYLAND_DISPLAY", ""), ("DISPLAY", "")]),
+            Env::from_pairs([("WAYLAND_DISPLAY", "wayland-0")]),
+            Env::from_pairs([("WAYLAND_SOCKET", "/run/user/1000/wayland-0")]),
+            Env::from_pairs([("DISPLAY", ":0")]),
+            Env::from_pairs([("WAYLAND_DISPLAY", "wayland-0"), ("DISPLAY", ":0")]),
+        ];
+        for env in environments {
+            assert_eq!(
+                session_type(&env).status != DoctorStatus::Fail,
+                has_display_in(&env),
+                "the doctor and the cold-start path must agree on {env:?}"
+            );
+        }
     }
 
     // ----- xdg.runtime-dir ------------------------------------------------

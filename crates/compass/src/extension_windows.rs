@@ -103,7 +103,7 @@ impl EngineWindows {
         Self {
             backend,
             classes,
-            outputs: std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            outputs: crate::doctor::has_wayland_in(&crate::doctor::Env::from_process()),
         }
     }
 
