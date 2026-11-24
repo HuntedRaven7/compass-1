@@ -21,11 +21,11 @@ export namespace BrowserExtension {
 					// The API keeps `focus` synchronous, so a rejected request
 					// would otherwise be an unhandled rejection and take down
 					// the worker when the browser has gone away.
-					void getClient().BrowserExtension.focusTab(b.browserId, b.id).catch(
-						(error: unknown) => {
+					void getClient()
+						.BrowserExtension.focusTab(b.browserId, b.id)
+						.catch((error: unknown) => {
 							console.error("BrowserExtension.focusTab failed", error);
-						},
-					);
+						});
 				},
 			})),
 		);
