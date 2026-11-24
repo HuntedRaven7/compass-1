@@ -1,0 +1,38 @@
+{
+	"$schema": "https://raw.githubusercontent.com/vicinaehq/vicinae/refs/heads/main/extra/schemas/extension.json",
+	"name": "browser-tabs",
+	"title": "Browser Tabs",
+	"description": "Search and focus tabs in connected Firefox and Chromium browsers",
+	"categories": ["Web", "Productivity"],
+	"license": "MIT",
+	"author": "tunaos",
+	"contributors": [],
+	"pastContributors": [],
+	"icon": "icon.png",
+	"commands": [
+		{
+			"name": "search-browser-tabs",
+			"title": "Search Browser Tabs",
+			"description": "Find an open browser tab and focus it",
+			"mode": "view"
+		}
+	],
+	"preferences": [],
+	"scripts": {
+		"build": "vici build",
+		"dev": "vici develop",
+		"format": "biome format --write src test",
+		"lint": "vici lint",
+		"test": "node scripts/test.mjs"
+	},
+	"dependencies": {
+		"@vicinae/api": "file:../../src/typescript/api"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.2",
+		"esbuild": "0.25.9",
+		"@types/node": "^24.9.2",
+		"@types/react": "^19.2.17",
+		"typescript": "^5.9.2"
+	}
+}

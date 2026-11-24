@@ -443,6 +443,18 @@ jobs:
         working-directory: src/typescript/extension-manager
         run: npm test
 
+      # The in-tree browser-tab extension, built with the same vici CLI a
+      # third-party author uses and tested with the SDK's esbuild. Catches a
+      # renamed command, a bad manifest or a broken tab-ordering rule here
+      # rather than at the first launch of the extension.
+      - name: Build and test Browser Tabs
+        run: |
+          (cd src/typescript/api && npm run build)
+          cd extensions/browser-tabs
+          npm install --no-audit --no-fund
+          node ../../src/typescript/api/dist/bin.js build -o /tmp/browser-tabs-build
+          npm test
+
       - name: Drive it from the host
         env:
           COMPASS_REQUIRE_RUNTIME: "1"
