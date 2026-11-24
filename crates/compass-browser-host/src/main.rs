@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use compass_browser_host::bridge::IpcBridge;
 use compass_browser_host::protocol::HostResponse;
-use compass_browser_host::{EmptyTabs, SharedWriter, write_frame};
+use compass_browser_host::{EmptyTabs, FrameWriter, SharedWriter};
 
 fn main() {
     let browser_id =
@@ -40,7 +40,7 @@ fn main() {
                             else {
                                 continue;
                             };
-                            if write_frame(&mut writer, &bytes).is_err() {
+                            if writer.frame(&bytes).is_err() {
                                 break;
                             }
                         }
@@ -75,9 +75,7 @@ fn main() {
     }
     // The browser closed the pipe. Tell the engine so its tab list and
     // BrowserExtension capability stop advertising a browser that is gone.
-    if let Some(bridge) = bridge.as_deref()
-        && let Err(error) = bridge.push_tabs(Vec::new())
-    {
-        eprintln!("compass-browser-host: could not report the disconnect: {error}");
+    if let Some(bridge) = bridge.as_deref() {
+        bridge.disconnect_all();
     }
 }

@@ -5,6 +5,7 @@
 //! `$XDG_RUNTIME_DIR/compass/ipc.sock`, which is how tests and nested sessions
 //! address a non-default engine.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -22,6 +23,9 @@ pub struct IpcBridge {
     tabs_client: Mutex<Client>,
     focus_client: Mutex<Client>,
     browser_id: String,
+    /// Browsers that have reported tabs through this host, so a disconnect can
+    /// clear exactly those and not another browser connected through it.
+    reported: Mutex<HashSet<String>>,
 }
 
 impl IpcBridge {
@@ -49,6 +53,7 @@ impl IpcBridge {
             tabs_client: Mutex::new(tabs_client),
             focus_client: Mutex::new(focus_client),
             browser_id,
+            reported: Mutex::new(HashSet::new()),
         })
     }
 
@@ -58,7 +63,8 @@ impl IpcBridge {
     /// # Errors
     ///
     /// A sentence from the engine or the transport.
-    pub fn push_tabs(&self, tabs: Vec<Tab>) -> Result<(), String> {
+    pub fn push_tabs(&self, browser_id: &str, tabs: Vec<Tab>) -> Result<(), String> {
+        let empty = tabs.is_empty();
         let payload: Vec<BrowserTab> = tabs
             .into_iter()
             .map(|tab| BrowserTab {
@@ -68,8 +74,19 @@ impl IpcBridge {
                 active: tab.active,
             })
             .collect();
+        let id = if browser_id.trim().is_empty() {
+            self.browser_id.clone()
+        } else {
+            browser_id.to_owned()
+        };
+        if !empty {
+            self.reported
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.clone());
+        }
         let request = Request::BrowserTabs {
-            browser_id: self.browser_id.clone(),
+            browser_id: id,
             tabs: payload,
         };
         let mut client = self
@@ -81,6 +98,21 @@ impl IpcBridge {
             Ok(Response::Error(error)) => Err(error.message),
             Ok(other) => Err(format!("unexpected answer from Compass: {other:?}")),
             Err(error) => Err(format!("Compass did not answer: {error}")),
+        }
+    }
+
+    /// Reports a disconnect for every browser that used this host, without
+    /// clearing another browser's tabs.
+    pub fn disconnect_all(&self) {
+        let ids: Vec<String> = self
+            .reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        for id in ids {
+            let _ = self.push_tabs(&id, Vec::new());
         }
     }
 
