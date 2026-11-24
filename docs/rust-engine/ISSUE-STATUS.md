@@ -13,8 +13,6 @@ new commitment of work.
 | #307 | Gate idle RSS with environment-keyed baselines, keeping incompatible environments separate. | The environment-keyed RSS series, tolerance from measured spread, and refusal to compare incompatible baselines landed in #339 and #349; the resident-window series is recorded in `PERF-GATES.md`. | `PERF-GATES.md`, `.github/workflows/perf.yaml` |
 | #314 | Gate fresh install, restart, upgrade and uninstall journeys in a real session. | The install-journey gate landed in #350, covering fresh install, app-grid first run, shortcut, login start, logout/login, update, repeated activation and uninstall. | `scripts/tier2/install-journey.sh`, `.github/workflows/tier2.yaml` |
 
-The remaining open issues are deliberately not listed: #377, #388 and #393 are
-private security reports awaiting the owner's A/B/C decision; #326 waits for
-the D-Bus dependency stack to publish zbus 6 releases (ADR-0022 §4); and #17,
-#316, #317 and #318 are the still-unbuilt browser extension rollout after the
-transport prototype in ADR-0008/ADR-0022.
+Other open issues are deliberately not listed here: some await an owner's
+decision, some wait on upstream releases, and some are still being built. This
+table is only for issues whose work has already landed.
