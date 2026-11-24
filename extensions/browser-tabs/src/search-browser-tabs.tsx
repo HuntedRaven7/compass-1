@@ -66,9 +66,9 @@ export default function SearchBrowserTabs() {
 
 	return (
 		<List searchBarPlaceholder="Search browser tabs...">
-			{groupByBrowser(tabs).map(([browser, group]) => (
-				<List.Section key={browser} title={browser}>
-					{group.map((tab) => (
+			{groupByBrowser(tabs).map((group) => (
+				<List.Section key={group.id} title={group.label}>
+					{group.tabs.map((tab) => (
 						<List.Item
 							key={`${tab.browserId ?? "browser"}:${tab.id}`}
 							id={`${tab.browserId ?? "browser"}:${tab.id}`}

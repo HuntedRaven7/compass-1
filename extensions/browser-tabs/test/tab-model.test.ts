@@ -77,10 +77,14 @@ describe("tab ordering", () => {
 		];
 		const groups = groupByBrowser(input);
 		assert.deepEqual(
-			groups.map(([label, tabs]) => [label, tabs.map((t) => t.id)]),
+			groups.map((group) => [
+				group.id,
+				group.label,
+				group.tabs.map((t) => t.id),
+			]),
 			[
-				["Chrome", [3, 2]],
-				["Firefox", [1]],
+				["chrome", "Chrome", [3, 2]],
+				["firefox", "Firefox", [1]],
 			],
 		);
 	});
@@ -90,7 +94,19 @@ describe("tab ordering", () => {
 			tab({ id: 1, title: "Mail" }),
 			tab({ id: 2, title: "Mail" }),
 		]);
-		assert.equal(groups[0]?.[1].length, 2);
+		assert.equal(groups[0]?.tabs.length, 2);
+	});
+
+	it("keeps distinct unknown browsers in distinct sections", () => {
+		const groups = groupByBrowser([
+			tab({ id: 1, browserId: "com.example.browser" }),
+			tab({ id: 2, browserId: "com.other.browser" }),
+		]);
+		assert.equal(groups.length, 2, "the shared label must not merge them");
+		assert.deepEqual(groups.map((group) => group.id).sort(), [
+			"com.example.browser",
+			"com.other.browser",
+		]);
 	});
 
 	it("an empty list has no groups", () => {

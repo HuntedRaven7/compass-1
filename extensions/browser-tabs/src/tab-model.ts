@@ -59,18 +59,33 @@ export function sortTabs(tabs: readonly BrowserTab[]): BrowserTab[] {
 	});
 }
 
-/** Browser sections in a stable order, each with its tabs already sorted. */
-export function groupByBrowser(
-	tabs: readonly BrowserTab[],
-): [string, BrowserTab[]][] {
+/** One browser section. `id` is the identity; `label` is only its title. */
+export interface BrowserGroup {
+	id: string;
+	label: string;
+	tabs: BrowserTab[];
+}
+
+/**
+ * Browser sections in a stable order. Grouping is by `browserId`, never by
+ * the display label: two unknown browsers may end in the same word, and focus
+ * still has to target the one the row came from.
+ */
+export function groupByBrowser(tabs: readonly BrowserTab[]): BrowserGroup[] {
 	const groups = new Map<string, BrowserTab[]>();
 	for (const tab of sortTabs(tabs)) {
-		const label = browserLabel(tab);
-		const group = groups.get(label);
+		const id = tab.browserId?.trim() || "";
+		const group = groups.get(id);
 		if (group) group.push(tab);
-		else groups.set(label, [tab]);
+		else groups.set(id, [tab]);
 	}
-	return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+	return [...groups.entries()]
+		.map(([id, group]) => ({
+			id,
+			label: browserLabel(group[0]),
+			tabs: group,
+		}))
+		.sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
 }
 
 /** A focus failure must not tear down the extension's view. */
