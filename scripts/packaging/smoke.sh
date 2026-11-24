@@ -68,6 +68,7 @@ if [ -n "$prefix" ]; then
   expect_exec "$prefix/bin/compass"
   expect_exec "$libexecdir/compass/compass-sandbox-exec"
   expect_exec "$libexecdir/compass/compass-file-indexer"
+  expect_exec "$libexecdir/compass/compass-browser-host"
   expect_file "$prefix/share/applications/org.tunaos.compass.desktop"
   expect_file "$prefix/share/metainfo/org.tunaos.compass.metainfo.xml"
   expect_file "$prefix/share/icons/hicolor/scalable/apps/org.tunaos.compass.svg"

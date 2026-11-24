@@ -237,6 +237,7 @@ pub fn start(
         commands,
         context,
         launcher,
+        browser,
     } = host;
 
     // The runtime creates these itself, but a sandbox can only grant a path
@@ -300,7 +301,7 @@ pub fn start(
             context.launch_context.clone()
         }),
         launch_type: LaunchType::User,
-        capabilities: capabilities(shell.is_some(), files.as_ref()),
+        capabilities: capabilities(shell.is_some(), files.as_ref(), browser.is_connected()),
         fallback_text: context.and_then(|context| context.fallback_text),
         cwd: None,
     };
@@ -367,6 +368,7 @@ pub fn start(
                     assets,
                     writable,
                     launcher,
+                    browser,
                 },
                 storage,
                 ShellClipboard {
@@ -426,6 +428,8 @@ pub struct Host {
     /// The launcher window, where a no-view command's HUD and failures go,
     /// or `None` to send them only as desktop notifications.
     pub launcher: Option<Launcher>,
+    /// Connected browsers, shared with the native messaging hosts.
+    pub browser: Arc<crate::extension_browser::BrowserRegistry>,
 }
 
 /// Hands the launcher window a command (a HUD line, a failure), answering
@@ -445,12 +449,16 @@ impl std::fmt::Debug for Launcher {
 /// is ever connected (ADR-0008); windows where a backend lists them; the
 /// wallpaper where a backend sets it; files where the indexer runs.
 /// Blocking: it may probe the compositor and the wallpaper daemons once.
-fn capabilities(shell: bool, files: Option<&Arc<crate::file_search::FileSearch>>) -> Capabilities {
+fn capabilities(
+    shell: bool,
+    files: Option<&Arc<crate::file_search::FileSearch>>,
+    browser: bool,
+) -> Capabilities {
     let windows = crate::wlroots::compositor().is_some()
         || crate::wlroots::session().is_some_and(|wlroots| wlroots.toplevels.is_some())
         || shell;
     Capabilities {
-        browser_extension: false,
+        browser_extension: browser,
         window_management: windows,
         wallpaper: crate::extension_wallpaper::EngineWallpaper::new(
             tokio::runtime::Handle::try_current().ok(),

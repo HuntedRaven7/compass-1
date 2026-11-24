@@ -1,6 +1,28 @@
-# Browser host prototype (#315): threat model and ownership
+# Browser host (#315 prototype, #316 bridge): threat model and ownership
 
-**Status:** prototype, not shipped · **Relates to:** ADR-0008, ADR-0022 §3, issues #315–#318
+**Status:** the transport prototype and the engine/host relay are built; the
+browser-side WebExtension and the Bluefin matrix are not · **Relates to:**
+ADR-0008, ADR-0022 §3, issues #315–#318
+
+## What #316 added to the prototype
+
+- IPC v28 carries the relay: `Request::BrowserTabs` pushes a browser's tabs into
+  an engine-side `BrowserRegistry`, and `Request::BrowserFocusWait` lets the
+  host collect focus requests (Compass's IPC is request/response, so the host
+  polls rather than receiving a server push).
+- Extension workers now get a live `Browser` backed by that registry instead of
+  `NoBrowsers`, so `BrowserExtension/getTabs` sees the reported tabs and
+  `environment.canAccess(BrowserExtension)` turns true while a browser is
+  connected.
+- The host binary connects to `$COMPASS_SOCKET` (or the usual runtime-dir
+  socket), relays `tabsChanged` messages to the engine, and writes `focus`
+  messages back on stdout. It is installed beside the other helper binaries by
+  every package target.
+
+Still outside this change: installing the native-host manifests, signing and
+publishing the browser-side WebExtension, and the real browser matrix (#318).
+The manifest generator in `manifest.rs` exists for the package owner to use;
+no running extension writes manifests (ADR-0004).
 
 This records the narrow proof in `crates/compass-browser-host` and the decisions
 #315 asks for. ADR-0022 already chose option 1 of ADR-0008 — a small native

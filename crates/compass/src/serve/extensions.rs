@@ -276,6 +276,7 @@ async fn run_extension_command(
             deliver,
         )),
         launcher: Some(launcher_window(state)),
+        browser: state.read().await.browser.registry(),
     };
     let started = tokio::task::spawn_blocking(move || {
         crate::extension_runner::start(&runtime, &command, &data_dir, host)

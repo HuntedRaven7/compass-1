@@ -48,6 +48,7 @@ pub(super) struct Served {
     /// The directories the extension may write: a file there may be its own.
     pub(super) writable: Vec<PathBuf>,
     pub(super) launcher: Option<Launcher>,
+    pub(super) browser: Arc<crate::extension_browser::BrowserRegistry>,
 }
 
 // Over the 150-line limit when it was added (#379): split it, don't grow it.
@@ -74,6 +75,7 @@ pub(super) fn serve(
         assets,
         writable,
         launcher,
+        browser,
     } = served;
     let title = title.as_str();
     let clipboard_handle = clipboard.handle.clone();
@@ -145,7 +147,7 @@ pub(super) fn serve(
         clipboard_handle.clone(),
     ));
     router = router.with(&wallpaper);
-    let browser = BrowserService::new(crate::extension_browser::NoBrowsers);
+    let browser = BrowserService::new(crate::extension_browser::EngineBrowser::new(browser));
     router = router.with(&browser);
     let command_service = commands.map(CommandService::new);
     if let Some(service) = &command_service {

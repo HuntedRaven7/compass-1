@@ -13,6 +13,7 @@
 
 #![deny(missing_docs)]
 
+pub mod bridge;
 pub mod framing;
 pub mod manifest;
 pub mod protocol;
@@ -64,6 +65,37 @@ pub fn serve(
     writer: &mut impl Write,
     source: &impl TabSource,
 ) -> Result<(), HostError> {
+    serve_with_bridge(reader, writer, source, None)
+}
+
+/// A stdio writer shared with the focus relay thread.
+#[derive(Debug, Clone)]
+pub struct SharedWriter<W>(pub std::sync::Arc<std::sync::Mutex<W>>);
+
+impl<W: Write> Write for SharedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .flush()
+    }
+}
+
+/// Serves native messages, relaying tab reports to Compass when a bridge is
+/// present. The unit tests use [`serve`] with no bridge.
+pub fn serve_with_bridge(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    source: &impl TabSource,
+    bridge: Option<&bridge::IpcBridge>,
+) -> Result<(), HostError> {
     loop {
         let bytes = match read_frame(reader) {
             Ok(bytes) => bytes,
@@ -102,6 +134,15 @@ pub fn serve(
             }
             HostRequest::FocusTab { .. } => HostResponse::Error {
                 message: "no connected browser owns that tab".to_owned(),
+            },
+            HostRequest::TabsChanged { tabs, .. } => match bridge {
+                Some(bridge) => match bridge.push_tabs(tabs) {
+                    Ok(()) => HostResponse::Ok,
+                    Err(message) => HostResponse::Error { message },
+                },
+                None => HostResponse::Error {
+                    message: "this host has no Compass connection".to_owned(),
+                },
             },
         };
         write_frame(writer, &serde_json::to_vec(&reply)?)?;

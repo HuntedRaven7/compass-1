@@ -109,8 +109,10 @@ use serde::{Deserialize, Serialize};
 /// stores copies, and why it does not ([`Request::ClipboardStatus`],
 /// [`Response::ClipboardStatus`]); version 27, a link from outside that would
 /// run a command asks first, and "Always Allow" is remembered per command
-/// ([`Request::LinkCommandGrant`], [`Response::LinkCommandGrant`]).
-pub const PROTOCOL_VERSION: u16 = 27;
+/// ([`Request::LinkCommandGrant`], [`Response::LinkCommandGrant`]); version 28,
+/// the browser host's tab relay ([`Request::BrowserTabs`],
+/// [`Request::BrowserFocusWait`], [`Response::BrowserFocus`]).
+pub const PROTOCOL_VERSION: u16 = 28;
 
 /// How long the engine holds an [`Request::ExtensionView`] open waiting for a
 /// change before it answers with the version it has.
@@ -1121,6 +1123,34 @@ pub enum Request {
     /// How clipboard history is capturing and storing copies, and why not
     /// when it is not. Answered with [`Response::ClipboardStatus`]. (v26.)
     ClipboardStatus,
+    /// A browser's native messaging host reports the tabs it can see. An
+    /// empty list means the browser disconnected. Answered with [`Response::Ack`]. (v28.)
+    BrowserTabs {
+        /// Stable id of the browser, e.g. `org.mozilla.firefox`.
+        browser_id: String,
+        /// Its open tabs, in the browser's own order.
+        tabs: Vec<BrowserTab>,
+    },
+    /// Waits briefly for one focus request aimed at this browser, and answers
+    /// with [`Response::BrowserFocus`]. The native host polls this between
+    /// native-messages; Compass's IPC is request/response and has no server push. (v28.)
+    BrowserFocusWait {
+        /// The browser id this host serves.
+        browser_id: String,
+    },
+}
+
+/// One tab a browser host reports to the engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTab {
+    /// The browser's own tab id.
+    pub id: i64,
+    /// Page title, when the browser reports one.
+    pub title: Option<String>,
+    /// Page URL.
+    pub url: String,
+    /// Whether this is the active tab in its window.
+    pub active: bool,
 }
 
 /// A newer Compass release, in a [`Response::UpdateStatus`]. (v21.)
@@ -1664,6 +1694,12 @@ pub enum Response {
     },
     /// Answer to [`Request::ClipboardStatus`]. (v26.)
     ClipboardStatus(ClipboardStatus),
+    /// One focus request for a browser host, or `None` if none arrived before
+    /// the wait expired. Answer to [`Request::BrowserFocusWait`]. (v28.)
+    BrowserFocus {
+        /// The tab to focus, when there is one.
+        tab_id: Option<i64>,
+    },
 }
 
 /// The launcher hotkey's state with the desktop, in a

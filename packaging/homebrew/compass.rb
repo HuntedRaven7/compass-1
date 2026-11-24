@@ -34,10 +34,12 @@ class Compass < Formula
     system "cargo", "install", "--bin", "compass-sandbox-exec",
            *std_cargo_args(path: "crates/compass-sandbox")
     system "cargo", "install", *std_cargo_args(path: "crates/compass-input-server")
+    system "cargo", "install", "--bin", "compass-browser-host",
+           *std_cargo_args(path: "crates/compass-browser-host")
     # cargo install puts every binary on PATH, but the engine finds its
     # helpers in ../libexec/compass from bin/ — so they move there.
     (libexec/"compass").mkpath
-    %w[compass-file-indexer compass-sandbox-exec compass-input-server].each do |helper|
+    %w[compass-file-indexer compass-sandbox-exec compass-browser-host compass-input-server].each do |helper|
       mv bin/helper, libexec/"compass"
     end
     (share/"applications").install "packaging/flatpak/org.tunaos.compass.desktop"

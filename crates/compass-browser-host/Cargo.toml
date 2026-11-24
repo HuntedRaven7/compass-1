@@ -11,9 +11,11 @@ description = "Native messaging host prototype for the browser tab extension (#3
 workspace = true
 
 [dependencies]
+compass-ipc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

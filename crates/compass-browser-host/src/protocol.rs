@@ -33,6 +33,14 @@ pub enum HostRequest {
         /// The browser's own tab id.
         tab_id: i64,
     },
+    /// The WebExtension reports its current tabs. The host relays them to the
+    /// engine, which is where other extensions read them from. (v2.)
+    TabsChanged {
+        /// Stable identity of the browser.
+        browser_id: String,
+        /// Its open tabs; an empty list means the browser disconnected.
+        tabs: Vec<Tab>,
+    },
 }
 
 /// A message back to the WebExtension.
@@ -57,6 +65,11 @@ pub enum HostResponse {
     },
     /// The action was performed.
     Ok,
+    /// The engine asked the browser to focus one tab. (v2.)
+    Focus {
+        /// The browser's own tab id.
+        tab_id: i64,
+    },
     /// The request was refused, with a reason suitable for the extension's log.
     Error {
         /// Why it was refused.

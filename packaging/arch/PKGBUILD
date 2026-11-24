@@ -50,7 +50,7 @@ build() {
   cd compass
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release -p compass -p compass-sandbox -p compass-input-server --bins
+  cargo build --frozen --release -p compass -p compass-sandbox -p compass-browser-host -p compass-input-server --bins
   # The extension runtime bundle: npm bundles the committed protocol bindings.
   # The Flatpak builds it the same way, outside flatpak-builder.
   ./scripts/build-extension-runtime.sh

@@ -497,6 +497,18 @@ fn all_requests() -> Vec<Request> {
             hold: false,
         },
         Request::ClipboardStatus,
+        Request::BrowserTabs {
+            browser_id: "org.mozilla.firefox".into(),
+            tabs: vec![compass_ipc::BrowserTab {
+                id: 7,
+                title: Some("Inbox".into()),
+                url: "https://mail.example.com".into(),
+                active: true,
+            }],
+        },
+        Request::BrowserFocusWait {
+            browser_id: "org.mozilla.firefox".into(),
+        },
     ]
 }
 
@@ -1121,6 +1133,8 @@ fn all_responses() -> Vec<Response> {
             capture_problem: None,
             storage: compass_ipc::ClipboardStorage::Opening,
         }),
+        Response::BrowserFocus { tab_id: Some(7) },
+        Response::BrowserFocus { tab_id: None },
     ]
 }
 
@@ -1255,6 +1269,8 @@ fn request_variants_are_exhaustive() {
             | Request::LauncherShortcut { .. }
             | Request::LoginStart { .. }
             | Request::ClipboardStatus
+            | Request::BrowserTabs { .. }
+            | Request::BrowserFocusWait { .. }
             | Request::WindowOutcome(_) => {}
         }
     }
@@ -1326,6 +1342,7 @@ fn response_variants_are_exhaustive() {
             | Response::LauncherShortcut { .. }
             | Response::LoginStart { .. }
             | Response::ClipboardStatus(_)
+            | Response::BrowserFocus { .. }
             | Response::Window(_) => {}
         }
     }

@@ -49,7 +49,7 @@
     strictDeps = true;
     # compass-input-server: the keyboard helper; the Nix store cannot carry
     # its capability, so NixOS wraps it (security.wrappers, packaging/README.md).
-    cargoExtraArgs = "--locked -p compass -p compass-sandbox -p compass-input-server --bins";
+    cargoExtraArgs = "--locked -p compass -p compass-sandbox -p compass-browser-host -p compass-input-server --bins";
     doCheck = false;
 
     nativeBuildInputs = [

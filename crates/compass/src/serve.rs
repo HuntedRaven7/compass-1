@@ -41,6 +41,7 @@ use crate::doctor;
 use crate::engine::Engine;
 
 mod app_runtime;
+mod browser;
 mod calculator;
 mod clipboard;
 mod default_apps;
@@ -95,6 +96,8 @@ pub struct EngineState {
     clipboard: clipboard::Clipboard,
     /// Running extension commands and their views.
     extensions: extensions::Extensions,
+    /// Connected browser hosts and their tab lists.
+    browser: browser::Browsers,
     /// The extension stores and the update check.
     stores: stores::Stores,
     /// Shortcuts (quicklinks).
@@ -188,6 +191,7 @@ impl EngineState {
                 ),
             ),
             extensions: extensions::Extensions::default(),
+            browser: browser::Browsers::default(),
             stores,
             shortcuts,
             snippets,
@@ -228,6 +232,7 @@ impl EngineState {
             shell: shell::Shell::default(),
             clipboard: clipboard::Clipboard::new(&crate::clipboard_service::Settings::default()),
             extensions: extensions::Extensions::default(),
+            browser: browser::Browsers::default(),
             stores: stores::Stores::new(crate::updates::Updates::offline()),
             shortcuts: shortcuts::Shortcuts::default(),
             snippets: snippets::Snippets::default(),
@@ -530,6 +535,9 @@ pub async fn handle(state: &Arc<RwLock<EngineState>>, request: Request) -> Respo
         | Request::RevokeScriptGrant { .. }
         | Request::ListRhaiScripts) => rhai::handle(state, request).await,
         Request::LinkCommandGrant { .. } => links::handle(request).await,
+        request @ (Request::BrowserTabs { .. } | Request::BrowserFocusWait { .. }) => {
+            browser::handle(state, request).await
+        }
         request @ (Request::RunExtensionCommand { .. }
         | Request::ExtensionView { .. }
         | Request::ExtensionEvent { .. }

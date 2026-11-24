@@ -222,6 +222,8 @@ fn describe(request: &Request) -> &'static str {
         Request::LauncherShortcut { .. } => "LauncherShortcut",
         Request::LoginStart { .. } => "LoginStart",
         Request::ClipboardStatus => "ClipboardStatus",
+        Request::BrowserTabs { .. } => "BrowserTabs",
+        Request::BrowserFocusWait { .. } => "BrowserFocusWait",
     }
 }
 
