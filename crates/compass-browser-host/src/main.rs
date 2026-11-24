@@ -27,7 +27,7 @@ fn main() {
     let stdout = Arc::new(Mutex::new(io::stdout()));
     let relay_bridge = Arc::clone(&bridge);
     let relay_writer = SharedWriter(Arc::clone(&stdout));
-    std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("browser-focus-relay".to_owned())
         .spawn(move || {
             let mut writer = relay_writer;
@@ -43,7 +43,11 @@ fn main() {
                 }
             }
         })
-        .expect("start the browser focus relay");
+    {
+        // Without the relay the host still reports tabs; focus requests just
+        // collect until a restart. Say so rather than failing the browser.
+        eprintln!("compass-browser-host: no focus relay: {error}");
+    }
 
     let stdin = io::stdin();
     let mut reader = stdin.lock();
