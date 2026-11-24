@@ -555,8 +555,11 @@ jobs:
     name: "Suite 0: the parity harness runs at all"
     runs-on: ubuntu-24.04
     # Measured: ~90 s to build the engine from a warm cache, ~70 s for 1817
-    # queries against two engines. The margin is for a cold cache.
-    timeout-minutes: 20
+    # queries against two engines. A cold `target` cache makes this job build
+    # every release dependency (~500 sccache misses on the failed run), which
+    # took past 20 minutes and killed the harness before it ran a query.
+    # Keep the same budget as the other cold-build jobs.
+    timeout-minutes: 45
 
     env:
       SCCACHE_GHA_ENABLED: "true"
