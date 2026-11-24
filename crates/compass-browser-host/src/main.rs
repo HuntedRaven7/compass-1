@@ -34,14 +34,23 @@ fn main() {
             .spawn(move || {
                 let mut writer = relay_writer;
                 loop {
-                    let Some(tab_id) = relay_bridge.focus_wait() else {
-                        continue;
-                    };
-                    let Ok(bytes) = serde_json::to_vec(&HostResponse::Focus { tab_id }) else {
-                        continue;
-                    };
-                    if write_frame(&mut writer, &bytes).is_err() {
-                        break;
+                    match relay_bridge.focus_wait() {
+                        Ok(Some(tab_id)) => {
+                            let Ok(bytes) = serde_json::to_vec(&HostResponse::Focus { tab_id })
+                            else {
+                                continue;
+                            };
+                            if write_frame(&mut writer, &bytes).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            // A dead engine will not answer again on this
+                            // connection. Stop instead of spinning at 100%.
+                            eprintln!("compass-browser-host: focus relay stopped: {error}");
+                            break;
+                        }
                     }
                 }
             })
@@ -63,5 +72,12 @@ fn main() {
     ) {
         eprintln!("compass-browser-host: {error}");
         std::process::exit(1);
+    }
+    // The browser closed the pipe. Tell the engine so its tab list and
+    // BrowserExtension capability stop advertising a browser that is gone.
+    if let Some(bridge) = bridge.as_deref()
+        && let Err(error) = bridge.push_tabs(Vec::new())
+    {
+        eprintln!("compass-browser-host: could not report the disconnect: {error}");
     }
 }

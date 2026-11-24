@@ -69,10 +69,17 @@ impl BrowserRegistry {
 
     /// Queues a focus request for the host that owns `browser_id`.
     pub fn request_focus(&self, browser_id: &str, tab_id: i64) {
-        self.focus
+        const MAX_PENDING: usize = 64;
+        let mut focus = self
+            .focus
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_back((browser_id.to_owned(), tab_id));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A browser that never polls must not let an extension grow this
+        // queue without bound. Drop the oldest request instead.
+        if focus.len() >= MAX_PENDING {
+            focus.pop_front();
+        }
+        focus.push_back((browser_id.to_owned(), tab_id));
         self.notify.notify_waiters();
     }
 
