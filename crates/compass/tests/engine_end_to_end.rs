@@ -1816,6 +1816,31 @@ fn extension_runtime() -> Option<std::path::PathBuf> {
 }
 
 #[test]
+fn a_browser_host_reports_tabs_and_polls_for_focus() {
+    use compass_ipc::{BrowserTab, Request, Response};
+    let daemon = Daemon::start(&[]);
+    assert_eq!(
+        daemon.request(Request::BrowserTabs {
+            browser_id: "org.mozilla.firefox".into(),
+            tabs: vec![BrowserTab {
+                id: 7,
+                title: Some("Inbox".into()),
+                url: "https://mail.example.com".into(),
+                active: true,
+            }],
+        }),
+        Response::Ack
+    );
+    // Nobody asked an extension to focus a tab, so the first poll finds nothing.
+    assert_eq!(
+        daemon.request(Request::BrowserFocusWait {
+            browser_id: "org.mozilla.firefox".into(),
+        }),
+        Response::BrowserFocus { tab_id: None }
+    );
+}
+
+#[test]
 fn an_installed_extension_command_is_found_and_a_no_view_one_runs() {
     use compass_ipc::{ErrorKind, Request, Response};
     let Some(runtime) = extension_runtime() else {

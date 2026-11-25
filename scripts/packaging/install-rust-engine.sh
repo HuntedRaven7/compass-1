@@ -44,10 +44,10 @@ helpers="$destdir$libexecdir/compass"
 share="$root/share"
 app_id=org.tunaos.compass
 
-for bin in compass compass-file-indexer compass-sandbox-exec; do
+for bin in compass compass-file-indexer compass-sandbox-exec compass-browser-host; do
   if [ ! -x "$bin_dir/$bin" ]; then
     echo "missing $bin_dir/$bin; build with:" >&2
-    echo "  cargo build --release --locked -p compass -p compass-sandbox -p compass-input-server --bins" >&2
+    echo "  cargo build --release --locked -p compass -p compass-sandbox -p compass-browser-host -p compass-input-server --bins" >&2
     exit 1
   fi
 done
@@ -58,6 +58,9 @@ install -Dm755 "$bin_dir/compass" "$root/bin/compass"
 # (Landlock + seccomp) and the engine refuses to run extensions without it.
 install -Dm755 "$bin_dir/compass-file-indexer" "$helpers/compass-file-indexer"
 install -Dm755 "$bin_dir/compass-sandbox-exec" "$helpers/compass-sandbox-exec"
+# The browser spawns this native messaging host by absolute path; the WebExtension
+# knows its name, and the package owns the manifest that points here.
+install -Dm755 "$bin_dir/compass-browser-host" "$helpers/compass-browser-host"
 
 # The snippet keyword expander's keyboard helper (crates/compass-input-server).
 # Optional: the Flatpak cannot use it (no /dev/input in the sandbox), so it is

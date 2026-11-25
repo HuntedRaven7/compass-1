@@ -58,11 +58,11 @@ pub use codec::{FrameCodec, LENGTH_PREFIX_LEN, MAX_FRAME_LEN};
 pub use error::{Error, Result};
 pub use path::{SocketPath, ensure_private_dir};
 pub use protocol::{
-    CalculatorEdit, CalculatorGroup, CalculatorRecord, ClipboardBackend, ClipboardDetail,
-    ClipboardEntry, ClipboardKind, ClipboardStatus, ClipboardStorage, CommandInfo, DefaultAppEntry,
-    DefaultAppKind, DmenuSpec, DoctorCheck, DoctorStatus, EXTENSION_VIEW_HOLD, ErrorKind,
-    ExchangeRateTable, ExtensionAlert, ExtensionToast, ExtensionToastStyle, FileActionInfo,
-    FileHit, FontEntry, InputServerStatus, LONG_POLL_MARGIN, LauncherShortcutState,
+    BrowserTab, CalculatorEdit, CalculatorGroup, CalculatorRecord, ClipboardBackend,
+    ClipboardDetail, ClipboardEntry, ClipboardKind, ClipboardStatus, ClipboardStorage, CommandInfo,
+    DefaultAppEntry, DefaultAppKind, DmenuSpec, DoctorCheck, DoctorStatus, EXTENSION_VIEW_HOLD,
+    ErrorKind, ExchangeRateTable, ExtensionAlert, ExtensionToast, ExtensionToastStyle,
+    FileActionInfo, FileHit, FontEntry, InputServerStatus, LONG_POLL_MARGIN, LauncherShortcutState,
     LocalStorageEntry, LoginStartState, LoginStartUnit, MediaPlayerAction, MediaPlayerEntry,
     OAuthTokenSetEntry, OpenerEntry, PROTOCOL_VERSION, PreferenceField, PreferenceFieldKind,
     ProtocolError, QueryHit, Request, RequestEnvelope, Response, ResponseEnvelope, RhaiScriptEntry,

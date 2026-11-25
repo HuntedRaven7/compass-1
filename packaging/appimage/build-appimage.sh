@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Compass (Rust engine) AppImage from release binaries.
 #
-#   cargo build --release --locked -p compass -p compass-sandbox -p compass-input-server --bins
+#   cargo build --release --locked -p compass -p compass-sandbox -p compass-browser-host -p compass-input-server --bins
 #   scripts/build-extension-runtime.sh          # optional; see REQUIRE_RUNTIME
 #   packaging/appimage/build-appimage.sh
 #

@@ -13,6 +13,7 @@
 
 #![deny(missing_docs)]
 
+pub mod bridge;
 pub mod framing;
 pub mod manifest;
 pub mod protocol;
@@ -61,8 +62,53 @@ impl TabSource for EmptyTabs {
 /// A framing or stream failure that makes further replies impossible.
 pub fn serve(
     reader: &mut impl Read,
-    writer: &mut impl Write,
+    writer: &mut impl FrameWriter,
     source: &impl TabSource,
+) -> Result<(), HostError> {
+    serve_with_bridge(reader, writer, source, None)
+}
+
+/// A sink for one complete native-messaging frame at a time.
+///
+/// The length prefix, payload and flush must be one critical section: the
+/// reply loop and the focus relay share stdout, and a frame split between them
+/// would corrupt the browser's stream.
+pub trait FrameWriter {
+    /// Writes one whole frame.
+    ///
+    /// # Errors
+    ///
+    /// A framing or I/O failure.
+    fn frame(&mut self, payload: &[u8]) -> Result<(), FramingError>;
+}
+
+impl FrameWriter for Vec<u8> {
+    fn frame(&mut self, payload: &[u8]) -> Result<(), FramingError> {
+        write_frame(self, payload)
+    }
+}
+
+/// A stdio writer shared with the focus relay thread.
+#[derive(Debug, Clone)]
+pub struct SharedWriter<W>(pub std::sync::Arc<std::sync::Mutex<W>>);
+
+impl<W: Write> FrameWriter for SharedWriter<W> {
+    fn frame(&mut self, payload: &[u8]) -> Result<(), FramingError> {
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        write_frame(&mut *guard, payload)
+    }
+}
+
+/// Serves native messages, relaying tab reports to Compass when a bridge is
+/// present. The unit tests use [`serve`] with no bridge.
+pub fn serve_with_bridge(
+    reader: &mut impl Read,
+    writer: &mut impl FrameWriter,
+    source: &impl TabSource,
+    bridge: Option<&bridge::IpcBridge>,
 ) -> Result<(), HostError> {
     loop {
         let bytes = match read_frame(reader) {
@@ -76,7 +122,7 @@ pub fn serve(
                 let reply = HostResponse::Error {
                     message: format!("not a valid request: {error}"),
                 };
-                write_frame(writer, &serde_json::to_vec(&reply)?)?;
+                writer.frame(&serde_json::to_vec(&reply)?)?;
                 continue;
             }
         };
@@ -103,8 +149,17 @@ pub fn serve(
             HostRequest::FocusTab { .. } => HostResponse::Error {
                 message: "no connected browser owns that tab".to_owned(),
             },
+            HostRequest::TabsChanged { browser_id, tabs } => match bridge {
+                Some(bridge) => match bridge.push_tabs(&browser_id, tabs) {
+                    Ok(()) => HostResponse::Ok,
+                    Err(message) => HostResponse::Error { message },
+                },
+                None => HostResponse::Error {
+                    message: "this host has no Compass connection".to_owned(),
+                },
+            },
         };
-        write_frame(writer, &serde_json::to_vec(&reply)?)?;
+        writer.frame(&serde_json::to_vec(&reply)?)?;
     }
 }
 

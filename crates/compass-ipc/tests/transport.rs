@@ -181,6 +181,8 @@ async fn echo_handler(request: Request) -> Response {
             state: compass_ipc::LoginStartState::Off,
             unit: None,
         },
+        Request::BrowserTabs { .. } => Response::Ack,
+        Request::BrowserFocusWait { .. } => Response::BrowserFocus { tab_id: None },
         Request::ClipboardStatus => Response::ClipboardStatus(compass_ipc::ClipboardStatus {
             backend: None,
             capturing: false,

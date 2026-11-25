@@ -155,7 +155,7 @@ modules:
       env:
         CARGO_NET_OFFLINE: 'true'
     build-commands:
-      - cargo --offline build --release --locked -p compass -p compass-sandbox --bins
+      - cargo --offline build --release --locked -p compass -p compass-sandbox -p compass-browser-host --bins
       # The same install the AppImage, Arch and Nix packages run, so every output ships the
       # same files in the same places (Suite 5, scripts/packaging/smoke.sh, checks them):
       #   bin/compass
