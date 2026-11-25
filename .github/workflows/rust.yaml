@@ -175,7 +175,13 @@ jobs:
   coverage:
     name: Coverage (lcov)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # An instrumented build of the whole workspace from a cold cache exceeded
+    # 45 minutes; share the same sccache and target cache as the check job and
+    # keep a cold-build margin.
+    timeout-minutes: 90
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5.1.0
         with:
@@ -185,10 +191,23 @@ jobs:
       - name: Install the xkbcommon headers
         run: sudo apt-get update -q && sudo apt-get install -y -q libxkbcommon-dev
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Install cargo-llvm-cov and cargo-nextest
         uses: taiki-e/install-action@v2.87.22
         with:
           tool: cargo-llvm-cov nextest
+
+      - name: Cache cargo
+        uses: actions/cache@v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: coverage-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: coverage-${{ runner.os }}-
 
       # cargo-llvm-cov builds into target/llvm-cov-target, but the sandboxed
       # worker test looks for the helper at target/debug/compass-sandbox-exec.
@@ -469,6 +488,18 @@ jobs:
             exit 1
           }
 
+      # The in-tree browser-tab extension, built with the same vici CLI a
+      # third-party author uses and tested with the SDK's esbuild. After the
+      # clean-tree check: `npm ci` here installs dev tooling, and the vici build
+      # writes a generated declaration into the extension directory.
+      - name: Build and test Browser Tabs
+        run: |
+          (cd src/typescript/api && npm run build)
+          cd extensions/browser-tabs
+          npm ci --no-audit --no-fund
+          node ../../src/typescript/api/dist/bin.js build -o /tmp/browser-tabs-build
+          npm test
+
   # Suite 4 (the SLA benches), the per-commit idle RSS and the regression gate
   # that judges both live in perf.yaml, which also runs on a schedule so the
   # gate's baseline fills without rerunning everything here.
@@ -543,8 +574,11 @@ jobs:
     name: "Suite 0: the parity harness runs at all"
     runs-on: ubuntu-24.04
     # Measured: ~90 s to build the engine from a warm cache, ~70 s for 1817
-    # queries against two engines. The margin is for a cold cache.
-    timeout-minutes: 20
+    # queries against two engines. A cold `target` cache makes this job build
+    # every release dependency (~500 sccache misses on the failed run), which
+    # took past 20 minutes and killed the harness before it ran a query.
+    # Keep the same budget as the other cold-build jobs.
+    timeout-minutes: 45
 
     env:
       SCCACHE_GHA_ENABLED: "true"
