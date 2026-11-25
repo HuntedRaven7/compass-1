@@ -7,75 +7,77 @@
 
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use compass_browser_host::bridge::IpcBridge;
 use compass_browser_host::protocol::HostResponse;
 use compass_browser_host::{EmptyTabs, FrameWriter, SharedWriter};
 
 fn main() {
-    let browser_id =
+    let default_id =
         std::env::var("COMPASS_BROWSER_ID").unwrap_or_else(|_| "org.mozilla.firefox".to_owned());
-    let bridge = match IpcBridge::connect(browser_id) {
-        Ok(bridge) => Some(Arc::new(bridge)),
+    let bridge = match IpcBridge::new(default_id) {
+        Ok(bridge) => Arc::new(bridge),
         Err(error) => {
-            // Never write diagnostics to stdout: it is the framing channel.
-            // A browser can still drive its own tabs through the transport
-            // until the engine comes up; only tab reporting needs the engine.
-            eprintln!("compass-browser-host: {error}; tab reporting is unavailable");
-            None
+            eprintln!("compass-browser-host: {error}");
+            std::process::exit(1);
         }
     };
 
     let stdout = Arc::new(Mutex::new(io::stdout()));
-    if let Some(relay_bridge) = bridge.clone() {
-        let relay_writer = SharedWriter(Arc::clone(&stdout));
-        if let Err(error) = std::thread::Builder::new()
-            .name("browser-focus-relay".to_owned())
-            .spawn(move || {
-                let mut writer = relay_writer;
-                loop {
-                    match relay_bridge.focus_wait() {
+    let relay_bridge = Arc::clone(&bridge);
+    let relay_writer = SharedWriter(Arc::clone(&stdout));
+    if let Err(error) = std::thread::Builder::new()
+        .name("browser-focus-relay".to_owned())
+        .spawn(move || {
+            let mut writer = relay_writer;
+            loop {
+                let ids = relay_bridge.reported_ids();
+                if ids.is_empty() {
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+                let mut reachable = false;
+                for id in ids {
+                    match relay_bridge.focus_wait(&id) {
                         Ok(Some(tab_id)) => {
+                            reachable = true;
                             let Ok(bytes) = serde_json::to_vec(&HostResponse::Focus { tab_id })
                             else {
                                 continue;
                             };
                             if writer.frame(&bytes).is_err() {
-                                break;
+                                return;
                             }
                         }
-                        Ok(None) => {}
+                        Ok(None) => reachable = true,
                         Err(error) => {
-                            // A dead engine will not answer again on this
-                            // connection. Stop instead of spinning at 100%.
-                            eprintln!("compass-browser-host: focus relay stopped: {error}");
-                            break;
+                            // One browser's poll failing does not stop the
+                            // others; back off if none answered at all.
+                            eprintln!("compass-browser-host: focus poll failed: {error}");
                         }
                     }
                 }
-            })
-        {
-            // Without the relay the host still serves tabs; focus requests
-            // collect until a restart. Say so rather than failing the browser.
-            eprintln!("compass-browser-host: no focus relay: {error}");
-        }
+                if !reachable {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        })
+    {
+        eprintln!("compass-browser-host: no focus relay: {error}");
     }
 
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let mut writer = SharedWriter(stdout);
-    if let Err(error) = compass_browser_host::serve_with_bridge(
-        &mut reader,
-        &mut writer,
-        &EmptyTabs,
-        bridge.as_deref(),
-    ) {
+    if let Err(error) =
+        compass_browser_host::serve_with_bridge(&mut reader, &mut writer, &EmptyTabs, Some(&bridge))
+    {
         eprintln!("compass-browser-host: {error}");
+        bridge.disconnect_all();
         std::process::exit(1);
     }
     // The browser closed the pipe. Tell the engine so its tab list and
     // BrowserExtension capability stop advertising a browser that is gone.
-    if let Some(bridge) = bridge.as_deref() {
-        bridge.disconnect_all();
-    }
+    bridge.disconnect_all();
 }

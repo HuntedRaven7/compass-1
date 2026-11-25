@@ -191,4 +191,23 @@ mod tests {
         assert_eq!(registry.take_focus("firefox"), Some(1));
         assert_eq!(registry.take_focus("firefox"), None);
     }
+
+    #[tokio::test]
+    async fn focus_wait_collects_a_queued_request() {
+        let registry = BrowserRegistry::default();
+        registry.update("firefox", vec![tab(1)]);
+        registry.request_focus("firefox", 1);
+        assert_eq!(
+            registry
+                .focus_wait("firefox", Duration::from_millis(10))
+                .await,
+            Some(1)
+        );
+        assert_eq!(
+            registry
+                .focus_wait("firefox", Duration::from_millis(10))
+                .await,
+            None
+        );
+    }
 }
