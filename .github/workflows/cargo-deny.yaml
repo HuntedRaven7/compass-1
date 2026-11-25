@@ -61,6 +61,7 @@ jobs:
         dir:
           - .
           - extra/extension-boilerplate
+          - extensions/browser-tabs
           - src/typescript/api
           - src/typescript/extension-manager
           - src/typescript/raycast-api-compat
