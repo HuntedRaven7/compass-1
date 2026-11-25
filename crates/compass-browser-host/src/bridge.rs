@@ -133,8 +133,12 @@ impl IpcBridge {
                     .clients
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let (tabs_client, _) = clients.as_mut().expect("ensure connected the clients");
-                self.runtime.block_on(tabs_client.request(request.clone()))
+                match clients.as_mut() {
+                    Some((tabs_client, _)) => {
+                        self.runtime.block_on(tabs_client.request(request.clone()))
+                    }
+                    None => return Err("Compass connection closed".to_owned()),
+                }
             };
             match outcome {
                 Ok(Response::Ack) => return Ok(()),
@@ -187,11 +191,15 @@ impl IpcBridge {
                     .clients
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let (_, focus_client) = clients.as_mut().expect("ensure connected the clients");
                 // The engine answers an empty poll after its own FOCUS_WAIT;
                 // cancelling here would leave an unmatched reply on this
                 // connection, so wait for it rather than imposing a shorter one.
-                self.runtime.block_on(focus_client.request(request.clone()))
+                match clients.as_mut() {
+                    Some((_, focus_client)) => {
+                        self.runtime.block_on(focus_client.request(request.clone()))
+                    }
+                    None => return Err("Compass connection closed".to_owned()),
+                }
             };
             match outcome {
                 Ok(Response::BrowserFocus { tab_id }) => return Ok(tab_id),
