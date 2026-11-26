@@ -237,7 +237,12 @@ class ClipboardService {
     }
 
     _pressPaste(withShift) {
-        this._keyboard ??= Clutter.get_default_backend().get_default_seat()
+        // GNOME 51 removed the default-backend getter; the stage's context
+        // carries the backend there. Older Shells have no get_context().
+        const backend = global.stage.get_context
+            ? global.stage.get_context().get_backend()
+            : Clutter.get_default_backend();
+        this._keyboard ??= backend.get_default_seat()
             .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
         const modifiers = withShift
             ? [Clutter.KEY_Control_L, Clutter.KEY_Shift_L]

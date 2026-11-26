@@ -196,3 +196,25 @@ fn the_vm_tier_waits_for_this_contract_version() {
         "checks.sh shell-extension must wait for `{wanted}`, the version this build speaks"
     );
 }
+
+#[test]
+fn the_paste_keyboard_does_not_depend_on_the_backend_gnome_51_removed() {
+    // `Clutter.get_default_backend()` is gone in GNOME Shell 51. Calling it
+    // throws inside a timeout callback after `Paste` has returned, so paste
+    // silently does nothing. Only the stage's context may be tried first.
+    let script = script();
+    let call = "Clutter.get_default_backend()";
+    let fallback = "global.stage.get_context\n";
+    assert!(
+        script.contains("global.stage.get_context().get_backend()"),
+        "the virtual keyboard must come from the stage's Clutter context"
+    );
+    let guarded = script
+        .find(fallback)
+        .zip(script.find(call))
+        .is_some_and(|(guard, old)| guard < old);
+    assert!(
+        guarded && script.matches(call).count() == 1,
+        "the removed `{call}` may only be a fallback behind a `get_context` check"
+    );
+}
