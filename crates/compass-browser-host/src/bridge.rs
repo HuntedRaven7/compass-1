@@ -15,14 +15,16 @@ use crate::protocol::Tab;
 
 /// A host's connections to the engine, driven by a small current-thread runtime.
 ///
-/// The clients are created on first use and replaced after a transport error,
-/// so a browser started before Compass — or an engine restart — does not need
-/// the browser to be restarted too. Tab reports and the long focus poll use
-/// separate connections; the poll holds its connection for up to its budget,
-/// and a `std::sync::Mutex` does not hand over fairly.
+/// Each client has its own mutex. The focus poll waits on the engine for up to
+/// `FOCUS_WAIT`, so a shared lock would hold up every `tabsChanged` behind it;
+/// separate locks keep tab reports and focus polling independent. Clients are
+/// created on first use and replaced individually after a transport error, so
+/// a browser started before Compass — or an engine restart — recovers without
+/// restarting the browser.
 pub struct IpcBridge {
     runtime: tokio::runtime::Runtime,
-    clients: Mutex<Option<(Client, Client)>>,
+    tabs_client: Mutex<Option<Client>>,
+    focus_client: Mutex<Option<Client>>,
     path: PathBuf,
     browser_id: String,
     /// Browsers that have reported tabs through this host.
@@ -45,51 +47,57 @@ impl IpcBridge {
             .unwrap_or_else(|| SocketPath::from_env().into_path_buf());
         Ok(Self {
             runtime,
-            clients: Mutex::new(None),
+            tabs_client: Mutex::new(None),
+            focus_client: Mutex::new(None),
             path,
             browser_id,
             reported: Mutex::new(HashSet::new()),
         })
     }
 
-    fn connect_pair(&self) -> Result<(Client, Client), String> {
-        let tabs = self
-            .runtime
+    fn connect_one(&self) -> Result<Client, String> {
+        self.runtime
             .block_on(Client::connect(&self.path))
             .map_err(|error| {
                 format!(
                     "could not reach Compass at {}: {error}",
                     self.path.display()
                 )
-            })?;
-        let focus = self
-            .runtime
-            .block_on(Client::connect(&self.path))
-            .map_err(|error| {
-                format!(
-                    "could not reach Compass at {}: {error}",
-                    self.path.display()
-                )
-            })?;
-        Ok((tabs, focus))
+            })
     }
 
-    /// Returns the current pair, connecting if this is the first use.
-    fn ensure(&self) -> Result<(), String> {
-        let mut clients = self
-            .clients
+    fn ensure_tabs(&self) -> Result<(), String> {
+        let mut client = self
+            .tabs_client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if clients.is_none() {
-            *clients = Some(self.connect_pair()?);
+        if client.is_none() {
+            *client = Some(self.connect_one()?);
         }
         Ok(())
     }
 
-    /// Drops dead connections so the next use reconnects.
-    fn reset(&self) {
+    fn ensure_focus(&self) -> Result<(), String> {
+        let mut client = self
+            .focus_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if client.is_none() {
+            *client = Some(self.connect_one()?);
+        }
+        Ok(())
+    }
+
+    fn reset_tabs(&self) {
         *self
-            .clients
+            .tabs_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    fn reset_focus(&self) {
+        *self
+            .focus_client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
@@ -127,16 +135,14 @@ impl IpcBridge {
             tabs: payload,
         };
         for attempt in 0..2 {
-            self.ensure()?;
+            self.ensure_tabs()?;
             let outcome = {
-                let mut clients = self
-                    .clients
+                let mut guard = self
+                    .tabs_client
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match clients.as_mut() {
-                    Some((tabs_client, _)) => {
-                        self.runtime.block_on(tabs_client.request(request.clone()))
-                    }
+                match guard.as_mut() {
+                    Some(client) => self.runtime.block_on(client.request(request.clone())),
                     None => return Err("Compass connection closed".to_owned()),
                 }
             };
@@ -144,7 +150,7 @@ impl IpcBridge {
                 Ok(Response::Ack) => return Ok(()),
                 Ok(Response::Error(error)) => return Err(error.message),
                 Ok(other) => return Err(format!("unexpected answer from Compass: {other:?}")),
-                Err(_) if attempt == 0 => self.reset(),
+                Err(_) if attempt == 0 => self.reset_tabs(),
                 Err(error) => return Err(format!("Compass did not answer: {error}")),
             }
         }
@@ -185,19 +191,14 @@ impl IpcBridge {
             browser_id: browser_id.to_owned(),
         };
         for attempt in 0..2 {
-            self.ensure()?;
+            self.ensure_focus()?;
             let outcome = {
-                let mut clients = self
-                    .clients
+                let mut guard = self
+                    .focus_client
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // The engine answers an empty poll after its own FOCUS_WAIT;
-                // cancelling here would leave an unmatched reply on this
-                // connection, so wait for it rather than imposing a shorter one.
-                match clients.as_mut() {
-                    Some((_, focus_client)) => {
-                        self.runtime.block_on(focus_client.request(request.clone()))
-                    }
+                match guard.as_mut() {
+                    Some(client) => self.runtime.block_on(client.request(request.clone())),
                     None => return Err("Compass connection closed".to_owned()),
                 }
             };
@@ -205,7 +206,7 @@ impl IpcBridge {
                 Ok(Response::BrowserFocus { tab_id }) => return Ok(tab_id),
                 Ok(Response::Error(error)) => return Err(error.message),
                 Ok(other) => return Err(format!("unexpected answer from Compass: {other:?}")),
-                Err(_) if attempt == 0 => self.reset(),
+                Err(_) if attempt == 0 => self.reset_focus(),
                 Err(error) => return Err(format!("Compass did not answer: {error}")),
             }
         }
